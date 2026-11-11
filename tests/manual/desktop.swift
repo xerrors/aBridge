@@ -17,9 +17,10 @@ struct DesktopFixture {
     }
 }
 
-final class FixtureDelegate: NSObject, NSApplicationDelegate {
+final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     private var window: FixtureWindow!
     private var countLabel: NSTextField!
+    private var inputField: NSTextField!
     private var clickCount = 0
     private let code = String((0..<6).map { _ in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".randomElement()! })
     private let stateURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[1])
@@ -31,7 +32,7 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         window.title = "aBridge Yuxi Desktop Verification"
         window.appearance = NSAppearance(named: .aqua)
         window.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1)
-        window.level = .floating
+        window.level = .normal
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
@@ -39,6 +40,15 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         addLabel("aBridge × Yuxi", size: 32, y: frame.height * 0.78, to: content)
         addLabel("屏幕验证码", size: 24, y: frame.height * 0.65, to: content)
         addLabel(code, size: 78, y: frame.height * 0.55, to: content)
+
+        inputField = NSTextField(string: "")
+        inputField.placeholderString = "输入中文"
+        inputField.setAccessibilityLabel("验收输入")
+        inputField.identifier = NSUserInterfaceItemIdentifier("verification-input")
+        inputField.font = .systemFont(ofSize: 26)
+        inputField.frame = NSRect(x: frame.width * 0.30, y: frame.height * 0.43, width: frame.width * 0.40, height: 44)
+        inputField.delegate = self
+        content.addSubview(inputField)
 
         let button = NSButton(title: "点击验证", target: self, action: #selector(recordClick))
         button.frame = NSRect(x: frame.width * 0.57, y: frame.height * 0.30, width: 340, height: 100)
@@ -60,9 +70,13 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
         writeState()
     }
 
+    func controlTextDidChange(_ notification: Notification) {
+        writeState()
+    }
+
     private func writeState() {
         let state: [String: Any] = [
-            "code": code, "click_count": clickCount,
+            "code": code, "click_count": clickCount, "text": inputField.stringValue,
             "pid": ProcessInfo.processInfo.processIdentifier,
             "updated_at": Date().timeIntervalSince1970,
         ]

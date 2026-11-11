@@ -407,6 +407,82 @@ async def test_screen_input_grant_cannot_expand_to_shell_files_or_another_device
     assert (await network.alice.get("/api/activity")).json()["operations"] == []
 
 
+async def test_browser_scope_does_not_inherit_desktop_or_command_access(network: Network) -> None:
+    created = await network.alice.post(
+        "/api/devices",
+        json={
+            "name": "Scoped browser fixture",
+            "capabilities": ["screen", "input", "shell", "files", "browser"],
+        },
+    )
+    assert created.status_code == 201
+    device = created.json()
+    grants = {}
+    for name, capabilities in (("Desktop only", ["screen", "input"]), ("Browser only", ["browser"])):
+        created = await network.alice.post(
+            "/api/client-grants",
+            json={"name": name, "device_ids": [device["id"]], "capabilities": capabilities},
+        )
+        assert created.status_code == 201
+        grants[name] = created.json()
+
+    async with websockets.connect(
+        network.ws_url, additional_headers={"Authorization": f"Bearer {device['key']}"}
+    ) as device_socket:
+        await device_socket.send(
+            json.dumps(
+                {
+                    "type": "hello",
+                    "protocol": "abridge/1",
+                    "paused": False,
+                    "capabilities": {name: True for name in ("screen", "input", "shell", "files", "browser")},
+                }
+            )
+        )
+        await device_socket.recv()
+        async with (
+            mcp_connection(network.url, grants["Desktop only"]["key"]) as desktop,
+            mcp_connection(network.url, grants["Browser only"]["key"]) as browser,
+        ):
+            tool_names = {tool.name for tool in (await browser.list_tools()).tools}
+            assert {"browser_open", "browser_observe", "browser_act"} <= tool_names
+            assert set(decode(await desktop.call_tool("devices_list"))["devices"][0]["capabilities"]) == {
+                "screen",
+                "input",
+            }
+            assert decode(await browser.call_tool("devices_list"))["devices"][0]["capabilities"] == [
+                "browser"
+            ]
+            refused = await desktop.call_tool(
+                "session_open", {"device_id": device["id"], "capabilities": ["browser"]}
+            )
+            assert refused.isError is True
+            for capability in ("screen", "input", "shell", "files"):
+                refused = await browser.call_tool(
+                    "session_open", {"device_id": device["id"], "capabilities": [capability]}
+                )
+                assert refused.isError is True
+            browser_session = decode(
+                await browser.call_tool(
+                    "session_open", {"device_id": device["id"], "capabilities": ["browser"]}
+                )
+            )
+            desktop_session = decode(
+                await desktop.call_tool(
+                    "session_open", {"device_id": device["id"], "capabilities": ["screen", "input"]}
+                )
+            )
+            refused = await browser.call_tool("computer_observe", {"session_id": browser_session["id"]})
+            assert refused.isError is True
+            refused = await desktop.call_tool("browser_observe", {"session_id": desktop_session["id"]})
+            assert refused.isError is True
+            refused = await desktop.call_tool("browser_observe", {"session_id": browser_session["id"]})
+            assert refused.isError is True
+            await desktop.call_tool("session_close", {"session_id": desktop_session["id"]})
+            await browser.call_tool("session_close", {"session_id": browser_session["id"]})
+    assert (await network.alice.get("/api/activity")).json()["operations"] == []
+
+
 @dataclass
 class Network:
     url: str

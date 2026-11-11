@@ -78,6 +78,10 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: make sync
+      - name: Install the locked Mac driver
+        run: uv sync --locked --extra dev --extra macos
+      - name: Check the real embedded SDK without desktop interaction
+        run: uv run --no-sync pytest -q tests/sdk/test_cua_native_contract.py
       - name: Build, verify signature, and check unchanged-build reuse
         run: |
           uv run --no-sync python - <<'PY'

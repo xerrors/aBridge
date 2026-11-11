@@ -5,6 +5,7 @@
   const labels = {
     screen: "屏幕",
     input: "键鼠",
+    browser: "浏览器",
     shell: "Shell",
     files: "文件",
   };

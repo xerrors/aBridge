@@ -7,24 +7,17 @@ import codecs
 import json
 import os
 import signal
-import time
-import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from abridge.cua_driver import CuaDriverAdapter, CuaError
+from abridge.diagnostics import runtime_status
+from abridge.protocol import TOOL_CAPABILITIES as TOOL_CAPABILITIES
+
 MAX_FILE_BYTES = 1_048_576
 MAX_OUTPUT_BYTES = 131_072
 MAX_COMMAND_SECONDS = 120
-OBSERVATION_SECONDS = 10
-TOOL_CAPABILITIES = {
-    "computer_observe": "screen",
-    "computer_act": "input",
-    "command_execute": "shell",
-    "files_list": "files",
-    "file_read": "files",
-    "file_write": "files",
-}
 
 
 class ExecutionError(Exception):
@@ -38,25 +31,52 @@ class ExecutionError(Exception):
 class LocalExecutor:
     """Execute tools, own their subprocesses, and retain short-lived observations."""
 
-    def __init__(self, helper: str | None = None) -> None:
+    def __init__(self, helper: str | None = None, *, driver: CuaDriverAdapter | None = None) -> None:
         self.helper = helper or os.environ.get("ABRIDGE_DESKTOP_HELPER")
+        self.driver = driver or CuaDriverAdapter()
         self.processes: dict[str, asyncio.subprocess.Process] = {}
-        self.observations: dict[str, dict[str, Any]] = {}
         self.on_output: Callable[[str, str, str], Awaitable[None]] | None = None
 
-    async def execute(self, operation_id: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def execute(
+        self, operation_id: str, tool: str, arguments: dict[str, Any], *, session_id: str | None = None
+    ) -> dict[str, Any]:
         if tool == "command_execute":
             return await self.command_execute(operation_id, arguments)
-        if tool == "computer_observe":
-            return await self.computer_observe()
-        if tool == "computer_act":
-            return await self.computer_act(arguments)
         if tool == "files_list":
             return await asyncio.to_thread(self.files_list, arguments)
         if tool == "file_read":
             return await asyncio.to_thread(self.file_read, arguments)
         if tool == "file_write":
             return await asyncio.to_thread(self.file_write, arguments)
+        session_id = session_id or "local"
+        try:
+            if tool == "computer_apps":
+                return await self.driver.list_apps(session_id)
+            if tool == "computer_windows":
+                return await self.driver.list_windows(session_id, arguments["pid"])
+            if tool == "computer_observe":
+                return await self.driver.computer_observe(
+                    session_id,
+                    pid=arguments.get("pid"),
+                    window_id=arguments.get("window_id"),
+                    screenshot=arguments.get("screenshot", True),
+                )
+            if tool == "computer_act":
+                return await self.driver.computer_act(
+                    session_id, _required_string(arguments, "observation_id"), arguments.get("action")
+                )
+            if tool == "browser_open":
+                return await self.driver.browser_open(session_id, _required_string(arguments, "url"))
+            if tool == "browser_observe":
+                return await self.driver.browser_observe(
+                    session_id, screenshot=arguments.get("screenshot", False)
+                )
+            if tool == "browser_act":
+                return await self.driver.browser_act(
+                    session_id, _required_string(arguments, "observation_id"), arguments.get("action")
+                )
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
         raise ExecutionError("unknown_tool", "Unknown device tool")
 
     async def cancel(self, operation_ids: list[str] | None = None) -> None:
@@ -67,13 +87,28 @@ class LocalExecutor:
                 await _terminate_process_tree(process)
 
     async def permissions(self) -> dict[str, bool]:
-        if self.helper is None:
-            return {"screen": False, "input": False}
+        return (await self.diagnostics())["permissions"]
+
+    async def diagnostics(self) -> dict[str, Any]:
+        return {"runtime": runtime_status(), **await self.driver.diagnostics()}
+
+    async def close_session(self, session_id: str) -> None:
         try:
-            result = await self._native({"action": "permissions"})
-        except (ExecutionError, OSError):
-            return {"screen": False, "input": False}
-        return {"screen": result.get("screen") is True, "input": result.get("input") is True}
+            await self.driver.close_session(session_id)
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
+    async def stop(self) -> None:
+        try:
+            await self.driver.stop()
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
+    async def shutdown(self) -> None:
+        try:
+            await self.driver.shutdown()
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
 
     async def command_execute(self, operation_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         command = _required_string(arguments, "command")
@@ -134,35 +169,6 @@ class LocalExecutor:
             stdout_task.cancel()
             stderr_task.cancel()
             self.processes.pop(operation_id, None)
-
-    async def computer_observe(self) -> dict[str, Any]:
-        result = await self._native({"action": "observe"})
-        observation_id = "obs_" + uuid.uuid4().hex
-        observed_at = time.time()
-        self.observations = {
-            key: value
-            for key, value in self.observations.items()
-            if observed_at - value["observed_at"] < OBSERVATION_SECONDS
-        }
-        observation = {key: value for key, value in result.items() if key != "image_base64"}
-        observation.update(observation_id=observation_id, observed_at=observed_at)
-        self.observations[observation_id] = observation
-        return {
-            **result,
-            "observation_id": observation_id,
-            "observed_at": observed_at,
-            "expires_in": OBSERVATION_SECONDS,
-        }
-
-    async def computer_act(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        observation_id = _required_string(arguments, "observation_id")
-        observation = self.observations.get(observation_id)
-        if observation is None or time.time() - observation["observed_at"] > OBSERVATION_SECONDS:
-            raise ExecutionError("stale_observation", "Observe the desktop again before acting")
-        action = arguments.get("action")
-        if not isinstance(action, dict):
-            raise ExecutionError("invalid_arguments", "action must be an object")
-        return await self._native({"action": "act", "observation": observation, "input": action})
 
     def files_list(self, arguments: dict[str, Any]) -> dict[str, Any]:
         path = Path(_required_string(arguments, "path")).expanduser()
@@ -234,11 +240,16 @@ class LocalExecutor:
         )
         try:
             output, _ = await asyncio.wait_for(process.communicate(json.dumps(request).encode()), timeout=15)
-        except (TimeoutError, asyncio.CancelledError):
+        except TimeoutError as error:
             process.kill()
             await process.wait()
-            if request.get("action") == "act":
-                await self._release_inputs()
+            raise ExecutionError(
+                "native_timeout",
+                "The macOS helper timed out. Unlock this Mac and allow any aBridge Keychain prompt, then retry.",
+            ) from error
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
             raise
         if process.returncode != 0:
             raise ExecutionError("desktop_failed", "The native desktop helper failed")
@@ -276,20 +287,6 @@ class LocalExecutor:
         if tail and self.on_output is not None:
             await self.on_output(operation_id, stream_name, tail)
         return data.decode("utf-8", errors="replace"), truncated
-
-    async def _release_inputs(self) -> None:
-        process = await asyncio.create_subprocess_exec(
-            self.helper,
-            "--helper",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            await asyncio.wait_for(process.communicate(b'{"action":"release_inputs"}'), timeout=3)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
 
 
 async def native_request(helper: str, request: dict[str, Any]) -> dict[str, Any]:

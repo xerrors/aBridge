@@ -27,7 +27,7 @@ async def test_management_rejects_unimplemented_capabilities(tmp_path: Path) -> 
                 await account.post("/api/login", json={"username": "owner", "password": "owner-password-123"})
             ).status_code == 200
             refused = await account.post(
-                "/api/devices", json={"name": "unsupported", "capabilities": ["browser"]}
+                "/api/devices", json={"name": "unsupported", "capabilities": ["unimplemented"]}
             )
             assert refused.status_code == 422
             created = await account.post(
@@ -36,12 +36,12 @@ async def test_management_rejects_unimplemented_capabilities(tmp_path: Path) -> 
             assert created.status_code == 201
             device = created.json()
             refused = await account.patch(
-                f"/api/devices/{device['id']}", json={"name": "Mac", "capabilities": ["browser"]}
+                f"/api/devices/{device['id']}", json={"name": "Mac", "capabilities": ["unimplemented"]}
             )
             assert refused.status_code == 422
             refused = await account.post(
                 "/api/client-grants",
-                json={"name": "unsupported", "device_ids": [device["id"]], "capabilities": ["browser"]},
+                json={"name": "unsupported", "device_ids": [device["id"]], "capabilities": ["unimplemented"]},
             )
             assert refused.status_code == 422
             assert (await account.get("/api/devices")).json()["devices"][0]["capabilities"] == [
@@ -57,8 +57,8 @@ async def test_public_views_hide_unimplemented_legacy_metadata(tmp_path: Path) -
     store = app.state.store
     owner = store.create_user("owner", "owner-password-123")
     # Store accepts trusted internal records; simulate metadata left by an unshipped experiment.
-    device, _ = store.create_device(owner["id"], "Mac", ["screen", "browser"])
-    store.create_grant(owner["id"], "Agent", [device["id"]], ["screen", "browser"], time.time() + 600)
+    device, _ = store.create_device(owner["id"], "Mac", ["screen", "unimplemented"])
+    store.create_grant(owner["id"], "Agent", [device["id"]], ["screen", "unimplemented"], time.time() + 600)
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://localhost"
@@ -84,11 +84,15 @@ async def test_mcp_and_device_share_the_implemented_capability_contract(tmp_path
         )
         with pytest.raises(BridgeError) as refused:
             runtime.open_session(grant, device["id"], ["browser"])
-        assert refused.value.code == "invalid_capabilities"
+        assert refused.value.code == "forbidden"
 
         tools = {tool.name: tool for tool in await create_mcp(runtime).list_tools()}
-        assert len(tools) == 12
-        assert not any(name.startswith("browser_") for name in tools)
+        assert len(tools) == 17
+        assert {name for name in tools if name.startswith("browser_")} == {
+            "browser_open",
+            "browser_observe",
+            "browser_act",
+        }
         schema = tools["session_open"].inputSchema["properties"]["capabilities"]["items"]
         assert set(schema["enum"]) == CAPABILITIES == set(CLIENT_CAPABILITIES)
         assert SERVER_TOOL_CAPABILITIES == TOOL_CAPABILITIES

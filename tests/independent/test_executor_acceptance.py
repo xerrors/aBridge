@@ -9,7 +9,27 @@ from pathlib import Path
 
 import pytest
 
-from abridge.executor import ExecutionError, LocalExecutor
+from abridge.executor import ExecutionError, LocalExecutor, native_request
+
+
+async def test_native_helper_cancellation_preserves_cancel_and_reaps_process(tmp_path: Path) -> None:
+    pid_file = tmp_path / "helper.pid"
+    helper = tmp_path / "waiting-helper"
+    helper.write_text(f"#!/bin/sh\nprintf '%s' \"$$\" > {shlex.quote(str(pid_file))}\nexec sleep 30\n")
+    helper.chmod(0o700)
+    running = asyncio.create_task(native_request(str(helper), {"action": "keychain_get"}))
+    try:
+        await wait_for_file(pid_file)
+        pid = int(pid_file.read_text())
+        os.kill(pid, 0)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        await wait_for_exit(pid)
+    finally:
+        if not running.done():
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
 
 
 async def test_cancel_stops_shell_and_background_child(tmp_path: Path) -> None:
@@ -101,7 +121,7 @@ async def test_command_output_is_bounded_without_stalling_child(tmp_path: Path) 
 
 async def test_desktop_action_requires_current_observation() -> None:
     executor = LocalExecutor()
-    with pytest.raises(ExecutionError, match="Observe the desktop again") as refused:
+    with pytest.raises(ExecutionError, match="Observe .* again before acting") as refused:
         await executor.execute(
             "stale-check",
             "computer_act",

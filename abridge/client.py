@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -20,8 +21,8 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from abridge import __version__
 from abridge.executor import TOOL_CAPABILITIES, ExecutionError, LocalExecutor, native_request
+from abridge.protocol import CAPABILITIES
 
-CAPABILITIES = ("screen", "input", "shell", "files")
 DEFAULT_STATE_DIR = Path.home() / "Library" / "Application Support" / "aBridge"
 KEYCHAIN_SERVICE = "dev.abridge.client.device"
 
@@ -36,12 +37,13 @@ class DeviceClient:
         device_key: str,
         helper: str | None = None,
         parent_pid: int | None = None,
+        executor: LocalExecutor | None = None,
     ) -> None:
         self.state_dir = state_dir
         self.config = config
         self.device_key = device_key
         self.parent_pid = parent_pid
-        self.executor = LocalExecutor(helper)
+        self.executor = executor or LocalExecutor(helper)
         self.executor.on_output = self._output
         self.websocket: Any = None
         self.epoch = 0
@@ -50,6 +52,9 @@ class DeviceClient:
         self.operations: dict[str, asyncio.Task[None]] = {}
         self.operation_capabilities: dict[str, str] = {}
         self.operation_controllers: dict[str, str] = {}
+        self.operation_sessions: dict[str, str] = {}
+        self.session_capabilities: dict[str, set[str]] = {}
+        self.closed_sessions: set[str] = set()
         self.last_sequence = 0
         self.last_ack = 0.0
         self.lease_seconds = 30.0
@@ -102,11 +107,14 @@ class DeviceClient:
                     parent_task.cancel()
                     await asyncio.gather(connection_task, parent_task, return_exceptions=True)
         finally:
-            await self._stop_operations()
-            self.status["connection"] = "offline"
-            self._write_status()
-            socket_path.unlink(missing_ok=True)
-            self.journal.close()
+            try:
+                await self._stop_operations()
+            finally:
+                self.status["connection"] = "offline"
+                self._write_status()
+                socket_path.unlink(missing_ok=True)
+                self.journal.close()
+                await self.executor.shutdown()
 
     async def _watch_parent(self) -> None:
         if self.parent_pid is None:
@@ -187,6 +195,7 @@ class DeviceClient:
             self.epoch = int(welcome["connection_epoch"])
             self.device_id = str(welcome["device_id"])
             self.last_sequence = 0
+            self.closed_sessions.clear()
             self.last_ack = time.monotonic()
             self.lease_seconds = min(float(welcome.get("lease_seconds", 30)), 30)
             granted = welcome.get("capabilities", [])
@@ -227,6 +236,9 @@ class DeviceClient:
                 await self._dispatch(message)
             elif kind == "cancel":
                 await self._stop_operations(message.get("operation_ids"))
+            elif kind == "session_close":
+                if message.get("connection_epoch") == self.epoch:
+                    await self._close_session(message.get("session_id"))
             elif kind == "stop":
                 await self._stop_operations()
             elif kind == "revoke":
@@ -279,9 +291,29 @@ class DeviceClient:
             arguments = message.get("arguments")
             if tool not in TOOL_CAPABILITIES or not isinstance(arguments, dict):
                 raise ExecutionError("invalid_arguments", "Invalid device tool or arguments")
+            session_id = message.get("session_id")
+            if session_id is not None and (
+                not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", session_id)
+            ):
+                raise ExecutionError("invalid_session", "Invalid control session")
+            capability = TOOL_CAPABILITIES[tool]
+            session_capabilities = message.get("session_capabilities", [capability])
+            if (
+                not isinstance(session_capabilities, list)
+                or any(not isinstance(value, str) for value in session_capabilities)
+                or not set(session_capabilities) <= CAPABILITIES
+                or capability not in session_capabilities
+            ):
+                raise ExecutionError("invalid_session", "Invalid control session capabilities")
+            if capability in {"screen", "input", "browser"} and session_id is None:
+                raise ExecutionError("invalid_session", "A control session is required for this tool")
+            if session_id in self.closed_sessions:
+                raise ExecutionError("session_closed", "The control session has ended")
             request_hash = hashlib.sha256(
                 json.dumps(
-                    {"tool": tool, "arguments": arguments}, sort_keys=True, separators=(",", ":")
+                    {"tool": tool, "arguments": arguments, "session_id": session_id},
+                    sort_keys=True,
+                    separators=(",", ":"),
                 ).encode()
             ).hexdigest()
             prior = self.journal.get(operation_id)
@@ -301,7 +333,6 @@ class DeviceClient:
             self.last_sequence = sequence
             if self.config.get("paused", False):
                 raise ExecutionError("device_paused", "Resume access locally before running a new operation")
-            capability = TOOL_CAPABILITIES[tool]
             capabilities = await self._effective_capabilities()
             if not capabilities[capability] or capability not in self.server_capabilities:
                 raise ExecutionError(
@@ -314,24 +345,31 @@ class DeviceClient:
                 self.status["desktop_active_until"] = time.time() + 30
             self.operation_capabilities[operation_id] = capability
             self.operation_controllers[operation_id] = message.get("client_name", "Agent")
-            self.operations[operation_id] = asyncio.create_task(self._execute(operation_id, tool, arguments))
+            if session_id is not None:
+                self.operation_sessions[operation_id] = session_id
+                self.session_capabilities.setdefault(session_id, set()).update(session_capabilities)
+            self.operations[operation_id] = asyncio.create_task(
+                self._execute(operation_id, tool, arguments, session_id=session_id)
+            )
             self._write_status()
         except ExecutionError as error:
             await self._result(operation_id, "refused", {}, error)
 
-    async def _execute(self, operation_id: str, tool: str, arguments: dict[str, Any]) -> None:
+    async def _execute(
+        self, operation_id: str, tool: str, arguments: dict[str, Any], *, session_id: str | None = None
+    ) -> None:
         status = "executed"
         result: dict[str, Any] = {}
         error: ExecutionError | None = None
         try:
-            result = await self.executor.execute(operation_id, tool, arguments)
+            result = await self.executor.execute(operation_id, tool, arguments, session_id=session_id)
         except asyncio.CancelledError:
             status = "outcome_unknown"
             error = ExecutionError(
                 "operation_cancelled", "Execution was stopped; existing side effects were not rolled back"
             )
         except ExecutionError as execution_error:
-            status = "refused"
+            status = "outcome_unknown" if execution_error.code == "outcome_unknown" else "refused"
             error = execution_error
         except (OSError, ValueError, TypeError) as execution_error:
             status = "failed"
@@ -341,6 +379,7 @@ class DeviceClient:
             self.operations.pop(operation_id, None)
             self.operation_capabilities.pop(operation_id, None)
             self.operation_controllers.pop(operation_id, None)
+            self.operation_sessions.pop(operation_id, None)
             self._write_status()
         with suppress(ConnectionClosed, OSError):
             await self._result(operation_id, status, result, error)
@@ -379,6 +418,12 @@ class DeviceClient:
 
     async def _stop_operations(self, operation_ids: list[str] | None = None) -> None:
         selected = list(self.operations) if operation_ids is None else list(operation_ids)
+        affected_sessions = {
+            self.operation_sessions[operation_id]
+            for operation_id in selected
+            if operation_id in self.operation_sessions
+            and self.operation_capabilities.get(operation_id) in {"screen", "input", "browser"}
+        }
         # Cancel tasks before waiting on process cleanup to stop subsequent steps.
         tasks = [
             self.operations[operation_id] for operation_id in selected if operation_id in self.operations
@@ -389,18 +434,36 @@ class DeviceClient:
         # command_execute owns its process cleanup. Do not race two killpg calls
         # against the same process group while cancellation is unwinding.
         await self.executor.cancel(selected)
-        self.executor.observations.clear()
         if operation_ids is None:
+            await self.executor.stop()
+            self.closed_sessions.update(self.session_capabilities)
+            self.session_capabilities.clear()
             self.status["desktop_active_until"] = 0
+        else:
+            for session_id in affected_sessions:
+                await self._close_session(session_id)
         self._write_status()
 
+    async def _close_session(self, session_id: str | None) -> None:
+        if not isinstance(session_id, str) or session_id in self.closed_sessions:
+            return
+        self.closed_sessions.add(session_id)
+        selected = [key for key, value in self.operation_sessions.items() if value == session_id]
+        # Mark closed before cancellation so a late dispatch cannot recreate driver state.
+        await self._stop_operations(selected)
+        await self.executor.close_session(session_id)
+        self.session_capabilities.pop(session_id, None)
+
     async def _effective_capabilities(self) -> dict[str, bool]:
-        permissions = await self.executor.permissions()
+        dependencies = await self.executor.diagnostics()
+        permissions = dependencies["permissions"]
         requested = self.config.get("capabilities", {})
         effective = {key: requested.get(key) is True for key in CAPABILITIES}
-        effective["screen"] = effective["screen"] and permissions["screen"]
-        effective["input"] = effective["input"] and permissions["input"]
-        self.status.update(capabilities=effective, permissions=permissions)
+        driver_ready = dependencies["driver"]["ready"]
+        effective["screen"] = effective["screen"] and driver_ready and permissions["screen"]
+        effective["input"] = effective["input"] and driver_ready and permissions["input"]
+        effective["browser"] = effective["browser"] and driver_ready and dependencies["browser"]["ready"]
+        self.status.update(capabilities=effective, permissions=permissions, dependencies=dependencies)
         return effective
 
     async def _control_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -419,6 +482,7 @@ class DeviceClient:
                 save_config(self.state_dir, self.config)
             elif command == "stop":
                 await self._stop_operations()
+                await self._send({"type": "local_stop", "connection_epoch": self.epoch})
             elif command == "capability":
                 capability = request.get("capability")
                 enabled = request.get("enabled")
@@ -431,6 +495,9 @@ class DeviceClient:
                         key for key, value in self.operation_capabilities.items() if value == capability
                     ]
                     await self._stop_operations(selected)
+                    for session_id, capabilities in list(self.session_capabilities.items()):
+                        if capability in capabilities:
+                            await self._close_session(session_id)
             elif command == "unbind":
                 self.config["paused"] = True
                 self.config["revoked"] = True

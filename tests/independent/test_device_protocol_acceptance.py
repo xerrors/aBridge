@@ -14,13 +14,20 @@ from typing import Any, AsyncIterator
 import websockets
 
 from abridge.client import DeviceClient, local_control
+from abridge.executor import LocalExecutor
 
 
-async def test_device_reports_actual_permissions_and_persists_deduplication(tmp_path: Path) -> None:
+async def test_device_reports_effective_capabilities_and_persists_deduplication(tmp_path: Path) -> None:
     marker = tmp_path / "once.txt"
     arguments = {"command": f"printf x >> {shlex.quote(str(marker))}", "cwd": str(tmp_path)}
     async with device_peer(tmp_path / "device") as peer:
-        assert peer.hello["capabilities"] == {"screen": False, "input": False, "shell": True, "files": True}
+        assert peer.hello["capabilities"] == {
+            "screen": False,
+            "input": False,
+            "shell": True,
+            "files": True,
+            "browser": False,
+        }
         first = await peer.call("once", "command_execute", arguments)
         assert first["status"] == "executed"
         assert marker.read_text() == "x"
@@ -155,7 +162,7 @@ class DevicePeer:
                     "device_id": "dev_acceptance",
                     "connection_epoch": self.epoch,
                     "owner_name": "acceptance",
-                    "capabilities": ["screen", "input", "shell", "files"],
+                    "capabilities": ["screen", "input", "shell", "files", "browser"],
                     "heartbeat_interval": 1,
                     "lease_seconds": 5,
                 }
@@ -187,8 +194,10 @@ class DevicePeer:
         message.update(overrides)
         await self.connection.send(json.dumps(message))
 
-    async def call(self, operation_id: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        await self.dispatch(operation_id, tool, arguments)
+    async def call(
+        self, operation_id: str, tool: str, arguments: dict[str, Any], **overrides: Any
+    ) -> dict[str, Any]:
+        await self.dispatch(operation_id, tool, arguments, **overrides)
         return await self.result(operation_id)
 
     async def result(self, operation_id: str) -> dict[str, Any]:
@@ -200,7 +209,12 @@ class DevicePeer:
 
 
 @asynccontextmanager
-async def device_peer(state_dir: Path) -> AsyncIterator[DevicePeer]:
+async def device_peer(
+    state_dir: Path,
+    *,
+    executor: LocalExecutor | None = None,
+    capabilities: dict[str, bool] | None = None,
+) -> AsyncIterator[DevicePeer]:
     peer = DevicePeer()
     async with websockets.serve(peer.accept, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
@@ -210,13 +224,15 @@ async def device_peer(state_dir: Path) -> AsyncIterator[DevicePeer]:
             if saved_config.exists()
             else {
                 "url": f"http://127.0.0.1:{port}",
-                "capabilities": {"screen": True, "input": True, "shell": True, "files": True},
+                "capabilities": {"screen": False, "input": False, "shell": True, "files": True},
                 "paused": False,
                 "revoked": False,
             }
         )
         config["url"] = f"http://127.0.0.1:{port}"
-        client = DeviceClient(state_dir, config, "abr_device_acceptance")
+        if capabilities is not None:
+            config["capabilities"] = capabilities
+        client = DeviceClient(state_dir, config, "abr_device_acceptance", executor=executor)
         running = asyncio.create_task(client.run())
         try:
             async with asyncio.timeout(4):

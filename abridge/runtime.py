@@ -15,16 +15,9 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
+from abridge.protocol import TOOL_CAPABILITIES as TOOL_CAPABILITY
 from abridge.storage import CAPABILITIES, Store, identifier
 
-TOOL_CAPABILITY = {
-    "computer_observe": "screen",
-    "computer_act": "input",
-    "command_execute": "shell",
-    "files_list": "files",
-    "file_read": "files",
-    "file_write": "files",
-}
 FINAL_STATES = {"executed", "failed", "refused", "outcome_unknown", "cancelled"}
 logger = logging.getLogger(__name__)
 
@@ -146,6 +139,19 @@ class Runtime:
         """Stop a session and cancel only the operations it owns."""
         self.store.close_session(session["id"], status)
         await self.cancel_operations(session["device_id"], session_id=session["id"], reason=reason)
+        connection = self.connections.get(session["device_id"])
+        if connection:
+            try:
+                await connection.send(
+                    {
+                        "type": "session_close",
+                        "session_id": session["id"],
+                        "connection_epoch": connection.epoch,
+                        "reason": reason,
+                    }
+                )
+            except (RuntimeError, OSError, WebSocketDisconnect):
+                await self.disconnect(session["device_id"], connection)
 
     async def execute(
         self,
@@ -210,6 +216,7 @@ class Runtime:
             "protocol": "abridge/1",
             "operation_id": operation_id,
             "session_id": session_id,
+            "session_capabilities": session["capabilities"],
             "device_id": device["id"],
             "client_name": grant["name"],
             "connection_epoch": connection.epoch,
@@ -358,6 +365,9 @@ class Runtime:
             or device["credential_version"] != connection.credential_version
         ):
             raise BridgeError("revoked", "设备凭据已失效")
+        if message.get("type") == "local_stop":
+            await self.stop_device(device_id, "本机已停止当前执行")
+            return
         if message.get("type") in {"heartbeat", "capabilities"}:
             was_paused = connection.paused
             old_capabilities = connection.capabilities

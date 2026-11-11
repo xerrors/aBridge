@@ -1,12 +1,12 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
-import ScreenCaptureKit
 import Security
 
 let bridgeEventTag: Int64 = 0x61427269646765
 
-// One executable owns the menu bar, privacy permissions, desktop adapter and Keychain.
+// The App owns the menu bar, privacy permissions and Keychain.
+// The device client embeds Cua in its child process under this App responsibility chain.
 // Helper requests travel over stdin; credentials are never command-line arguments.
 
 func response(_ value: [String: Any]) {
@@ -23,179 +23,6 @@ func failure(_ code: String, _ message: String) -> [String: Any] {
 func permissions() -> [String: Any] {
     ["screen": CGPreflightScreenCaptureAccess(), "input": AXIsProcessTrusted()]
 }
-
-func activeWindow() -> [String: Any] {
-    guard let app = NSWorkspace.shared.frontmostApplication else { return [:] }
-    var result: [String: Any] = ["pid": Int(app.processIdentifier), "application": app.localizedName ?? "", "bundle_id": app.bundleIdentifier ?? ""]
-    if AXIsProcessTrusted() {
-        let application = AXUIElementCreateApplication(app.processIdentifier)
-        var windowValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &windowValue) == .success, let windowValue {
-            let window = unsafeBitCast(windowValue, to: AXUIElement.self)
-            var title: CFTypeRef?
-            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success {
-                result["title"] = title as? String ?? ""
-            }
-        }
-    }
-    return result
-}
-
-@available(macOS 14.0, *)
-func observe() async throws -> [String: Any] {
-    guard CGPreflightScreenCaptureAccess() else { return failure("screen_permission_missing", "Enable screen recording for aBridge in System Settings") }
-    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-    guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) else {
-        return failure("display_unavailable", "The main display is unavailable")
-    }
-    let bounds = CGDisplayBounds(display.displayID)
-    let config = SCStreamConfiguration()
-    let pixelWidth = Int(CGDisplayPixelsWide(display.displayID))
-    let pixelHeight = Int(CGDisplayPixelsHigh(display.displayID))
-    config.width = min(pixelWidth, 1920)
-    config.height = max(1, pixelHeight * config.width / pixelWidth)
-    config.showsCursor = true
-    let filter = SCContentFilter(display: display, excludingWindows: [])
-    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-    guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
-        return failure("capture_failed", "Screenshot encoding failed")
-    }
-    return ["image_base64": png.base64EncodedString(), "mime_type": "image/png", "width": image.width, "height": image.height,
-            "display_id": display.displayID, "bounds": ["x": bounds.origin.x, "y": bounds.origin.y, "width": bounds.width, "height": bounds.height],
-            "scale": Double(image.width) / bounds.width, "window": activeWindow(), "coordinate_space": "screenshot_pixels", "available_displays": content.displays.count]
-}
-
-func act(_ request: [String: Any]) -> [String: Any] {
-    guard AXIsProcessTrusted() else { return failure("input_permission_missing", "Enable Accessibility for aBridge in System Settings") }
-    guard let observation = request["observation"] as? [String: Any], let action = request["input"] as? [String: Any], let kind = action["type"] as? String else {
-        return failure("invalid_arguments", "An observation and action are required")
-    }
-    let window = observation["window"] as? [String: Any] ?? [:]
-    let currentWindow = activeWindow()
-    if let observedPID = window["pid"] as? Int, observedPID != currentWindow["pid"] as? Int {
-        return failure("focus_changed", "The foreground application changed; observe again")
-    }
-    if let oldTitle = window["title"] as? String, let newTitle = currentWindow["title"] as? String, oldTitle != newTitle {
-        return failure("focus_changed", "The foreground window changed; observe again")
-    }
-    guard let source = CGEventSource(stateID: .hidSystemState) else { return failure("input_unavailable", "Cannot create an input source") }
-    let modifiers: [String]
-    if let supplied = action["modifiers"] {
-        guard let names = supplied as? [String] else { return failure("invalid_arguments", "modifiers must be an array of supported key names") }
-        modifiers = names
-    } else { modifiers = [] }
-    guard let flags = modifierFlags(modifiers) else { return failure("invalid_arguments", "Unsupported modifier name") }
-    let buttonName: String
-    if let supplied = action["button"] {
-        guard let name = supplied as? String, ["left", "right"].contains(name) else { return failure("invalid_arguments", "button must be left or right") }
-        buttonName = name
-    } else { buttonName = "left" }
-    switch kind {
-    case "click", "double_click", "move", "drag":
-        guard let point = coordinate(action, observation: observation, xKey: "x", yKey: "y") else {
-            return failure("invalid_coordinates", "Coordinates must lie inside the observed screenshot")
-        }
-        let right = buttonName == "right"
-        let button: CGMouseButton = right ? .right : .left
-        if kind == "move" {
-            postMouse(source, .mouseMoved, point, button, flags, 0)
-        } else if kind == "drag" {
-            guard buttonName == "left" else { return failure("invalid_arguments", "Dragging supports only the left mouse button") }
-            guard let target = coordinate(action, observation: observation, xKey: "to_x", yKey: "to_y") else {
-                return failure("invalid_coordinates", "The drag target must lie inside the observed screenshot")
-            }
-            postMouse(source, .leftMouseDown, point, .left, flags, 1)
-            postMouse(source, .leftMouseDragged, target, .left, flags, 1)
-            postMouse(source, .leftMouseUp, target, .left, flags, 1)
-        } else {
-            let count = kind == "double_click" ? 2 : 1
-            for click in 1...count {
-                postMouse(source, right ? .rightMouseDown : .leftMouseDown, point, button, flags, Int64(click))
-                postMouse(source, right ? .rightMouseUp : .leftMouseUp, point, button, flags, Int64(click))
-            }
-        }
-    case "scroll":
-        for key in ["delta_y", "delta_x"] {
-            if let value = action[key] {
-                guard let number = value as? NSNumber,
-                      CFGetTypeID(number) != CFBooleanGetTypeID(),
-                      ["c", "s", "i", "l", "q", "C", "S", "I", "L", "Q"].contains(String(cString: number.objCType)),
-                      value is Int else {
-                    return failure("invalid_arguments", "Scroll deltas must be integers")
-                }
-            }
-        }
-        let dy = action["delta_y"] as? Int ?? 0
-        let dx = action["delta_x"] as? Int ?? 0
-        guard dy >= -10_000 && dy <= 10_000 && dx >= -10_000 && dx <= 10_000 else { return failure("invalid_arguments", "Scroll delta is too large") }
-        guard let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else {
-            return failure("input_failed", "Cannot create a scroll event")
-        }
-        event.flags = flags
-        event.setIntegerValueField(.eventSourceUserData, value: bridgeEventTag)
-        event.post(tap: .cghidEventTap)
-    case "key":
-        guard let key = action["key"] as? String, let code = keyCodes[key.lowercased()] else {
-            return failure("invalid_arguments", "Unsupported key name")
-        }
-        for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(code), keyDown: down)
-            event?.flags = flags
-            event?.setIntegerValueField(.eventSourceUserData, value: bridgeEventTag)
-            event?.post(tap: .cghidEventTap)
-        }
-    case "type":
-        guard let text = action["text"] as? String, text.utf16.count <= 10_000 else {
-            return failure("invalid_arguments", "Text must contain at most 10000 UTF-16 units")
-        }
-        // Unicode events do not replace the clipboard or depend on the active IME.
-        let allUnits = Array(text.utf16)
-        for chunk in stride(from: 0, to: allUnits.count, by: 100) {
-            let units = Array(allUnits[chunk..<min(chunk + 100, allUnits.count)])
-            for down in [true, false] {
-                let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
-                units.withUnsafeBufferPointer { pointer in event?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: pointer.baseAddress!) }
-                event?.setIntegerValueField(.eventSourceUserData, value: bridgeEventTag)
-                event?.post(tap: .cghidEventTap)
-            }
-        }
-    default:
-        return failure("invalid_arguments", "Unsupported input action")
-    }
-    return ["executed": true, "action": kind, "business_verified": false]
-}
-
-func coordinate(_ action: [String: Any], observation: [String: Any], xKey: String, yKey: String) -> CGPoint? {
-    guard let x = action[xKey] as? Double, let y = action[yKey] as? Double, let width = observation["width"] as? Double, let height = observation["height"] as? Double,
-          let bounds = observation["bounds"] as? [String: Double], let originX = bounds["x"], let originY = bounds["y"], let logicalWidth = bounds["width"], let logicalHeight = bounds["height"],
-          x.isFinite, y.isFinite, x >= 0, y >= 0, x < width, y < height else { return nil }
-    return CGPoint(x: originX + x * logicalWidth / width, y: originY + y * logicalHeight / height)
-}
-
-func postMouse(_ source: CGEventSource, _ type: CGEventType, _ point: CGPoint, _ button: CGMouseButton, _ flags: CGEventFlags, _ count: Int64) {
-    let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button)
-    event?.flags = flags
-    event?.setIntegerValueField(.eventSourceUserData, value: bridgeEventTag)
-    event?.setIntegerValueField(.mouseEventClickState, value: count)
-    event?.post(tap: .cghidEventTap)
-}
-
-func modifierFlags(_ names: [String]) -> CGEventFlags? {
-    var flags: CGEventFlags = []
-    for name in names {
-        switch name.lowercased() {
-        case "command", "cmd", "meta": flags.insert(.maskCommand)
-        case "control", "ctrl": flags.insert(.maskControl)
-        case "option", "alt": flags.insert(.maskAlternate)
-        case "shift": flags.insert(.maskShift)
-        default: return nil
-        }
-    }
-    return flags
-}
-
-let keyCodes: [String: Int] = ["a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,"w":13,"e":14,"r":15,"y":16,"t":17,"1":18,"2":19,"3":20,"4":21,"6":22,"5":23,"=":24,"9":25,"7":26,"-":27,"8":28,"0":29,
-    "]":30,"o":31,"u":32,"[":33,"i":34,"p":35,"return":36,"enter":36,"l":37,"j":38,"'":39,"k":40,";":41,"\\":42,",":43,"/":44,"n":45,"m":46,".":47,"tab":48,"space":49,"`":50,"backspace":51,"delete":51,"escape":53,"esc":53,"home":115,"pageup":116,"end":119,"pagedown":121,"left":123,"right":124,"down":125,"up":126]
 
 func keychain(_ request: [String: Any]) -> [String: Any] {
     guard let service = request["service"] as? String, ["dev.abridge.client.device", "dev.abridge.account", "dev.abridge.agent"].contains(service), let account = request["account"] as? String else {
@@ -236,24 +63,67 @@ func keychain(_ request: [String: Any]) -> [String: Any] {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var item: NSStatusItem!
     private var window: NSWindow!
-    private var urlField = NSTextField(string: "http://127.0.0.1:8765")
-    private var keyField = NSSecureTextField(string: "")
-    private var statusLabel = NSTextField(labelWithString: "尚未连接")
-    private var permissionLabel = NSTextField(labelWithString: "")
-    private var buttons: [String: NSButton] = [:]
+    private let urlField = NSTextField(string: "http://127.0.0.1:8765")
+    private let keyField = NSSecureTextField(string: "")
+    private let statusLabel = NSTextField(labelWithString: "尚未连接")
+    private var environmentLabels: [String: NSTextField] = [:]
+    private var capabilityButtons: [String: NSButton] = [:]
+    private var connectButton: NSButton!
+    private var repairButton: NSButton!
     private var pauseItem: NSMenuItem!
     private var daemon: Process?
     private var runtime: [String: String] = [:]
     private var current: [String: Any] = [:]
-    private var polling = false
     private var monitor: Any?
-    private let stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/aBridge")
+    private var checkingEnvironment = false
+    private var repairing = false
+    private let stateDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/aBridge")
+    private let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/aBridge/client.log")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        if let path = Bundle.main.url(forResource: "runtime", withExtension: "json"), let data = try? Data(contentsOf: path), let value = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
-            runtime = value
+        if let location = Bundle.main.url(forResource: "runtime", withExtension: "json"),
+           let data = try? Data(contentsOf: location),
+           let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
+            runtime = settings
         }
+        buildMenu()
+        buildWindow()
+        loadConfig()
+        startDaemon()
+        checkEnvironment()
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.poll() }
+        }
+        monitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .mouseMoved, .keyDown]
+        ) { [weak self] event in
+            guard event.cgEvent?.getIntegerValueField(.eventSourceUserData) != bridgeEventTag else { return }
+            Task { @MainActor in
+                guard let self,
+                      (self.current["desktop_active_until"] as? Double ?? 0) > Date().timeIntervalSince1970
+                else { return }
+                self.control(["command": "pause"])
+            }
+        }
+        if !FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path) {
+            showWindow()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        stopDaemon()
+        if let monitor { NSEvent.removeMonitor(monitor) }
+    }
+
+    @objc func showWindow() {
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func buildMenu() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "aB"
         item.button?.toolTip = "aBridge"
@@ -267,31 +137,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(withTitle: "退出 aBridge", action: #selector(quit), keyEquivalent: "q")
         for entry in menu.items { entry.target = self }
         item.menu = menu
-        buildWindow()
-        loadConfig()
-        startDaemon()
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.poll() } }
-        // Tag our input explicitly; an event-source PID is not a hardware contract.
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .mouseMoved, .keyDown]) { [weak self] event in
-            guard event.cgEvent?.getIntegerValueField(.eventSourceUserData) != bridgeEventTag else { return }
-            Task { @MainActor in
-                guard let self, (self.current["desktop_active_until"] as? Double ?? 0) > Date().timeIntervalSince1970 else { return }
-                self.control(["command": "pause"])
-            }
-        }
-        if !FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path) { showWindow() }
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        if let daemon, daemon.isRunning {
-            daemon.terminate()
-            daemon.waitUntilExit()
-        }
-        if let monitor { NSEvent.removeMonitor(monitor) }
     }
 
     private func buildWindow() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 452, height: 460), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 544, height: 680),
+            styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false
+        )
         window.title = "aBridge"
         window.center()
         window.isReleasedWhenClosed = false
@@ -299,78 +151,133 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 15
+        root.spacing = 13
         root.translatesAutoresizingMaskIntoConstraints = false
         window.contentView?.addSubview(root)
-        NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 28), root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -28), root.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 26)])
+        NSLayoutConstraint.activate([
+            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 28),
+            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -28),
+            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 24),
+        ])
         let title = NSTextField(labelWithString: "连接这台 Mac")
         title.font = .systemFont(ofSize: 24, weight: .semibold)
         root.addArrangedSubview(title)
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 2
+        statusLabel.lineBreakMode = .byWordWrapping
         root.addArrangedSubview(statusLabel)
         for (label, field) in [("服务地址", urlField), ("设备 Key", keyField)] {
             let group = NSStackView(views: [NSTextField(labelWithString: label), field])
             group.orientation = .vertical
             group.alignment = .leading
             group.spacing = 5
-            field.placeholderString = label == "设备 Key" ? "粘贴管理台生成的设备 Key" : "https://…"
-            field.widthAnchor.constraint(equalToConstant: 396).isActive = true
+            field.placeholderString = label == "设备 Key" ? "首次连接时粘贴设备 Key" : "https://…"
+            field.widthAnchor.constraint(equalToConstant: 488).isActive = true
             root.addArrangedSubview(group)
         }
-        let capRow = NSStackView()
-        capRow.orientation = .horizontal
-        capRow.spacing = 20
-        for (key, title) in [("screen", "截图"), ("input", "桌面输入"), ("shell", "Shell"), ("files", "文件")] {
-            let button = NSButton(checkboxWithTitle: title, target: self, action: #selector(capabilityChanged(_:)))
+        let capabilities = NSStackView()
+        capabilities.orientation = .horizontal
+        capabilities.spacing = 16
+        for (key, label) in [
+            ("screen", "截图"), ("input", "键鼠"), ("browser", "浏览器"),
+            ("shell", "Shell"), ("files", "文件"),
+        ] {
+            let button = NSButton(checkboxWithTitle: label, target: self, action: #selector(capabilityChanged(_:)))
             button.identifier = NSUserInterfaceItemIdentifier(key)
-            buttons[key] = button
-            capRow.addArrangedSubview(button)
+            capabilityButtons[key] = button
+            capabilities.addArrangedSubview(button)
         }
-        root.addArrangedSubview(capRow)
-        let access = NSTextField(wrappingLabelWithString: "启用后，已授权的 Agent 可持续使用这些能力，权限限于当前 macOS 用户。")
-        access.font = .systemFont(ofSize: 12)
-        access.textColor = .secondaryLabelColor
-        root.addArrangedSubview(access)
-        let connect = NSButton(title: "连接", target: self, action: #selector(connect))
-        connect.bezelStyle = .rounded
-        connect.keyEquivalent = "\r"
-        connect.contentTintColor = NSColor(calibratedRed: 0, green: 0.39, blue: 0.88, alpha: 1)
+        root.addArrangedSubview(capabilities)
+        let consent = NSTextField(wrappingLabelWithString: "已授权的 Agent 可持续使用所选能力。本机可随时暂停。")
+        consent.font = .systemFont(ofSize: 12)
+        consent.textColor = .secondaryLabelColor
+        root.addArrangedSubview(consent)
+        connectButton = NSButton(title: "连接", target: self, action: #selector(connect))
+        connectButton.bezelStyle = .rounded
+        connectButton.keyEquivalent = "\r"
+        connectButton.contentTintColor = .systemBlue
         let unbind = NSButton(title: "解除绑定", target: self, action: #selector(unbindDevice))
         unbind.bezelStyle = .rounded
-        root.addArrangedSubview(NSStackView(views: [connect, unbind]))
+        root.addArrangedSubview(NSStackView(views: [connectButton, unbind]))
         let separator = NSBox()
         separator.boxType = .separator
         root.addArrangedSubview(separator)
-        permissionLabel.font = .systemFont(ofSize: 12)
-        permissionLabel.textColor = .secondaryLabelColor
-        root.addArrangedSubview(permissionLabel)
-        let screen = NSButton(title: "屏幕录制权限", target: self, action: #selector(requestScreen))
-        let input = NSButton(title: "辅助功能权限", target: self, action: #selector(requestInput))
-        screen.bezelStyle = .rounded
-        input.bezelStyle = .rounded
-        root.addArrangedSubview(NSStackView(views: [screen, input]))
+        let heading = NSTextField(labelWithString: "运行环境")
+        heading.font = .systemFont(ofSize: 14, weight: .semibold)
+        let refresh = NSButton(title: "重新检查", target: self, action: #selector(checkEnvironment))
+        refresh.bezelStyle = .rounded
+        let headingRow = NSStackView(views: [heading, refresh])
+        headingRow.spacing = 16
+        root.addArrangedSubview(headingRow)
+        addEnvironmentRow("runtime", title: "Python", action: "修复运行时", selector: #selector(repairRuntime), to: root)
+        repairButton = addEnvironmentRow("driver", title: "Cua Driver", action: "安装 / 修复", selector: #selector(repairRuntime), to: root)
+        addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: root)
+        addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: root)
+        addEnvironmentRow("browser", title: "Chrome", action: "打开 / 安装", selector: #selector(openChrome), to: root)
+        let guide = NSButton(title: "安装说明", target: self, action: #selector(showSetupGuide))
+        let diagnostics = NSButton(title: "查看诊断", target: self, action: #selector(showDiagnostics))
+        guide.bezelStyle = .rounded
+        diagnostics.bezelStyle = .rounded
+        root.addArrangedSubview(NSStackView(views: [guide, diagnostics]))
     }
 
-    @objc func showWindow() { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    @discardableResult
+    private func addEnvironmentRow(
+        _ key: String, title: String, action: String, selector: Selector, to root: NSStackView
+    ) -> NSButton {
+        let name = NSTextField(labelWithString: title)
+        name.widthAnchor.constraint(equalToConstant: 82).isActive = true
+        let value = NSTextField(labelWithString: "检查中…")
+        value.textColor = .secondaryLabelColor
+        value.lineBreakMode = .byTruncatingTail
+        value.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        environmentLabels[key] = value
+        let button = NSButton(title: action, target: self, action: selector)
+        button.bezelStyle = .rounded
+        let row = NSStackView(views: [name, value, button])
+        row.spacing = 8
+        root.addArrangedSubview(row)
+        return button
+    }
 
     @objc private func connect() {
-        guard !keyField.stringValue.isEmpty else { statusLabel.stringValue = "请输入设备 Key"; return }
-        daemon?.terminate()
-        daemon?.waitUntilExit()
-        let capabilities = buttons.mapValues { $0.state == .on }
-        runClient(["configure", "--stdin"], input: ["url": urlField.stringValue, "device_key": keyField.stringValue, "capabilities": capabilities]) { [weak self] result in
+        if keyField.stringValue.isEmpty {
+            let configURL = stateDirectory.appendingPathComponent("config.json")
+            if let data = try? Data(contentsOf: configURL),
+               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                guard config["url"] as? String == urlField.stringValue else {
+                    statusLabel.stringValue = "更换服务地址时需填写新的设备 Key"
+                    return
+                }
+                stopDaemon()
+                startDaemon()
+                checkEnvironment()
+            } else {
+                statusLabel.stringValue = "请输入设备 Key"
+            }
+            return
+        }
+        stopDaemon()
+        runClient(["configure", "--stdin"], input: [
+            "url": urlField.stringValue, "device_key": keyField.stringValue,
+            "capabilities": capabilityButtons.mapValues { $0.state == .on },
+        ]) { [weak self] result in
             guard let self else { return }
             if result["ok"] as? Bool == true {
                 self.keyField.stringValue = ""
                 self.startDaemon()
-            } else { self.statusLabel.stringValue = result["error"] as? String ?? "连接配置失败" }
+            } else {
+                self.statusLabel.stringValue = result["error"] as? String ?? "连接配置失败"
+            }
         }
     }
 
-    @objc private func togglePause() { control(["command": (current["paused"] as? Bool == true) ? "resume" : "pause"]) }
+    @objc private func togglePause() {
+        control(["command": current["paused"] as? Bool == true ? "resume" : "pause"])
+    }
+
     @objc private func stop() { control(["command": "stop"]) }
+
     @objc private func capabilityChanged(_ sender: NSButton) {
         guard let capability = sender.identifier?.rawValue else { return }
         control(["command": "capability", "capability": capability, "enabled": sender.state == .on])
@@ -396,56 +303,130 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
-    @objc private func quit() {
-        NSApp.terminate(nil)
+    @objc private func openChrome() {
+        let identifier = "com.google.Chrome"
+        if let location = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+            NSWorkspace.shared.openApplication(at: location, configuration: .init())
+        } else {
+            NSWorkspace.shared.open(URL(string: "https://www.google.com/chrome/")!)
+        }
     }
 
+    @objc private func showSetupGuide() {
+        if let location = Bundle.main.url(forResource: "setup", withExtension: "html") {
+            NSWorkspace.shared.open(location)
+        }
+    }
+
+    @objc private func showDiagnostics() {
+        if FileManager.default.fileExists(atPath: logURL.path) {
+            NSWorkspace.shared.open(logURL)
+        } else {
+            checkEnvironment()
+            statusLabel.stringValue = "诊断已重新检查，当前没有运行错误日志"
+        }
+    }
+
+    @objc private func quit() { NSApp.terminate(nil) }
+
     private func loadConfig() {
-        guard let data = try? Data(contentsOf: stateDirectory.appendingPathComponent("config.json")), let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let location = stateDirectory.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: location),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
         urlField.stringValue = config["url"] as? String ?? urlField.stringValue
-        let caps = config["capabilities"] as? [String: Bool] ?? [:]
-        for (key, button) in buttons { button.state = caps[key] == true ? .on : .off }
+        let capabilities = config["capabilities"] as? [String: Bool] ?? [:]
+        for (key, button) in capabilityButtons { button.state = capabilities[key] == true ? .on : .off }
+        connectButton.title = "重试连接"
     }
 
     private func startDaemon() {
-        guard FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path), daemon?.isRunning != true else { return }
-        guard let process = clientProcess(["run"]) else { statusLabel.stringValue = "客户端运行环境未配置"; return }
+        guard !repairing,
+              FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path),
+              daemon?.isRunning != true else { return }
+        guard let process = runtimeProcess(module: "abridge.client", arguments: clientArguments(["run"])) else {
+            statusLabel.stringValue = "运行时缺失，请修复或查看安装说明"
+            environmentLabels["runtime"]?.stringValue = "未安装 / 路径失效"
+            return
+        }
         daemon = process
-        do { try process.run() } catch { statusLabel.stringValue = "无法启动设备连接" }
+        let log = errorLog()
+        process.standardOutput = log
+        process.standardError = log
+        do {
+            try process.run()
+            statusLabel.stringValue = "正在连接"
+        } catch {
+            statusLabel.stringValue = "无法启动运行时，请查看诊断"
+        }
     }
 
-    private func clientProcess(_ arguments: [String]) -> Process? {
-        guard let python = runtime["python_path"], let project = runtime["project_path"] else { return nil }
+    private func stopDaemon() {
+        if let daemon, daemon.isRunning {
+            daemon.terminate()
+            daemon.waitUntilExit()
+        }
+        daemon = nil
+    }
+
+    private func runtimeProcess(module: String, arguments: [String]) -> Process? {
+        guard let python = runtime["python_path"], let project = runtime["project_path"],
+              FileManager.default.isExecutableFile(atPath: python),
+              FileManager.default.fileExists(atPath: project + "/abridge/__init__.py")
+        else { return nil }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = ["-m", "abridge.client", "--helper", Bundle.main.executablePath!, "--state-dir", stateDirectory.path] + arguments
+        process.arguments = ["-m", module] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: project)
         var environment = ProcessInfo.processInfo.environment
         environment["PYTHONPATH"] = project
         environment["ABRIDGE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         process.environment = environment
-        process.standardError = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
         return process
     }
 
-    private func runClient(_ arguments: [String], input: [String: Any]? = nil, completion: @escaping ([String: Any]) -> Void) {
-        guard let process = clientProcess(arguments) else { completion(["error": "客户端运行环境未配置"]); return }
+    private func clientArguments(_ arguments: [String]) -> [String] {
+        ["--helper", Bundle.main.executablePath!, "--state-dir", stateDirectory.path] + arguments
+    }
+
+    private func runClient(
+        _ arguments: [String], input: [String: Any]? = nil,
+        completion: @escaping ([String: Any]) -> Void
+    ) {
+        runModule("abridge.client", arguments: clientArguments(arguments), input: input, completion: completion)
+    }
+
+    private func runModule(
+        _ module: String, arguments: [String], input: [String: Any]? = nil,
+        completion: @escaping ([String: Any]) -> Void
+    ) {
+        guard let process = runtimeProcess(module: module, arguments: arguments) else {
+            completion(["error": "运行时缺失，请修复或查看安装说明"])
+            return
+        }
         let output = Pipe()
         process.standardOutput = output
+        process.standardError = errorLog()
         if let input, let data = try? JSONSerialization.data(withJSONObject: input) {
             let pipe = Pipe()
             process.standardInput = pipe
-            do { try process.run() } catch { completion(["error": "无法启动设备连接"]); return }
+            do { try process.run() } catch {
+                completion(["error": "无法启动运行时，请查看诊断"])
+                return
+            }
             pipe.fileHandleForWriting.write(data)
             try? pipe.fileHandleForWriting.close()
         } else {
-            do { try process.run() } catch { completion(["error": "无法启动设备连接"]); return }
+            do { try process.run() } catch {
+                completion(["error": "无法启动运行时，请查看诊断"])
+                return
+            }
         }
         DispatchQueue.global().async {
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            let result = (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? ["error": "客户端没有返回有效状态"]
+            let result = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+                ?? ["error": "运行时返回异常，请查看诊断并修复"]
             DispatchQueue.main.async { completion(result) }
         }
     }
@@ -453,7 +434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func control(_ request: [String: Any]) {
         guard let command = request["command"] as? String else { return }
         var arguments = ["control", command]
-        if command == "capability", let capability = request["capability"] as? String, let enabled = request["enabled"] as? Bool {
+        if command == "capability", let capability = request["capability"] as? String,
+           let enabled = request["enabled"] as? Bool {
             arguments += ["--capability", capability, "--enabled", enabled ? "true" : "false"]
         }
         runClient(arguments) { [weak self] result in
@@ -463,40 +445,205 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func poll() {
-        guard !polling else { return }
-        polling = true
-        runClient(["control", "status"]) { [weak self] result in
-            guard let self else { return }
-            self.polling = false
-            if result["ok"] as? Bool == true { self.render(result) }
-            else if self.daemon?.isRunning != true { self.statusLabel.stringValue = "尚未连接" }
+        guard !repairing else { return }
+        guard daemon?.isRunning == true else {
+            if daemon != nil { statusLabel.stringValue = "客户端已退出，可重试连接或查看诊断" }
+            return
+        }
+        let location = stateDirectory.appendingPathComponent("status.json")
+        if let data = try? Data(contentsOf: location),
+           let status = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            render(status)
+        }
+    }
+
+    @objc private func checkEnvironment() {
+        guard !checkingEnvironment, !repairing else { return }
+        checkingEnvironment = true
+        if daemon?.isRunning == true {
+            runClient(["control", "status"]) { [weak self] result in
+                guard let self else { return }
+                self.checkingEnvironment = false
+                if result["ok"] as? Bool == true { self.render(result) }
+                else { self.statusLabel.stringValue = result["error"] as? String ?? "环境检查失败" }
+            }
+        } else {
+            runModule("abridge.diagnostics", arguments: ["--json"]) { [weak self] result in
+                guard let self else { return }
+                self.checkingEnvironment = false
+                if let error = result["error"] as? String {
+                    self.environmentLabels["runtime"]?.stringValue = error
+                    self.statusLabel.stringValue = error
+                } else { self.renderEnvironment(result) }
+            }
         }
     }
 
     private func render(_ status: [String: Any]) {
         current = status
         let paused = status["paused"] as? Bool == true
-        let state = status["connection"] as? String ?? "offline"
+        let connection = status["connection"] as? String ?? "offline"
         let active = status["active_operations"] as? [String] ?? []
         let controllers = status["active_controllers"] as? [String] ?? []
-        let labels = ["online": "已连接", "connecting": "正在连接", "offline": "连接已断开", "revoked": "设备 Key 已失效"]
         if paused {
             statusLabel.stringValue = "已暂停，需在本机恢复"
         } else if !active.isEmpty {
-            let controller = controllers.isEmpty ? "Agent" : controllers.joined(separator: "、")
-            statusLabel.stringValue = "\(controller) 正在执行 \(active.count) 项操作"
-        } else if state == "online", let owner = status["owner_name"] as? String, !owner.isEmpty {
-            statusLabel.stringValue = "已连接 \(owner)"
+            statusLabel.stringValue = "\(controllers.isEmpty ? "Agent" : controllers.joined(separator: "、")) 正在执行 \(active.count) 项操作"
+        } else if connection == "online" {
+            statusLabel.stringValue = "已连接 \(status["owner_name"] as? String ?? "")"
         } else {
-            statusLabel.stringValue = labels[state] ?? state
+            statusLabel.stringValue = connection == "connecting" ? "正在连接" : "连接已断开"
         }
         if let error = status["error"] as? String, !error.isEmpty { statusLabel.stringValue = error }
         pauseItem.title = paused ? "恢复访问" : "暂停访问"
         item.button?.title = paused ? "aB ‖" : (active.isEmpty ? "aB" : "aB ●")
-        let allowed = status["permissions"] as? [String: Bool] ?? [:]
-        permissionLabel.stringValue = "屏幕录制：\(allowed["screen"] == true ? "已允许" : "未允许")    辅助功能：\(allowed["input"] == true ? "已允许" : "未允许")"
         let requested = status["requested_capabilities"] as? [String: Bool] ?? [:]
-        for (key, button) in buttons { button.state = requested[key] == true ? .on : .off }
+        for (key, button) in capabilityButtons { button.state = requested[key] == true ? .on : .off }
+        renderEnvironment(status["dependencies"] as? [String: Any] ?? [:])
+    }
+
+    private func renderEnvironment(_ report: [String: Any]) {
+        guard !report.isEmpty else { return }
+        let python = report["runtime"] as? [String: Any] ?? [:]
+        let pythonVersion = python["python"] as? String ?? ""
+        let missing = python["missing_packages"] as? [String] ?? []
+        if python["ready"] as? Bool == true {
+            environmentLabels["runtime"]?.stringValue = "\(pythonVersion) · 已就绪"
+        } else if !missing.isEmpty {
+            environmentLabels["runtime"]?.stringValue = "缺少 \(missing.joined(separator: "、"))"
+        } else {
+            environmentLabels["runtime"]?.stringValue = "Python \(pythonVersion) · 需要 3.12–3.14"
+        }
+        let driver = report["driver"] as? [String: Any] ?? [:]
+        if driver["installed"] as? Bool != true {
+            environmentLabels["driver"]?.stringValue = "未安装"
+        } else if driver["ready"] as? Bool == true {
+            environmentLabels["driver"]?.stringValue = "\(driver["version"] as? String ?? "") · 内嵌已就绪"
+        } else {
+            let error = driver["error"] as? [String: Any]
+            let messages = [
+                "cua_version_mismatch": "版本不兼容，请安装锁定版本",
+                "cua_load_failed": "组件加载失败，请修复",
+                "cua_permission_probe_failed": "权限检查失败，请查看诊断",
+                "cua_platform_unsupported": "当前系统不受支持",
+                "cua_mode_mismatch": "运行模式异常，请修复",
+            ]
+            environmentLabels["driver"]?.stringValue = messages[error?["code"] as? String ?? ""] ?? "已安装，尚未就绪"
+            environmentLabels["driver"]?.toolTip = error?["message"] as? String
+        }
+        let permissions = report["permissions"] as? [String: Any] ?? current["permissions"] as? [String: Any] ?? [:]
+        for key in ["screen", "input"] {
+            environmentLabels[key]?.stringValue = driver["loaded"] as? Bool == true
+                ? (permissions[key] as? Bool == true ? "已允许" : "未允许")
+                : "驱动未就绪，尚未检查"
+        }
+        let browser = report["browser"] as? [String: Any] ?? [:]
+        if browser["installed"] as? Bool != true {
+            environmentLabels["browser"]?.stringValue = "未安装"
+        } else {
+            let version = browser["version"] as? String ?? ""
+            let count = browser["active_sessions"] as? Int ?? 0
+            if driver["ready"] as? Bool != true {
+                environmentLabels["browser"]?.stringValue = "\(version) · 已安装，等待驱动"
+            } else {
+                environmentLabels["browser"]?.stringValue = count > 0
+                    ? "\(version) · 已连接专用窗口"
+                    : "\(version) · 专用窗口按需打开"
+            }
+        }
+    }
+
+    @objc private func repairRuntime() {
+        guard !repairing else { return }
+        guard let uv = findUV() else {
+            let alert = NSAlert()
+            alert.messageText = "需要先安装 uv"
+            alert.informativeText = "uv 用于安装和修复锁定的 Python 运行环境。安装后重新打开 aBridge。"
+            alert.addButton(withTitle: "打开安装说明")
+            alert.addButton(withTitle: "取消")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: "https://docs.astral.sh/uv/getting-started/installation/")!)
+            }
+            return
+        }
+        let root = stateDirectory.appendingPathComponent("runtime")
+        let python = root.appendingPathComponent(".venv/bin/python")
+        let source = root.appendingPathComponent("src").resolvingSymlinksInPath()
+        guard runtime["python_path"] == python.path, runtime["project_path"] == source.path else {
+            statusLabel.stringValue = "当前使用自定义运行时，请在原项目环境中修复"
+            showSetupGuide()
+            return
+        }
+        let requirements = root.appendingPathComponent("requirements.txt")
+        guard FileManager.default.fileExists(atPath: requirements.path),
+              FileManager.default.fileExists(atPath: root.appendingPathComponent("src/abridge/__init__.py").path)
+        else {
+            statusLabel.stringValue = "安装文件不完整，请从项目目录重新运行安装器"
+            showSetupGuide()
+            return
+        }
+        stopDaemon()
+        repairing = true
+        repairButton.isEnabled = false
+        connectButton.isEnabled = false
+        statusLabel.stringValue = "正在安装运行环境…"
+        var commands: [[String]] = []
+        if !FileManager.default.isExecutableFile(atPath: python.path)
+            || !FileManager.default.fileExists(atPath: root.appendingPathComponent(".venv/pyvenv.cfg").path) {
+            commands.append(["venv", "--clear", "--python", "3.12", root.appendingPathComponent(".venv").path])
+        }
+        commands.append(["pip", "sync", "--python", python.path, "--require-hashes", "--link-mode", "copy", requirements.path])
+        let log = errorLog()
+        DispatchQueue.global().async {
+            var success = true
+            for arguments in commands {
+                let process = Process()
+                process.executableURL = uv
+                process.arguments = arguments
+                process.standardOutput = log
+                process.standardError = log
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    if process.terminationStatus != 0 { success = false; break }
+                } catch { success = false; break }
+            }
+            DispatchQueue.main.async {
+                self.repairing = false
+                self.repairButton.isEnabled = true
+                self.connectButton.isEnabled = true
+                self.statusLabel.stringValue = success ? "运行环境已安装" : "安装失败，请查看诊断后重试"
+                self.startDaemon()
+                self.checkEnvironment()
+            }
+        }
+    }
+
+    private func findUV() -> URL? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            home.appendingPathComponent(".local/bin/uv").path,
+            "/opt/homebrew/bin/uv", "/usr/local/bin/uv",
+        ]
+        return candidates.first(where: FileManager.default.isExecutableFile(atPath:))
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    private func errorLog() -> FileHandle {
+        let manager = FileManager.default
+        try? manager.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let attributes = try? manager.attributesOfItem(atPath: logURL.path),
+           (attributes[.size] as? NSNumber)?.intValue ?? 0 > 1_048_576 {
+            let previous = logURL.appendingPathExtension("previous")
+            try? manager.removeItem(at: previous)
+            try? manager.moveItem(at: logURL, to: previous)
+        }
+        if !manager.fileExists(atPath: logURL.path) {
+            manager.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
+        guard let handle = try? FileHandle(forWritingTo: logURL) else { return .nullDevice }
+        _ = try? handle.seekToEnd()
+        return handle
     }
 }
 
@@ -506,30 +653,7 @@ if CommandLine.arguments.contains("--helper") {
         response(failure("invalid_arguments", "Expected a JSON request"))
         exit(0)
     }
-    if action == "observe" {
-        if #available(macOS 14.0, *) {
-            Task { @MainActor in
-                do { response(try await observe()) }
-                catch { response(failure("capture_failed", error.localizedDescription)) }
-                exit(0)
-            }
-            dispatchMain()
-        } else { response(failure("unsupported_macos", "Desktop capture requires macOS 14 or newer")) }
-    } else if action == "act" { response(act(request)) }
-    else if action == "permissions" { response(permissions()) }
-    else if action == "release_inputs" {
-        if AXIsProcessTrusted(), let source = CGEventSource(stateID: .hidSystemState) {
-            for code in Set(keyCodes.values).union([54, 55, 56, 57, 58, 59, 60, 61, 62]) {
-                let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(code), keyDown: false)
-                event?.setIntegerValueField(.eventSourceUserData, value: bridgeEventTag)
-                event?.post(tap: .cghidEventTap)
-            }
-            let point = CGEvent(source: nil)?.location ?? .zero
-            postMouse(source, .leftMouseUp, point, .left, [], 0)
-            postMouse(source, .rightMouseUp, point, .right, [], 0)
-        }
-        response(["ok": true])
-    }
+    if action == "permissions" { response(permissions()) }
     else if action.hasPrefix("keychain_") { response(keychain(request)) }
     else { response(failure("invalid_arguments", "Unknown helper action")) }
 } else {

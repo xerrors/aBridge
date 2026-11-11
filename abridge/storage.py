@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-CAPABILITIES = frozenset({"screen", "input", "shell", "files"})
+from abridge.protocol import CAPABILITIES as CAPABILITIES
 
 
 class Store:

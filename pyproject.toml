@@ -25,6 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+macos = ["cua-driver==0.46.1; sys_platform == 'darwin'"]
 
 [project.scripts]
 abridge = "abridge.__main__:main"
@@ -74,6 +75,7 @@ only-include = [
   "CHANGELOG.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
+  "THIRD_PARTY_NOTICES.md",
   "AGENTS.md",
   ".editorconfig",
   ".gitattributes",

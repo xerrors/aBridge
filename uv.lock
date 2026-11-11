@@ -25,9 +25,13 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+macos = [
+    { name = "cua-driver", marker = "sys_platform == 'darwin'" },
+]
 
 [package.metadata]
 requires-dist = [
+    { name = "cua-driver", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = "==0.46.1" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.26,<2" },
@@ -37,7 +41,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
     { name = "websockets", specifier = ">=14,<16" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "macos"]
 
 [[package]]
 name = "annotated-doc"
@@ -228,6 +232,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/10/bf/8d6ebc7dded797bd0f0160d52188021211f011a2b164ef0ae1dac4587465/cryptography-50.0.2-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:7a8701d6b584d76e909e3d305b7d126b41439876a5aaf76cddc67fc230eafa2e", size = 4897738, upload-time = "2026-09-30T15:29:43.106Z" },
     { url = "https://files.pythonhosted.org/packages/d4/aa/f3f6e0de7e6253b8baa8b2d8fb9d50924fa75cee3d4624bd4bc1208ee923/cryptography-50.0.2-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ce47f66801c20ec6c6632453bb5960fe38939e9306970b48b3a5a26de7745d94", size = 5058280, upload-time = "2026-09-30T15:29:44.827Z" },
     { url = "https://files.pythonhosted.org/packages/f6/b6/a1faf3a27ae9405fb34b1713cc73b2d8a26b04d5c561578fa2e6ef3e5bb9/cryptography-50.0.2-cp39-abi3-win_amd64.whl", hash = "sha256:4e81d95e5bafc2d6e34e4bed780e53e4d5b9a2f928573428aa4d35fbec1eb0de", size = 3854095, upload-time = "2026-09-30T15:29:46.782Z" },
+]
+
+[[package]]
+name = "cua-driver"
+version = "0.46.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/e3/f0b0a880a12cad7859fea6e878b098de65826c066baef8cc606a8c633b12/cua_driver-0.46.1-py3-none-macosx_13_0_universal2.whl", hash = "sha256:f2b8678e01b77a698cf0a21ee9f7652af70556484d4c127787cc35731d3f6feb", size = 51794020, upload-time = "2026-11-10T02:33:09.177Z" },
 ]
 
 [[package]]

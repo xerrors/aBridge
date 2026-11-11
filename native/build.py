@@ -30,6 +30,8 @@ def main() -> None:
     resources = bundle / "Contents" / "Resources"
     executable = macos / "aBridge"
     source = Path(__file__).with_name("aBridge.swift")
+    setup_guide = Path(__file__).with_name("setup.html")
+    notices = Path(__file__).resolve().parents[1] / "THIRD_PARTY_NOTICES.md"
     version = runpy.run_path(Path(__file__).resolve().parents[1] / "abridge/__init__.py")["__version__"]
     info = {
         "CFBundleName": "aBridge",
@@ -54,6 +56,8 @@ def main() -> None:
     target = f"{platform.machine()}-apple-macosx{info['LSMinimumSystemVersion']}"
     native_inputs = {
         "source": source.read_text(),
+        "setup_guide": setup_guide.read_text(),
+        "notices": notices.read_text(),
         "info": info,
         "runtime": runtime,
         "signing_identity": arguments.signing_identity,
@@ -84,8 +88,6 @@ def main() -> None:
             "-framework",
             "AppKit",
             "-framework",
-            "ScreenCaptureKit",
-            "-framework",
             "ApplicationServices",
             "-framework",
             "Security",
@@ -96,6 +98,8 @@ def main() -> None:
     with (bundle / "Contents" / "Info.plist").open("wb") as stream:
         plistlib.dump(info, stream)
     (resources / "runtime.json").write_text(json.dumps(runtime, indent=2) + "\n")
+    (resources / "setup.html").write_text(setup_guide.read_text())
+    (resources / "third-party-notices.txt").write_text(notices.read_text())
     manifest.write_text(json.dumps({"fingerprint": fingerprint}, indent=2) + "\n")
     subprocess.run(
         [

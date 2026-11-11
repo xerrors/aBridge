@@ -53,7 +53,17 @@ def main() -> None:
 
     # Export only locked runtime dependencies; the application itself is copied below.
     subprocess.run(
-        [uv, "export", "--frozen", "--no-dev", "--no-emit-project", "--output-file", str(requirements)],
+        [
+            uv,
+            "export",
+            "--frozen",
+            "--extra",
+            "macos",
+            "--no-dev",
+            "--no-emit-project",
+            "--output-file",
+            str(requirements),
+        ],
         cwd=PROJECT_ROOT,
         env=environment,
         capture_output=True,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import base64
+import json
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -10,6 +12,7 @@ from mcp.server.fastmcp.utilities.types import Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import TextContent
 
+from abridge.protocol import Capability
 from abridge.runtime import BridgeError, Runtime
 
 
@@ -37,9 +40,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         return runtime.device_view(runtime.authorized_device(grant, device_id), grant)
 
     @mcp.tool()
-    async def session_open(
-        device_id: str, capabilities: list[Literal["screen", "input", "shell", "files"]], ctx: Context
-    ) -> dict[str, Any]:
+    async def session_open(device_id: str, capabilities: list[Capability], ctx: Context) -> dict[str, Any]:
         """Open a 30-second scoped session. Input control is exclusive per desktop."""
         return guarded(lambda: runtime.open_session(agent(ctx), device_id, capabilities))
 
@@ -49,25 +50,38 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         return await guarded_async(runtime.close_session(agent(ctx), session_id))
 
     @mcp.tool(structured_output=False)
-    async def computer_observe(session_id: str, ctx: Context, operation_id: str | None = None) -> list[Any]:
-        """Capture the Mac screen, window and display coordinate metadata. Input requires its observation_id within expires_in (10s)."""
+    async def computer_observe(
+        session_id: str,
+        ctx: Context,
+        operation_id: str | None = None,
+        pid: int | None = None,
+        window_id: int | None = None,
+        screenshot: bool = True,
+    ) -> list[Any]:
+        """Observe a Mac window's AX elements and optional PNG. Choose pid/window_id from computer_apps/windows, or omit both for the current desktop. Use its element_ref or reported coordinate_space within 10s; observations belong only to this session."""
+        arguments = {"screenshot": screenshot}
+        if pid is not None:
+            arguments["pid"] = pid
+        if window_id is not None:
+            arguments["window_id"] = window_id
         response = await guarded_async(
-            runtime.execute(agent(ctx), session_id, "computer_observe", {}, operation_id)
+            runtime.execute(agent(ctx), session_id, "computer_observe", arguments, operation_id)
         )
-        result = response.get("result", {})
-        encoded = result.get("image_base64") if isinstance(result, dict) else None
-        if encoded:
-            import base64
-            import json
+        return image_response(response)
 
-            metadata = {key: value for key, value in result.items() if key != "image_base64"}
-            return [
-                TextContent(
-                    type="text", text=json.dumps({**response, "result": metadata}, ensure_ascii=False)
-                ),
-                Image(data=base64.b64decode(encoded), format="png").to_image_content(),
-            ]
-        return [response]
+    @mcp.tool()
+    async def computer_apps(session_id: str, ctx: Context, operation_id: str | None = None) -> dict[str, Any]:
+        """List local application names and PIDs without reading their windows. Requires screen capability."""
+        return await guarded_async(runtime.execute(agent(ctx), session_id, "computer_apps", {}, operation_id))
+
+    @mcp.tool()
+    async def computer_windows(
+        session_id: str, pid: int, ctx: Context, operation_id: str | None = None
+    ) -> dict[str, Any]:
+        """List windows for the explicitly selected application PID. Observe an exact window before acting."""
+        return await guarded_async(
+            runtime.execute(agent(ctx), session_id, "computer_windows", {"pid": pid}, operation_id)
+        )
 
     @mcp.tool()
     async def computer_act(
@@ -77,12 +91,52 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         ctx: Context,
         operation_id: str | None = None,
     ) -> dict[str, Any]:
-        """Act on an observation less than 10s old. action examples: {type:'click',x:100,y:200}, {type:'type',text:'你好'}, {type:'key',key:'return',modifiers:['cmd']}, {type:'scroll',delta_y:-3}, {type:'drag',x:100,y:100,to_x:300,to_y:200}. Coordinates are pixels in the observed screenshot; the Mac converts these to global logical points. Types: click,double_click,move,drag,scroll,key,type."""
+        """Act on this session's observation within 10s. Use {type:'click',element_ref:'...'} or {type:'type',element_ref:'...',text:'你好'} for AX controls. Coordinates must match the observation's coordinate_space. Legacy examples: {type:'click',x:100,y:200}, {type:'type',text:'你好'}, {type:'key',key:'return',modifiers:['cmd']}. Observe again after each action; stale or cross-session refs are refused."""
         return await guarded_async(
             runtime.execute(
                 agent(ctx),
                 session_id,
                 "computer_act",
+                {"observation_id": observation_id, "action": action},
+                operation_id,
+            )
+        )
+
+    @mcp.tool()
+    async def browser_open(
+        session_id: str, url: str, ctx: Context, operation_id: str | None = None
+    ) -> dict[str, Any]:
+        """Open an HTTP(S) URL in this session's isolated Chrome profile. Requires browser capability and locally enabled browser access; never attaches to personal tabs."""
+        return await guarded_async(
+            runtime.execute(agent(ctx), session_id, "browser_open", {"url": url}, operation_id)
+        )
+
+    @mcp.tool(structured_output=False)
+    async def browser_observe(
+        session_id: str, ctx: Context, screenshot: bool = False, operation_id: str | None = None
+    ) -> list[Any]:
+        """Read this session's Chrome DOM elements and optional PNG. Returned observation_id/element_ref expire after 10s and after any action. Call browser_open first."""
+        response = await guarded_async(
+            runtime.execute(
+                agent(ctx), session_id, "browser_observe", {"screenshot": screenshot}, operation_id
+            )
+        )
+        return image_response(response)
+
+    @mcp.tool()
+    async def browser_act(
+        session_id: str,
+        observation_id: str,
+        action: dict[str, Any],
+        ctx: Context,
+        operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Act on this session's fresh DOM observation: {type:'click',element_ref:'...'} or {type:'fill',element_ref:'...',text:'你好'}. Click explicitly uses synthetic DOM events, not trusted physical input; sites may reject them. Fill replaces the field through the driver's insert_text route. Observe again to verify business state after every action. No JavaScript, raw CDP, cookies or personal profile access is exposed."""
+        return await guarded_async(
+            runtime.execute(
+                agent(ctx),
+                session_id,
+                "browser_act",
                 {"observation_id": observation_id, "action": action},
                 operation_id,
             )
@@ -178,6 +232,20 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         return grant
 
     return mcp
+
+
+def image_response(response: dict[str, Any]) -> list[Any]:
+    """Keep images as native MCP blocks, without embedding a second base64 copy in JSON."""
+    result = response.get("result", {})
+    encoded = result.get("image_base64") if isinstance(result, dict) else None
+    if not encoded:
+        return [response]
+    metadata = {key: value for key, value in result.items() if key != "image_base64"}
+    image_format = result.get("mime_type", "image/png").removeprefix("image/")
+    return [
+        TextContent(type="text", text=json.dumps({**response, "result": metadata}, ensure_ascii=False)),
+        Image(data=base64.b64decode(encoded), format=image_format).to_image_content(),
+    ]
 
 
 def guarded(action: Any) -> Any:
