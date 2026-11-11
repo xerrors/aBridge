@@ -1,9 +1,18 @@
 # Third-party notices
 
-The macOS runtime installs `cua-driver==0.46.1` as a separate locked dependency.
-The core Cua Driver is MIT licensed. Optional perception/model extensions are not
-included. Other installed Python dependencies retain their own package metadata
-and license notices in the runtime environment.
+The Apple Silicon macOS 14+ runtime installs the internal embedded-only
+`cua-driver==0.46.1+abridge.1` wheel as a separate locked dependency. It is built
+from upstream commit `93c9b500a0d4f9daa56063d3d3e3fb3c9e6070ee`, with the reviewed
+Chinese consent-window candidate fix in `vendor/cua-driver/`. Its manifest records
+the source, patch, compiler settings, library hash, and wheel hash. This is a
+modified internal build, not an unmodified upstream release.
+
+The upstream Python bindings are retained. The upstream CLI executable and its
+console entry point are omitted; aBridge uses only the explicit embedded SDK.
+Rust and build caches are not client runtime dependencies. The core Cua Driver
+is MIT licensed. Optional perception/model extensions are not included. The wheel
+retains these notices and the upstream Rust dependency notices. Other installed
+Python dependencies retain their own metadata and license notices in the runtime.
 
 Source: https://github.com/trycua/cua
 

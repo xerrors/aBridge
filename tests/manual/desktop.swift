@@ -13,7 +13,7 @@ struct DesktopFixture {
         let delegate = FixtureDelegate()
         app.setActivationPolicy(.regular)
         app.delegate = delegate
-        app.run()
+        withExtendedLifetime(delegate) { app.run() }
     }
 }
 
@@ -27,41 +27,39 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = NSScreen.main else { NSApp.terminate(nil); return }
-        let frame = screen.frame
-        window = FixtureWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        let frame = NSRect(x: screen.visibleFrame.minX + 24, y: screen.visibleFrame.minY + 24, width: 640, height: 560)
+        window = FixtureWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "aBridge Yuxi Desktop Verification"
         window.appearance = NSAppearance(named: .aqua)
         window.backgroundColor = NSColor(calibratedWhite: 0.96, alpha: 1)
         window.level = .normal
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
         window.contentView = content
-        addLabel("aBridge × Yuxi", size: 32, y: frame.height * 0.78, to: content)
-        addLabel("屏幕验证码", size: 24, y: frame.height * 0.65, to: content)
-        addLabel(code, size: 78, y: frame.height * 0.55, to: content)
+        addLabel("aBridge × Yuxi", size: 32, y: 470, to: content)
+        addLabel("窗口验证码", size: 24, y: 410, to: content)
+        addLabel(code, size: 60, y: 315, to: content)
 
         inputField = NSTextField(string: "")
         inputField.placeholderString = "输入中文"
         inputField.setAccessibilityLabel("验收输入")
         inputField.identifier = NSUserInterfaceItemIdentifier("verification-input")
         inputField.font = .systemFont(ofSize: 26)
-        inputField.frame = NSRect(x: frame.width * 0.30, y: frame.height * 0.43, width: frame.width * 0.40, height: 44)
+        inputField.frame = NSRect(x: 100, y: 230, width: 440, height: 44)
         inputField.delegate = self
         content.addSubview(inputField)
 
         let button = NSButton(title: "点击验证", target: self, action: #selector(recordClick))
-        button.frame = NSRect(x: frame.width * 0.57, y: frame.height * 0.30, width: 340, height: 100)
+        button.frame = NSRect(x: 210, y: 135, width: 220, height: 66)
         button.bezelStyle = .rounded
-        button.font = .systemFont(ofSize: 32, weight: .semibold)
+        button.font = .systemFont(ofSize: 24, weight: .semibold)
         button.contentTintColor = NSColor(calibratedWhite: 0.12, alpha: 1)
         content.addSubview(button)
 
-        countLabel = addLabel("点击次数：0", size: 30, y: frame.height * 0.20, to: content)
-        addLabel("Esc 结束测试", size: 18, y: frame.height * 0.08, to: content)
+        countLabel = addLabel("点击次数：0", size: 24, y: 80, to: content)
+        addLabel("Esc 结束测试", size: 16, y: 25, to: content)
         writeState()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        window.orderFront(nil)
     }
 
     @objc private func recordClick() {

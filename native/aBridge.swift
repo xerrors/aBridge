@@ -1,13 +1,10 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
-import Security
 
-let bridgeEventTag: Int64 = 0x61427269646765
-
-// The App owns the menu bar, privacy permissions and Keychain.
+// The App owns the menu bar and privacy permissions.
 // The device client embeds Cua in its child process under this App responsibility chain.
-// Helper requests travel over stdin; credentials are never command-line arguments.
+// Runtime credentials live in the current user's private application directory.
 
 func response(_ value: [String: Any]) {
     if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) {
@@ -24,41 +21,6 @@ func permissions() -> [String: Any] {
     ["screen": CGPreflightScreenCaptureAccess(), "input": AXIsProcessTrusted()]
 }
 
-func keychain(_ request: [String: Any]) -> [String: Any] {
-    guard let service = request["service"] as? String, ["dev.abridge.client.device", "dev.abridge.account", "dev.abridge.agent"].contains(service), let account = request["account"] as? String else {
-        return failure("invalid_arguments", "Invalid Keychain identity")
-    }
-    let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
-    switch request["action"] as? String {
-    case "keychain_set":
-        guard let secret = request["secret"] as? String else { return failure("invalid_arguments", "Device Key is required") }
-        let data = Data(secret.utf8)
-        let update = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if update == errSecItemNotFound {
-            var item = query
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            let result = SecItemAdd(item as CFDictionary, nil)
-            return result == errSecSuccess ? ["ok": true] : failure("keychain_failed", "Cannot save Device Key (\(result))")
-        }
-        return update == errSecSuccess ? ["ok": true] : failure("keychain_failed", "Cannot update Device Key (\(update))")
-    case "keychain_get":
-        var read = query
-        read[kSecReturnData as String] = true
-        read[kSecMatchLimit as String] = kSecMatchLimitOne
-        var value: CFTypeRef?
-        let result = SecItemCopyMatching(read as CFDictionary, &value)
-        guard result == errSecSuccess, let data = value as? Data, let secret = String(data: data, encoding: .utf8) else {
-            return failure("keychain_missing", "Device Key is unavailable; connect this Mac again")
-        }
-        return ["secret": secret]
-    case "keychain_delete":
-        let result = SecItemDelete(query as CFDictionary)
-        return result == errSecSuccess || result == errSecItemNotFound ? ["ok": true] : failure("keychain_failed", "Cannot delete Device Key")
-    default: return failure("invalid_arguments", "Unknown Keychain action")
-    }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var item: NSStatusItem!
@@ -70,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var capabilityButtons: [String: NSButton] = [:]
     private var connectButton: NSButton!
     private var repairButton: NSButton!
+    private let browserPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private var pauseItem: NSMenuItem!
     private var daemon: Process?
     private var runtime: [String: String] = [:]
@@ -77,6 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var monitor: Any?
     private var checkingEnvironment = false
     private var repairing = false
+    private var preparingBrowser = false
+    private var browserConnectionFailed = false
+    private var browserAccessURL: URL?
+    private var browserScopeActive = false
+    private var browserAccessMessage = "可按需授权"
     private let stateDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/aBridge")
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
@@ -89,20 +57,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             runtime = settings
         }
+        restoreBrowserAccess()
         buildMenu()
         buildWindow()
         loadConfig()
         startDaemon()
-        checkEnvironment()
+        if daemon?.isRunning != true { checkEnvironment() }
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
         monitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .mouseMoved, .keyDown]
         ) { [weak self] event in
-            guard event.cgEvent?.getIntegerValueField(.eventSourceUserData) != bridgeEventTag else { return }
+            // Cua posts input from the device process without the retired helper's event tag.
+            let sourcePID = event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID)
             Task { @MainActor in
                 guard let self,
+                      sourcePID != Int64(self.daemon?.processIdentifier ?? -1),
                       (self.current["desktop_active_until"] as? Double ?? 0) > Date().timeIntervalSince1970
                 else { return }
                 self.control(["command": "pause"])
@@ -115,12 +86,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         stopDaemon()
+        releaseBrowserAccess()
         if let monitor { NSEvent.removeMonitor(monitor) }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showWindow()
+        return true
     }
 
     @objc func showWindow() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        refreshBrowserTargets()
     }
 
     private func buildMenu() {
@@ -151,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let root = NSStackView()
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 13
+        root.spacing = 10
         root.translatesAutoresizingMaskIntoConstraints = false
         window.contentView?.addSubview(root)
         NSLayoutConstraint.activate([
@@ -214,11 +192,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: root)
         addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: root)
         addEnvironmentRow("browser", title: "Chrome", action: "打开 / 安装", selector: #selector(openChrome), to: root)
+        addEnvironmentRow("browser_access", title: "连接信息", action: "允许访问…", selector: #selector(grantBrowserAccess), to: root)
+        environmentLabels["browser_access"]?.stringValue = browserAccessMessage
+        addBrowserSelection(to: root)
         let guide = NSButton(title: "安装说明", target: self, action: #selector(showSetupGuide))
         let diagnostics = NSButton(title: "查看诊断", target: self, action: #selector(showDiagnostics))
         guide.bezelStyle = .rounded
         diagnostics.bezelStyle = .rounded
         root.addArrangedSubview(NSStackView(views: [guide, diagnostics]))
+    }
+
+    private func addBrowserSelection(to root: NSStackView) {
+        let label = NSTextField(labelWithString: "浏览器窗口")
+        label.widthAnchor.constraint(equalToConstant: 82).isActive = true
+        browserPicker.addItem(withTitle: "选择 Chrome 窗口")
+        browserPicker.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        let refresh = NSButton(title: "刷新", target: self, action: #selector(refreshBrowserTargets))
+        let connect = NSButton(title: "接入当前页", target: self, action: #selector(connectBrowserTarget))
+        refresh.bezelStyle = .rounded
+        connect.bezelStyle = .rounded
+        let row = NSStackView(views: [label, browserPicker, refresh, connect])
+        row.spacing = 8
+        root.addArrangedSubview(row)
+        let scope = NSTextField(labelWithString: "使用所选窗口的 Profile 与登录态，Agent 将控制其当前标签页。")
+        scope.font = .systemFont(ofSize: 11)
+        scope.textColor = .secondaryLabelColor
+        root.addArrangedSubview(scope)
+    }
+
+    @objc private func refreshBrowserTargets() {
+        guard daemon?.isRunning == true else { return }
+        runClient(["control", "browser-targets"]) { [weak self] result in
+            guard let self, result["ok"] as? Bool == true else { return }
+            self.browserPicker.removeAllItems()
+            self.browserPicker.addItem(withTitle: "选择 Chrome 窗口")
+            self.browserPicker.addItem(withTitle: "临时窗口（不复用登录态）")
+            self.browserPicker.lastItem?.representedObject = ["mode": "isolated"]
+            let profile = result["browser_profile"] as? [String: Any] ?? [:]
+            if profile["mode"] as? String == "isolated" { self.browserPicker.selectItem(at: 1) }
+            for target in result["browser_targets"] as? [[String: Any]] ?? [] {
+                self.browserPicker.addItem(withTitle: target["title"] as? String ?? "Chrome 窗口")
+                self.browserPicker.lastItem?.representedObject = target
+                if target["pid"] as? Int == profile["pid"] as? Int,
+                   target["window_id"] as? Int == profile["window_id"] as? Int {
+                    self.browserPicker.select(self.browserPicker.lastItem)
+                }
+            }
+            self.render(result)
+        }
+    }
+
+    @objc private func connectBrowserTarget() {
+        guard let selected = browserPicker.selectedItem?.representedObject as? [String: Any] else {
+            statusLabel.stringValue = "请先选择 Chrome 窗口"
+            return
+        }
+        var arguments = ["control", "browser-target", "--mode"]
+        if selected["mode"] as? String == "isolated" {
+            arguments.append("isolated")
+        } else {
+            guard let pid = selected["pid"] as? Int, let window = selected["window_id"] as? Int,
+                  let fingerprint = selected["fingerprint"] as? String else { return }
+            arguments += ["existing_profile", "--pid", String(pid), "--window-id", String(window),
+                          "--fingerprint", fingerprint, "--approve"]
+        }
+        runClient(arguments) { [weak self] result in
+            guard let self else { return }
+            guard result["ok"] as? Bool == true else {
+                self.statusLabel.stringValue = result["error"] as? String ?? "浏览器接入失败，请刷新窗口"
+                return
+            }
+            self.render(result)
+            guard selected["mode"] as? String != "isolated" else { return }
+            self.browserConnectionFailed = false
+            self.preparingBrowser = true
+            self.statusLabel.stringValue = "正在连接 Chrome，请允许浏览器中的调试请求…"
+            self.runClient(["control", "browser-prepare"]) { [weak self] prepared in
+                guard let self else { return }
+                self.preparingBrowser = false
+                self.browserConnectionFailed = prepared["ok"] as? Bool != true
+                if prepared["ok"] as? Bool == true { self.render(prepared) }
+                else { self.statusLabel.stringValue = prepared["error"] as? String ?? "浏览器尚未连接，请查看安装说明" }
+            }
+        }
+    }
+
+    @objc private func grantBrowserAccess() {
+        let panel = NSOpenPanel()
+        panel.title = "允许读取 Chrome 连接信息"
+        panel.message = "仅选择 DevToolsActivePort 文件，用于连接已批准的 Chrome 窗口。"
+        panel.prompt = "允许访问"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Google/Chrome")
+        panel.nameFieldStringValue = "DevToolsActivePort"
+        guard panel.runModal() == .OK, let selected = panel.url?.resolvingSymlinksInPath() else { return }
+        guard selected.lastPathComponent == "DevToolsActivePort" else {
+            statusLabel.stringValue = "请选择 Chrome 的 DevToolsActivePort 连接信息文件"
+            return
+        }
+        do {
+            let bookmark = try selected.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess])
+            try activateBrowserAccess(bookmark, persist: true)
+            statusLabel.stringValue = "连接信息已允许，请接入当前页"
+        } catch {
+            if browserAccessURL == nil { browserAccessMessage = "授权未恢复，请重新选择" }
+            statusLabel.stringValue = "无法保留连接文件访问，请重新选择"
+        }
+        environmentLabels["browser_access"]?.stringValue = browserAccessMessage
     }
 
     @discardableResult
@@ -251,7 +334,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 stopDaemon()
                 startDaemon()
-                checkEnvironment()
             } else {
                 statusLabel.stringValue = "请输入设备 Key"
             }
@@ -286,7 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func unbindDevice() {
         let alert = NSAlert()
         alert.messageText = "解除这台 Mac 的绑定？"
-        alert.informativeText = "当前执行会停止，设备 Key 将从钥匙串删除。"
+        alert.informativeText = "当前执行会停止，设备 Key 将从本机删除。"
         alert.addButton(withTitle: "解除绑定")
         alert.addButton(withTitle: "取消")
         if alert.runModal() == .alertFirstButtonReturn { control(["command": "unbind"]) }
@@ -319,11 +401,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showDiagnostics() {
-        if FileManager.default.fileExists(atPath: logURL.path) {
-            NSWorkspace.shared.open(logURL)
-        } else {
-            checkEnvironment()
-            statusLabel.stringValue = "诊断已重新检查，当前没有运行错误日志"
+        runClient(["control", "browser-diagnostics"]) { [weak self] result in
+            guard let self else { return }
+            let diagnostics = result["browser_diagnostics"] as? [String: Any] ?? [:]
+            let browserError = diagnostics["last_error"] as? [String: Any]
+            let alert = NSAlert()
+            alert.messageText = "aBridge 诊断"
+            if let reason = browserError?["reason"] as? String {
+                alert.informativeText = "\(browserError?["code"] as? String ?? "browser_error")\n\(reason)"
+            } else {
+                alert.informativeText = result["error"] as? String ?? "当前没有已记录的浏览器错误。"
+            }
+            alert.addButton(withTitle: "查看运行日志")
+            alert.addButton(withTitle: "关闭")
+            alert.buttons[0].isEnabled = FileManager.default.fileExists(atPath: self.logURL.path)
+            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(self.logURL) }
         }
     }
 
@@ -353,6 +445,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let log = errorLog()
         process.standardOutput = log
         process.standardError = log
+        process.terminationHandler = { terminated in
+            let message = "Device client exited: status=\(terminated.terminationStatus), reason=\(terminated.terminationReason.rawValue)\n"
+            if let data = message.data(using: .utf8) { try? log.write(contentsOf: data) }
+        }
         do {
             try process.run()
             statusLabel.stringValue = "正在连接"
@@ -386,7 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func clientArguments(_ arguments: [String]) -> [String] {
-        ["--helper", Bundle.main.executablePath!, "--state-dir", stateDirectory.path] + arguments
+        ["--state-dir", stateDirectory.path] + arguments
     }
 
     private func runClient(
@@ -485,7 +581,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let connection = status["connection"] as? String ?? "offline"
         let active = status["active_operations"] as? [String] ?? []
         let controllers = status["active_controllers"] as? [String] ?? []
-        if paused {
+        if preparingBrowser {
+            statusLabel.stringValue = "正在连接 Chrome，请允许浏览器中的调试请求…"
+        } else if paused {
             statusLabel.stringValue = "已暂停，需在本机恢复"
         } else if !active.isEmpty {
             statusLabel.stringValue = "\(controllers.isEmpty ? "Agent" : controllers.joined(separator: "、")) 正在执行 \(active.count) 项操作"
@@ -538,6 +636,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 : "驱动未就绪，尚未检查"
         }
         let browser = report["browser"] as? [String: Any] ?? [:]
+        let fileAccess = browser["file_access"] as? [String: Any] ?? [:]
+        let accessMessages = [
+            "ready": "连接文件已授权",
+            "invalid": "请重新授权连接文件",
+            "stale": "连接文件已变更，请重新授权",
+            "denied": "未获访问，请重新授权",
+            "unavailable": "文件访问恢复失败，请查看诊断",
+        ]
+        environmentLabels["browser_access"]?.stringValue = accessMessages[fileAccess["status"] as? String ?? ""]
+            ?? browserAccessMessage
         if browser["installed"] as? Bool != true {
             environmentLabels["browser"]?.stringValue = "未安装"
         } else {
@@ -545,12 +653,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let count = browser["active_sessions"] as? Int ?? 0
             if driver["ready"] as? Bool != true {
                 environmentLabels["browser"]?.stringValue = "\(version) · 已安装，等待驱动"
+            } else if browser["mode"] as? String == "existing_profile" {
+                if browser["status"] as? String == "expired" {
+                    environmentLabels["browser"]?.stringValue = "\(version) · 请重新选择窗口"
+                } else if browser["selection_ready"] as? Bool != true {
+                    environmentLabels["browser"]?.stringValue = "\(version) · 请先选择窗口"
+                } else if browser["ready"] as? Bool == true {
+                    environmentLabels["browser"]?.stringValue = count > 0
+                        ? "\(version) · 正在使用用户 Profile"
+                        : "\(version) · 用户 Profile 已就绪"
+                } else {
+                    environmentLabels["browser"]?.stringValue = browserConnectionFailed
+                        ? "\(version) · 接入失败，请查看诊断"
+                        : "\(version) · 请接入当前页"
+                }
             } else {
                 environmentLabels["browser"]?.stringValue = count > 0
-                    ? "\(version) · 已连接专用窗口"
-                    : "\(version) · 专用窗口按需打开"
+                    ? "\(version) · 已连接临时窗口"
+                    : "\(version) · 临时窗口按需打开"
             }
         }
+    }
+
+    private func restoreBrowserAccess() {
+        let bookmark = stateDirectory.appendingPathComponent("browser-access.bookmark")
+        guard FileManager.default.fileExists(atPath: bookmark.path) else { return }
+        do { try activateBrowserAccess(Data(contentsOf: bookmark)) }
+        catch { browserAccessMessage = "连接文件授权已失效，请重新选择" }
+    }
+
+    private func activateBrowserAccess(_ data: Data, persist: Bool = false) throws {
+        var stale = false
+        let url = try URL(resolvingBookmarkData: data, options: [.withSecurityScope, .withoutUI],
+                          relativeTo: nil, bookmarkDataIsStale: &stale)
+        guard !stale, url.lastPathComponent == "DevToolsActivePort" else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        guard url.startAccessingSecurityScopedResource() else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        var adopted = false
+        defer { if !adopted { url.stopAccessingSecurityScopedResource() } }
+        // Opening proves that the grant applies here without reading or logging
+        // the endpoint contents. Keep an older working scope until this succeeds.
+        let probe = try FileHandle(forReadingFrom: url)
+        try probe.close()
+        // An implicit security-scoped bookmark carries the selected file's access
+        // to the Python process; a path string alone does not carry that scope.
+        let transfer = try url.bookmarkData(options: [])
+        if persist { try saveBrowserBookmark(data, name: "browser-access.bookmark") }
+        try saveBrowserBookmark(transfer, name: "browser-access-transfer.bookmark")
+        releaseBrowserAccess()
+        browserAccessURL = url
+        browserScopeActive = true
+        adopted = true
+        browserAccessMessage = "已允许单个连接文件"
+    }
+
+    private func saveBrowserBookmark(_ data: Data, name: String) throws {
+        try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true,
+                                               attributes: [.posixPermissions: 0o700])
+        let file = stateDirectory.appendingPathComponent(name)
+        try data.write(to: file, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    private func releaseBrowserAccess() {
+        if browserScopeActive { browserAccessURL?.stopAccessingSecurityScopedResource() }
+        browserAccessURL = nil
+        browserScopeActive = false
     }
 
     @objc private func repairRuntime() {
@@ -614,7 +785,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.connectButton.isEnabled = true
                 self.statusLabel.stringValue = success ? "运行环境已安装" : "安装失败，请查看诊断后重试"
                 self.startDaemon()
-                self.checkEnvironment()
+                if self.daemon?.isRunning != true { self.checkEnvironment() }
             }
         }
     }
@@ -654,7 +825,6 @@ if CommandLine.arguments.contains("--helper") {
         exit(0)
     }
     if action == "permissions" { response(permissions()) }
-    else if action.hasPrefix("keychain_") { response(keychain(request)) }
     else { response(failure("invalid_arguments", "Unknown helper action")) }
 } else {
     MainActor.assumeIsolated {

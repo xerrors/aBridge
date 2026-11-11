@@ -18,7 +18,7 @@ from test_device_protocol_acceptance import device_peer, wait_for_file
 
 import abridge.cua_driver as boundary
 from abridge.client import local_control
-from abridge.cua_driver import CUA_VERSION, CuaDriverAdapter, CuaError
+from abridge.cua_driver import CUA_VERSION, BrowserProfile, CuaDriverAdapter, CuaError
 from abridge.executor import LocalExecutor
 
 
@@ -26,7 +26,7 @@ async def test_browser_refs_are_session_scoped_single_use_and_expire(monkeypatch
     clock = [100.0]
     monkeypatch.setattr(boundary, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     peer = RecordingSDK()
-    adapter = CuaDriverAdapter(sdk=peer.sdk, driver=peer)
+    adapter = CuaDriverAdapter(sdk=peer.sdk, driver=peer, browser_profile=BrowserProfile(mode="isolated"))
     try:
         first = await adapter.browser_open("first", "https://example.invalid/first")
         second = await adapter.browser_open("second", "https://example.invalid/second")
@@ -75,7 +75,7 @@ async def test_browser_refs_are_session_scoped_single_use_and_expire(monkeypatch
 
 async def test_close_cancels_inflight_action_and_preserves_other_session() -> None:
     peer = RecordingSDK()
-    adapter = CuaDriverAdapter(sdk=peer.sdk, driver=peer)
+    adapter = CuaDriverAdapter(sdk=peer.sdk, driver=peer, browser_profile=BrowserProfile(mode="isolated"))
     try:
         first = await adapter.browser_open("first", "https://example.invalid/first")
         await adapter.browser_open("second", "https://example.invalid/second")
@@ -113,7 +113,7 @@ async def test_device_reclaims_idle_browser_on_close_pause_and_disconnect(
 ) -> None:
     monkeypatch.setattr(boundary, "_chrome_dependency", lambda: {"installed": True, "version": "fixture"})
     sdk = RecordingSDK()
-    adapter = CuaDriverAdapter(sdk=sdk.sdk, driver=sdk)
+    adapter = CuaDriverAdapter(sdk=sdk.sdk, driver=sdk, browser_profile=BrowserProfile(mode="isolated"))
     state = tmp_path / "device"
     async with device_peer(
         state, executor=LocalExecutor(driver=adapter), capabilities={"browser": True, "shell": True}
@@ -200,17 +200,24 @@ class RecordingSDK:
             DriverExecutionMode=SimpleNamespace(EMBEDDED="embedded"),
             StartSessionInput=SimpleNamespace,
             EndSessionInput=SimpleNamespace,
+            ListAppsInput=SimpleNamespace,
             ListWindowsInput=SimpleNamespace,
+            SessionPermissionMode=SimpleNamespace(STANDARD="standard"),
+            TrustedSessionOptions=SimpleNamespace,
+            create_trusted_session=self.create_trusted_session,
             current_mac_os_permission_status=lambda: SimpleNamespace(
                 screen_recording=False, accessibility=False
             ),
         )
         self.sessions: set[str] = set()
         self.actions: list[tuple[str, dict[str, Any]]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
         self.snapshot_count = 0
         self.block_actions = False
         self.action_started = asyncio.Event()
         self.action_cancelled = asyncio.Event()
+        self.trusted_options: list[Any] = []
+        self.closed_handles: list[str] = []
 
     def execution_mode(self) -> str:
         return "embedded"
@@ -227,11 +234,29 @@ class RecordingSDK:
     async def end_session(self, request: Any) -> None:
         self.sessions.discard(request.session)
 
+    async def shutdown(self) -> None:
+        assert not self.sessions
+
+    def create_trusted_session(self, driver: Any, options: Any) -> Any:
+        assert driver is self
+        self.trusted_options.append(options)
+        return RecordingBoundSession(self, options.public_session)
+
+    async def list_apps(self, request: Any) -> Any:
+        return SimpleNamespace(
+            apps=[
+                SimpleNamespace(pid=123, running=True, bundle_id="com.google.Chrome", name="Fixture Chrome")
+            ]
+        )
+
     async def list_windows(self, request: Any) -> Any:
-        return SimpleNamespace(windows=[SimpleNamespace(pid=request.pid, window_id=42, layer=0)])
+        return SimpleNamespace(
+            windows=[SimpleNamespace(pid=request.pid, window_id=42, layer=0, title="Fixture")]
+        )
 
     async def call_tool(self, tool: str, encoded: str) -> Any:
         arguments = json.loads(encoded)
+        self.calls.append((tool, arguments))
         if tool == "browser_prepare":
             result = {"prepared_pid": 123}
         elif tool == "get_browser_state":
@@ -241,7 +266,7 @@ class RecordingSDK:
                 "binding_quality": "exact",
                 "mutation_allowed": True,
                 "target_id": "target-" + arguments["session"],
-                "tabs": [{"tab_id": "tab-" + arguments["session"]}],
+                "tabs": [{"tab_id": "tab-" + arguments["session"], "active": True}],
                 "elements": [{"ref": f"p1:{self.snapshot_count}", "role": "textbox"}],
             }
         elif tool in {"browser_type", "browser_click"}:
@@ -260,6 +285,33 @@ class RecordingSDK:
         return SimpleNamespace(
             is_error=False, error_code=None, text="", structured_json=json.dumps(result), images=[]
         )
+
+
+class RecordingBoundSession:
+    """Record the public SDK bound-handle contract without native operations."""
+
+    def __init__(self, driver: RecordingSDK, name: str) -> None:
+        self.driver = driver
+        self.name = name
+        self.closed = False
+
+    async def start_session(self, request: Any) -> None:
+        assert request.session == self.name
+        await self.driver.start_session(request)
+
+    async def end_session(self, request: Any) -> None:
+        assert request.session == self.name
+        await self.driver.end_session(request)
+
+    async def call_tool(self, tool: str, encoded: str) -> Any:
+        assert not self.closed
+        assert json.loads(encoded)["session"] == self.name
+        return await self.driver.call_tool(tool, encoded)
+
+    def close(self) -> None:
+        if not self.closed:
+            self.driver.closed_handles.append(self.name)
+            self.closed = True
 
     async def shutdown(self) -> None:
         assert not self.sessions

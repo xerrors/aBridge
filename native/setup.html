@@ -20,9 +20,13 @@ open "$HOME/Applications/aBridge.app"</pre>
 <p>分别点击“屏幕录制”和“辅助功能”旁的“前往设置”，允许实际安装的 aBridge。原生更新后，macOS 可能要求重新允许；按系统提示退出并重开客户端。</p>
 <h2>浏览器</h2>
 <p>安装<a href="https://www.google.com/chrome/">Google Chrome</a>。启用本机“浏览器”能力，并在管理台明确给 Agent 增加浏览器授权。</p>
-<p>任务使用系统 Chrome 的专用临时窗口；结束会话时清理窗口和临时 profile。个人 Chrome 标签页与登录态不参与这条连接。</p>
+<p>首次连接，在该 Chrome Profile 中打开 <code>chrome://inspect/#remote-debugging</code>，开启“Allow remote debugging for this browser instance”。只允许信任的应用连接。</p>
+<p>若系统拒绝读取连接信息，点击“允许访问…”，只选择该 Chrome 目录内的 <code>DevToolsActivePort</code> 文件，再接入当前页。授权会在本机保留，文件被替换或授权失效时需重新选择。</p>
+<p>在 Chrome 中为任务打开一个窗口，再在 aBridge 刷新并选择该窗口，点击“接入当前页”。Agent 将复用这个窗口的 Profile、Cookie 和登录态，并控制当前标签页；结束会话只断开连接，保留 Chrome 与页面。</p>
+<p>“接入当前页”会做一次本机连接准备，可能短暂显示 Chrome。按浏览器提示允许连接后，Agent 的网页操作使用后台模式。</p>
+<p>需要空白环境时可显式选择“临时窗口（不复用登录态）”。窗口或进程变更后，重新在本机选择目标。</p>
 <h2>连接与诊断</h2>
-<p>已有绑定时留空设备 Key，点击“重试连接”。“重新检查”更新运行环境状态；“查看诊断”打开仅保存在本机的错误日志。</p>
+<p>设备 Key 保存在当前用户专用的 0700 目录和 0600 文件中，启动及重连不读取钥匙串。已有绑定时留空设备 Key，点击“重试连接”。“重新检查”更新运行环境状态；“查看诊断”打开仅保存在本机的错误日志。</p>
 <p>日志、版本、安装、权限和服务连接是不同状态。缺失的能力不会作为可用能力上报。</p>
 <p><a href="third-party-notices.txt">第三方组件许可</a></p>
 </html>

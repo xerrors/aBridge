@@ -12,19 +12,22 @@ import sqlite3
 import sys
 import time
 from contextlib import suppress
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
 from abridge import __version__
-from abridge.executor import TOOL_CAPABILITIES, ExecutionError, LocalExecutor, native_request
+from abridge.credentials import delete_device_credential, load_device_credential, save_device_credential
+from abridge.cua_driver import BrowserProfile
+from abridge.executor import TOOL_CAPABILITIES, ExecutionError, LocalExecutor
+from abridge.macos_access import BrowserFileAccess, acquire_browser_access
 from abridge.protocol import CAPABILITIES
 
 DEFAULT_STATE_DIR = Path.home() / "Library" / "Application Support" / "aBridge"
-KEYCHAIN_SERVICE = "dev.abridge.client.device"
 
 
 class DeviceClient:
@@ -43,8 +46,10 @@ class DeviceClient:
         self.config = config
         self.device_key = device_key
         self.parent_pid = parent_pid
-        self.executor = executor or LocalExecutor(helper)
+        self.executor = executor or LocalExecutor(helper, browser_profile=_browser_profile(config))
         self.executor.on_output = self._output
+        self.browser_access: BrowserFileAccess | None = None
+        self._browser_access_status: dict[str, Any] | None = None
         self.websocket: Any = None
         self.epoch = 0
         self.device_id: str | None = None
@@ -72,6 +77,14 @@ class DeviceClient:
         self.journal = OperationJournal(state_dir / "operations.sqlite3")
 
     async def run(self) -> None:
+        self._reload_browser_access()
+        try:
+            await self._serve()
+        finally:
+            if self.browser_access is not None:
+                self.browser_access.close()
+
+    async def _serve(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         socket_path = self.state_dir / "control.sock"
         if len(str(socket_path).encode()) >= 100:
@@ -142,11 +155,15 @@ class DeviceClient:
                     self._write_status()
                     break
                 self.status.update(connection="offline", error="服务暂时不可用")
-            except (OSError, ConnectionClosed, TimeoutError, ExecutionError, ValueError):
+            except (OSError, ConnectionClosed, InvalidHandshake, TimeoutError, ExecutionError, ValueError):
                 self.status.update(connection="offline", error="连接中断，等待重连")
             finally:
                 self.websocket = None
-                await self._stop_operations()
+                await self._stop_operations(
+                    release_browser_owner=bool(
+                        self.shutdown.is_set() or self.config.get("revoked") or self.config.get("paused")
+                    )
+                )
                 self._write_status()
             try:
                 await asyncio.wait_for(self.shutdown.wait(), timeout=delay)
@@ -268,7 +285,7 @@ class DeviceClient:
         while True:
             await asyncio.sleep(1)
             if time.monotonic() - self.last_ack > self.lease_seconds:
-                await self._stop_operations()
+                await self._stop_operations(release_browser_owner=False)
                 raise TimeoutError("Device connection lease expired")
 
     async def _dispatch(self, message: dict[str, Any]) -> None:
@@ -416,7 +433,9 @@ class DeviceClient:
         async with self.send_lock:
             await self.websocket.send(json.dumps(message, ensure_ascii=False))
 
-    async def _stop_operations(self, operation_ids: list[str] | None = None) -> None:
+    async def _stop_operations(
+        self, operation_ids: list[str] | None = None, *, release_browser_owner: bool = True
+    ) -> None:
         selected = list(self.operations) if operation_ids is None else list(operation_ids)
         affected_sessions = {
             self.operation_sessions[operation_id]
@@ -435,7 +454,10 @@ class DeviceClient:
         # against the same process group while cancellation is unwinding.
         await self.executor.cancel(selected)
         if operation_ids is None:
-            await self.executor.stop()
+            if release_browser_owner:
+                await self.executor.stop()
+            else:
+                await self.executor.release_remote_sessions()
             self.closed_sessions.update(self.session_capabilities)
             self.session_capabilities.clear()
             self.status["desktop_active_until"] = 0
@@ -456,6 +478,13 @@ class DeviceClient:
 
     async def _effective_capabilities(self) -> dict[str, bool]:
         dependencies = await self.executor.diagnostics()
+        if self._browser_access_status is not None:
+            dependencies["browser"]["file_access"] = dict(self._browser_access_status)
+            if (
+                dependencies["browser"]["mode"] == "existing_profile"
+                and self._browser_access_status["error"] is not None
+            ):
+                dependencies["browser"]["ready"] = False
         permissions = dependencies["permissions"]
         requested = self.config.get("capabilities", {})
         effective = {key: requested.get(key) is True for key in CAPABILITIES}
@@ -466,6 +495,19 @@ class DeviceClient:
         self.status.update(capabilities=effective, permissions=permissions, dependencies=dependencies)
         return effective
 
+    def _reload_browser_access(self) -> None:
+        candidate = acquire_browser_access(self.state_dir)
+        self._browser_access_status = candidate.status
+        previous = self.browser_access
+        if candidate.status["ready"] or previous is None:
+            self.browser_access = candidate
+            if previous is not None:
+                previous.close()
+        else:
+            # A failed replacement must not revoke a previously acquired scope.
+            # Its error still blocks new browser work until the owner repairs it.
+            candidate.close()
+
     async def _control_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             raw = await asyncio.wait_for(reader.readline(), timeout=3)
@@ -473,6 +515,7 @@ class DeviceClient:
                 raise ValueError("Control message is too large")
             request = json.loads(raw)
             command = request.get("command")
+            details: dict[str, Any] = {}
             if command == "pause":
                 self.config["paused"] = True
                 save_config(self.state_dir, self.config)
@@ -498,39 +541,71 @@ class DeviceClient:
                     for session_id, capabilities in list(self.session_capabilities.items()):
                         if capability in capabilities:
                             await self._close_session(session_id)
+                    if capability == "browser":
+                        await self.executor.stop_browser()
+            elif command == "browser-targets":
+                details["browser_targets"] = await self.executor.browser_targets()
+            elif command == "browser-diagnostics":
+                details["browser_diagnostics"] = self.executor.browser_diagnostics()
+            elif command == "browser-prepare":
+                if self.config.get("paused"):
+                    raise ExecutionError(
+                        "device_paused", "Resume access locally before preparing the browser"
+                    )
+                if self.config.get("revoked"):
+                    raise ExecutionError("device_revoked", "Rebind this device before preparing the browser")
+                self._reload_browser_access()
+                await self._effective_capabilities()
+                self._write_status()
+                if self._browser_access_status["error"] is not None:
+                    error = self._browser_access_status["error"]
+                    raise ExecutionError(error["code"], error["message"])
+                details["browser_preparation"] = await self.executor.prepare_browser()
+            elif command == "browser-target":
+                profile = _browser_profile({"browser_profile": request.get("profile")})
+                if profile != _browser_profile(self.config):
+                    await self.executor.configure_browser(profile)
+                    for session_id, capabilities in list(self.session_capabilities.items()):
+                        if "browser" in capabilities:
+                            await self._close_session(session_id)
+                    self.config["browser_profile"] = asdict(profile)
+                    save_config(self.state_dir, self.config)
+                    await self._send({"type": "browser_target_changed", "connection_epoch": self.epoch})
             elif command == "unbind":
                 self.config["paused"] = True
                 self.config["revoked"] = True
                 save_config(self.state_dir, self.config)
-                await self._stop_operations()
                 cloud_revoked = False
-                if self.websocket:
-                    await self._send({"type": "unbind", "connection_epoch": self.epoch})
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(self.unbound.wait(), timeout=5)
-                        cloud_revoked = True
-                self.status["cloud_revoked"] = cloud_revoked
-                if not cloud_revoked:
-                    self.status["error"] = "已移除本机凭据；请在管理台撤销设备 Key"
-                if self.executor.helper:
-                    await native_request(
-                        self.executor.helper,
-                        {
-                            "action": "keychain_delete",
-                            "service": KEYCHAIN_SERVICE,
-                            "account": keychain_account(self.config["url"]),
-                        },
-                    )
-                self.device_key = ""
-                self.shutdown.set()
-                if self.websocket:
-                    await self.websocket.close()
+                try:
+                    delete_device_credential(self.state_dir)
+                    self.device_key = ""
+                    await self._stop_operations()
+                    if self.websocket:
+                        with suppress(TimeoutError, ConnectionClosed, OSError):
+                            await self._send({"type": "unbind", "connection_epoch": self.epoch})
+                            await asyncio.wait_for(self.unbound.wait(), timeout=5)
+                            cloud_revoked = True
+                finally:
+                    self.device_key = ""
+                    self.status["cloud_revoked"] = cloud_revoked
+                    if not cloud_revoked:
+                        self.status["error"] = "请在管理台确认设备 Key 已撤销"
+                    self.shutdown.set()
+                    self._write_status()
+                    if self.websocket:
+                        await self.websocket.close()
             elif command != "status":
                 raise ValueError("Unknown local control command")
             self.status["paused"] = bool(self.config.get("paused", False))
             await self._effective_capabilities()
             self._write_status()
-            if self.websocket and command in ("pause", "resume", "capability"):
+            if self.websocket and command in (
+                "pause",
+                "resume",
+                "capability",
+                "browser-target",
+                "browser-prepare",
+            ):
                 await self._send(
                     {
                         "type": "heartbeat",
@@ -539,7 +614,7 @@ class DeviceClient:
                         "paused": self.status["paused"],
                     }
                 )
-            response = {"ok": True, **self.status}
+            response = {"ok": True, **self.status, **details}
         except (ValueError, ExecutionError, OSError, TimeoutError, ConnectionClosed) as error:
             response = {"ok": False, "error": str(error)}
         writer.write((json.dumps(response, ensure_ascii=False) + "\n").encode())
@@ -552,6 +627,9 @@ class DeviceClient:
         self.status["active_operations"] = list(self.operations)
         self.status["active_controllers"] = list(dict.fromkeys(self.operation_controllers.values()))
         self.status["requested_capabilities"] = self.config.get("capabilities", {})
+        self.status["browser_profile"] = self.config.get(
+            "browser_profile", {"mode": "existing_profile", "approved": False}
+        )
         self.status["updated_at"] = time.time()
         _write_json(self.state_dir / "status.json", self.status)
 
@@ -608,10 +686,6 @@ def save_config(state_dir: Path, config: dict[str, Any]) -> None:
     _write_json(state_dir / "config.json", config)
 
 
-def keychain_account(url: str) -> str:
-    return hashlib.sha256(url.encode()).hexdigest()
-
-
 async def local_control(state_dir: Path, request: dict[str, Any]) -> dict[str, Any]:
     socket_path = state_dir / "control.sock"
     if len(str(socket_path).encode()) >= 100:
@@ -621,7 +695,8 @@ async def local_control(state_dir: Path, request: dict[str, Any]) -> dict[str, A
     reader, writer = await asyncio.open_unix_connection(str(socket_path))
     writer.write((json.dumps(request) + "\n").encode())
     await writer.drain()
-    response = json.loads(await asyncio.wait_for(reader.readline(), timeout=15))
+    timeout = 120 if request.get("command") == "browser-prepare" else 15
+    response = json.loads(await asyncio.wait_for(reader.readline(), timeout=timeout))
     writer.close()
     await writer.wait_closed()
     return response
@@ -638,9 +713,28 @@ def main() -> None:
     configure = commands.add_parser("configure")
     configure.add_argument("--stdin", action="store_true", required=True)
     control = commands.add_parser("control")
-    control.add_argument("action", choices=("status", "pause", "resume", "stop", "unbind", "capability"))
+    control.add_argument(
+        "action",
+        choices=(
+            "status",
+            "pause",
+            "resume",
+            "stop",
+            "unbind",
+            "capability",
+            "browser-targets",
+            "browser-target",
+            "browser-diagnostics",
+            "browser-prepare",
+        ),
+    )
     control.add_argument("--capability", choices=CAPABILITIES)
     control.add_argument("--enabled", choices=("true", "false"))
+    control.add_argument("--mode", choices=("isolated", "existing_profile"))
+    control.add_argument("--pid", type=int)
+    control.add_argument("--window-id", type=int)
+    control.add_argument("--fingerprint")
+    control.add_argument("--approve", action="store_true")
     args = parser.parse_args()
     try:
         asyncio.run(_main(args))
@@ -651,8 +745,6 @@ def main() -> None:
 
 async def _main(args: argparse.Namespace) -> None:
     if args.command == "configure":
-        if not args.helper:
-            raise ValueError("The native Keychain helper is required")
         request = json.load(sys.stdin)
         url = validate_server_url(str(request.get("url", "")))
         key = request.get("device_key")
@@ -663,21 +755,17 @@ async def _main(args: argparse.Namespace) -> None:
             key not in CAPABILITIES or not isinstance(value, bool) for key, value in capabilities.items()
         ):
             raise ValueError("Capabilities must be explicitly selected")
-        await native_request(
-            args.helper,
-            {
-                "action": "keychain_set",
-                "service": KEYCHAIN_SERVICE,
-                "account": keychain_account(url),
-                "secret": key,
-            },
-        )
+        previous_path = args.state_dir / "config.json"
+        previous = json.loads(previous_path.read_text()) if previous_path.exists() else {}
+        save_device_credential(args.state_dir, url, key)
         config = {
             "url": url,
             "capabilities": {key: capabilities.get(key, False) for key in CAPABILITIES},
-            "paused": False,
+            "paused": bool(previous.get("paused", False)),
             "revoked": False,
         }
+        if previous.get("url") == url and "browser_profile" in previous:
+            config["browser_profile"] = previous["browser_profile"]
         save_config(args.state_dir, config)
         print(json.dumps({"ok": True}))
         return
@@ -687,25 +775,43 @@ async def _main(args: argparse.Namespace) -> None:
             if args.capability is None or args.enabled is None:
                 raise ValueError("capability and enabled are required")
             request.update(capability=args.capability, enabled=args.enabled == "true")
+        elif args.action == "browser-target":
+            if args.mode is None:
+                raise ValueError("Choose isolated or existing_profile mode")
+            request["profile"] = {
+                "mode": args.mode,
+                "pid": args.pid,
+                "window_id": args.window_id,
+                "fingerprint": args.fingerprint,
+                "approved": args.approve,
+            }
         print(json.dumps(await local_control(args.state_dir, request), ensure_ascii=False))
         return
     config = json.loads((args.state_dir / "config.json").read_text())
     config["url"] = validate_server_url(config["url"])
-    if not args.helper:
-        raise ValueError("The native Keychain helper is required")
-    credential = await native_request(
-        args.helper,
-        {"action": "keychain_get", "service": KEYCHAIN_SERVICE, "account": keychain_account(config["url"])},
-    )
+    device_key = load_device_credential(args.state_dir, config["url"])
     expected_parent = os.environ.get("ABRIDGE_PARENT_PID")
     parent_pid = int(expected_parent) if expected_parent is not None else None
-    client = DeviceClient(args.state_dir, config, credential["secret"], args.helper, parent_pid=parent_pid)
+    client = DeviceClient(args.state_dir, config, device_key, args.helper, parent_pid=parent_pid)
     loop = asyncio.get_running_loop()
     import signal
 
     for signum in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signum, client.shutdown.set)
     await client.run()
+
+
+def _browser_profile(config: dict[str, Any]) -> BrowserProfile:
+    value = config.get("browser_profile", {})
+    if not isinstance(value, dict):
+        raise ValueError("Choose a browser target locally before connecting")
+    return BrowserProfile(
+        mode=value.get("mode", "existing_profile"),
+        pid=value.get("pid"),
+        window_id=value.get("window_id"),
+        fingerprint=value.get("fingerprint"),
+        approved=value.get("approved") is True,
+    )
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:

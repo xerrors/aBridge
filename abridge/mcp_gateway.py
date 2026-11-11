@@ -106,7 +106,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
     async def browser_open(
         session_id: str, url: str, ctx: Context, operation_id: str | None = None
     ) -> dict[str, Any]:
-        """Open an HTTP(S) URL in this session's isolated Chrome profile. Requires browser capability and locally enabled browser access; never attaches to personal tabs."""
+        """Open an HTTP(S) URL in the locally selected Chrome target. In existing_profile mode this navigates only the approved window's pinned active tab, reusing its login state; isolated mode creates a temporary profile. Requires browser capability and owner-local selection/approval. Agents cannot choose a profile, PID or path."""
         return await guarded_async(
             runtime.execute(agent(ctx), session_id, "browser_open", {"url": url}, operation_id)
         )
@@ -115,7 +115,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
     async def browser_observe(
         session_id: str, ctx: Context, screenshot: bool = False, operation_id: str | None = None
     ) -> list[Any]:
-        """Read this session's Chrome DOM elements and optional PNG. Returned observation_id/element_ref expire after 10s and after any action. Call browser_open first."""
+        """Read only this session's bound Chrome tab: DOM elements and optional PNG. Returned observation_id/element_ref expire after 10s and after any action. Call browser_open first. Existing-profile close detaches without closing personal tabs."""
         response = await guarded_async(
             runtime.execute(
                 agent(ctx), session_id, "browser_observe", {"screenshot": screenshot}, operation_id
@@ -131,7 +131,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         ctx: Context,
         operation_id: str | None = None,
     ) -> dict[str, Any]:
-        """Act on this session's fresh DOM observation: {type:'click',element_ref:'...'} or {type:'fill',element_ref:'...',text:'你好'}. Click explicitly uses synthetic DOM events, not trusted physical input; sites may reject them. Fill replaces the field through the driver's insert_text route. Observe again to verify business state after every action. No JavaScript, raw CDP, cookies or personal profile access is exposed."""
+        """Act on this session's fresh DOM observation: {type:'click',element_ref:'...'} or {type:'fill',element_ref:'...',text:'你好'}. Click explicitly uses synthetic DOM events, not trusted physical input; sites may reject them. Fill replaces the field through the driver's insert_text route. Observe again to verify business state after every action. No JavaScript, raw CDP or Cookie export is exposed; existing login state stays inside the approved browser context."""
         return await guarded_async(
             runtime.execute(
                 agent(ctx),

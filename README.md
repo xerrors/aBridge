@@ -19,16 +19,18 @@ uv run --frozen abridge serve
 
 ## macOS 客户端
 
-从源码安装需要 macOS 14+、Python 3.12–3.14、Swift 工具链和 uv。浏览器能力另需已安装的 Google Chrome。
+当前内部客户端支持 Apple Silicon、macOS 14+，需要 uv 和 Swift 工具链；运行时支持 Python 3.12–3.14，首次安装创建 Python 3.12 环境。浏览器能力另需已安装的 Google Chrome。
 
 ```sh
 python3 deploy/install_client.py
 open "$HOME/Applications/aBridge.app"
 ```
 
-安装器复制独立运行时，并按锁文件安装 `macos` extra 中的 `cua-driver==0.46.1`。aBridge 在设备 Python 进程内创建 SDK，不启动 CuaDriver.app 或另一套 daemon，不依赖 Ego、Node、本地模型或捆绑浏览器引擎。
+安装器复制独立运行时，并按锁文件安装 `macos` extra 中的内部 `cua-driver==0.46.1+abridge.1`。它基于固定上游源码，修复中文 Chrome 授权弹窗重复计入候选窗口的问题；补丁、来源与哈希见 [SDK 产物](vendor/cua-driver/README.md)。aBridge 在设备 Python 进程内创建 SDK，不安装原 Cua CLI、CuaDriver.app 或另一套 daemon，不依赖 Ego、Node、本地模型、Rust 或捆绑浏览器引擎。
 
-在客户端填写服务地址与设备 Key，显式选择能力并连接。界面分别显示 Python、驱动版本与加载状态、系统权限、Chrome 安装与专用窗口连接状态；“重新检查”刷新报告，“安装 / 修复”在本机按哈希锁恢复依赖，“安装说明”提供缺失项指引。已有配置可用“重试连接”复用 Keychain 凭据。
+在客户端填写服务地址与设备 Key，显式选择能力并连接。界面分别显示 Python、驱动版本与加载状态、系统权限、Chrome 安装与专用窗口连接状态；“重新检查”刷新报告，“安装 / 修复”在本机按哈希锁恢复依赖，“安装说明”提供缺失项指引。已有配置可用“重试连接”复用本机私有凭据文件，运行不读取 Keychain。
+
+设备 Key 保存在应用支持目录的 `credentials/device.json`，状态与凭据目录权限为700，文件为600，仅限当前所有者；写入使用原子替换并绑定服务地址。旧绑定缺文件时需重新绑定或由操作者正规轮换后保存，不自动读取旧 Keychain。重新绑定与依赖修复均保留本机暂停状态。
 
 原生输入不变时安装器跳过重建；`--runtime-only` 只更新 Python。当前为 ad hoc 签名，原生更新后需按实际 App 身份核对屏幕录制和辅助功能权限。[安装与维护](docs/deployment.md)
 
@@ -55,7 +57,11 @@ open "$HOME/Applications/aBridge.app"
 
 窗口操作先选 PID 和 window_id，再观察 AX 元素并使用返回的 `element_ref`。省略目标的桌面观察保留截图像素操作入口，并检查前台窗口变化。观察有效期为 10 秒；动作后重新观察，过期或跨会话引用会被拒绝。
 
-浏览器只在本会话自建的 Chrome 临时 profile 和绑定页面内操作，不接管个人标签或登录状态。DOM 点击首次即使用明确的合成事件；网页可能拒绝这类事件。填表通过驱动的 `insert_text` 路由替换字段。每次动作后都要核对业务状态；`executed` 仅表示执行器回执，结果未知时不能换操作 ID 盲重试。
+浏览器默认等待本机选择并批准现有 Chrome 窗口，再“接入当前页”以复用登录态；隔离临时 profile 仅在本机显式选择时使用，不自动回退。现有模式只绑定批准窗口的唯一活动标签，后续不跟随用户切换标签；`browser_open` 会导航这个批准页。远程会话结束会清理自己的引用，本机连接可依次复用，最长 8 小时、空闲 30 分钟后需重新接入；暂停和停止会结束连接，不关闭个人 Chrome 或原页。模型不能选择任意 Profile、PID 或路径，Cookie 留在浏览器内。选择方法见 [安装与维护](docs/deployment.md)。
+
+额外的小窗坐标点击实测由 SDK 解析为 AX 背景命中；物理 CGEvent 路由尚未业务实测，不将坐标请求本身当作硬件输入证明。
+
+DOM 点击首次即使用明确的合成事件；网页可能拒绝。填表通过驱动的 `insert_text` 路由替换字段。动作后核对业务状态；`executed` 仅表示执行器回执，结果未知时不能换操作 ID 盲重试。本轮手工测试只用普通自有窗口及明确 PID/window_id，不采集整屏。
 
 ## 验证与构建
 

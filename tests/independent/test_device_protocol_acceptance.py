@@ -11,10 +11,49 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+import pytest
 import websockets
 
 from abridge.client import DeviceClient, local_control
 from abridge.executor import LocalExecutor
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_handshake_auth_rejection_revokes_without_losing_local_controls(
+    tmp_path: Path, status_code: int
+) -> None:
+    requests = []
+
+    async def reject(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        requests.append(status_code)
+        reason = "Unauthorized" if status_code == 401 else "Forbidden"
+        writer.write(
+            f"HTTP/1.1 {status_code} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
+
+    async with await asyncio.start_server(reject, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = DeviceClient(
+            tmp_path,
+            {"url": f"http://127.0.0.1:{port}", "capabilities": {}, "paused": False},
+            "abr_device_auth_rejection_fixture",
+        )
+        running = asyncio.create_task(client.run())
+        try:
+            async with asyncio.timeout(3):
+                while client.status["connection"] != "revoked":
+                    assert not running.done(), "An authentication refusal crashed the client"
+                    await asyncio.sleep(0.01)
+            assert client.config["revoked"] is True
+            assert requests == [status_code]
+            assert (await local_control(tmp_path, {"command": "status"}))["connection"] == "revoked"
+        finally:
+            client.shutdown.set()
+            await asyncio.wait_for(running, timeout=5)
 
 
 async def test_device_reports_effective_capabilities_and_persists_deduplication(tmp_path: Path) -> None:

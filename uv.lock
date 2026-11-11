@@ -26,12 +26,12 @@ dev = [
     { name = "ruff" },
 ]
 macos = [
-    { name = "cua-driver", marker = "sys_platform == 'darwin'" },
+    { name = "cua-driver", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cua-driver", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = "==0.46.1" },
+    { name = "cua-driver", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'macos'", path = "vendor/cua-driver/wheels/cua_driver-0.46.1+abridge.1-py3-none-macosx_14_0_arm64.whl" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.26,<2" },
@@ -236,11 +236,15 @@ wheels = [
 
 [[package]]
 name = "cua-driver"
-version = "0.46.1"
-source = { registry = "https://pypi.org/simple" }
+version = "0.46.1+abridge.1"
+source = { path = "vendor/cua-driver/wheels/cua_driver-0.46.1+abridge.1-py3-none-macosx_14_0_arm64.whl" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/e3/f0b0a880a12cad7859fea6e878b098de65826c066baef8cc606a8c633b12/cua_driver-0.46.1-py3-none-macosx_13_0_universal2.whl", hash = "sha256:f2b8678e01b77a698cf0a21ee9f7652af70556484d4c127787cc35731d3f6feb", size = 51794020, upload-time = "2026-11-10T02:33:09.177Z" },
+    { filename = "cua_driver-0.46.1+abridge.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:a4f07f44090e67cdf6f0f4149208aa2651fe863b22b47b9b14ed0003b755d01b" },
 ]
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'test'" }]
+provides-extras = ["test"]
 
 [[package]]
 name = "fastapi"

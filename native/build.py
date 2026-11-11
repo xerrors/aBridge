@@ -46,6 +46,7 @@ def main() -> None:
         "NSHighResolutionCapable": True,
         "NSScreenCaptureUsageDescription": "aBridge 仅在你启用截图后向已授权的 Agent 提供屏幕画面。",
         "NSAccessibilityUsageDescription": "aBridge 仅在你启用桌面输入后执行已授权 Agent 的鼠标和键盘操作。",
+        "NSAppDataUsageDescription": "aBridge 读取你在本机选定的 Chrome 连接信息，以连接该 Profile 的浏览器窗口并复用登录态。",
     }
     # Keep a venv's interpreter symlink: resolving it would select the base Python
     # and silently lose the installed runtime dependencies.
@@ -89,8 +90,6 @@ def main() -> None:
             "AppKit",
             "-framework",
             "ApplicationServices",
-            "-framework",
-            "Security",
         ],
         env=environment,
         check=True,

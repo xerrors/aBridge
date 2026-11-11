@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -27,10 +29,17 @@ def main() -> None:
     arguments = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("The native client requires macOS")
+    if platform.machine() != "arm64" or int(platform.mac_ver()[0].split(".")[0]) < 14:
+        parser.error("This internal client requires Apple Silicon, macOS 14+, and an arm64 Python")
 
     uv = shutil.which("uv")
     if uv is None:
         parser.error("Install uv before installing the client runtime")
+    vendor = PROJECT_ROOT / "vendor/cua-driver"
+    artifact = json.loads((vendor / "manifest.json").read_text())["wheel"]
+    sdk_wheel = vendor / "wheels" / artifact["file"]
+    if hashlib.sha256(sdk_wheel.read_bytes()).hexdigest() != artifact["sha256"]:
+        parser.error("The internal Cua SDK wheel failed its manifest checksum")
     state = Path.home() / "Library/Application Support/aBridge"
     runtime = state / "runtime"
     source = runtime / "src"
@@ -49,6 +58,9 @@ def main() -> None:
             parser.error("The installed app points to a different runtime; run a normal installation first")
     source.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
+    runtime_wheel = runtime / "wheels" / sdk_wheel.name
+    runtime_wheel.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(sdk_wheel, runtime_wheel)
     environment = dict(os.environ, UV_CACHE_DIR=str(Path.home() / "Library/Caches/aBridge/uv-cache"))
 
     # Export only locked runtime dependencies; the application itself is copied below.
@@ -69,10 +81,14 @@ def main() -> None:
         capture_output=True,
         check=True,
     )
+    # Runtime repair must remain independent of the original source volume.
+    reference = "./vendor/cua-driver/wheels/" + sdk_wheel.name
+    exported = requirements.read_text()
+    if reference not in exported:
+        raise RuntimeError("The locked requirements omit the internal Cua SDK wheel")
+    requirements.write_text(exported.replace(reference, runtime_wheel.resolve().as_uri()))
     if not (environment_path / "pyvenv.cfg").is_file():
-        subprocess.run(
-            [uv, "venv", "--python", sys.executable, str(environment_path)], env=environment, check=True
-        )
+        subprocess.run([uv, "venv", "--python", "3.12", str(environment_path)], env=environment, check=True)
     python = environment_path / "bin/python"
     subprocess.run(
         [

@@ -20,9 +20,13 @@ import pytest_asyncio
 import websockets
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from test_cua_boundary_acceptance import RecordingSDK
 from websockets.exceptions import InvalidStatus
 
-from abridge.client import DeviceClient, local_control
+import abridge.cua_driver as cua_boundary
+from abridge.client import DeviceClient, local_control, save_config
+from abridge.cua_driver import BrowserProfile, CuaDriverAdapter
+from abridge.executor import LocalExecutor
 from abridge.storage import Store
 
 
@@ -483,6 +487,387 @@ async def test_browser_scope_does_not_inherit_desktop_or_command_access(network:
     assert (await network.alice.get("/api/activity")).json()["operations"] == []
 
 
+async def test_unattended_file_credential_cli_restart_pause_and_unbind(
+    network: Network, tmp_path: Path
+) -> None:
+    device = await network.add_device(network.alice, "Unattended credential fixture")
+    agent = await network.add_grant(network.alice, "Credential acceptance", [device["id"]])
+    state = tmp_path / "client"
+    save_config(
+        state,
+        {
+            "url": network.url,
+            "capabilities": {"screen": False, "input": False, "shell": True, "files": True},
+            "paused": True,
+            "revoked": False,
+        },
+    )
+    helper_marker = tmp_path / "keychain-was-called"
+    helper = tmp_path / "forbidden-keychain-helper"
+    helper.write_text(f"#!/bin/sh\nprintf called > {shlex.quote(str(helper_marker))}\nexit 23\n")
+    helper.chmod(0o700)
+    command = [sys.executable, "-m", "abridge.client", "--state-dir", str(state), "--helper", str(helper)]
+    output: list[bytes] = []
+    processes: list[asyncio.subprocess.Process] = []
+
+    configured = await asyncio.create_subprocess_exec(
+        *command,
+        "configure",
+        "--stdin",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await configured.communicate(
+        json.dumps(
+            {
+                "url": network.url,
+                "device_key": device["key"],
+                "capabilities": {"shell": True, "files": False},
+            }
+        ).encode()
+    )
+    output.extend((stdout, stderr))
+    assert configured.returncode == 0
+    assert json.loads(stdout)["ok"] is True
+    credential_file = state / "credentials/device.json"
+    assert credential_file.is_file()
+    assert not helper_marker.exists()
+
+    async def launch() -> asyncio.subprocess.Process:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            "run",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        processes.append(process)
+        async with asyncio.timeout(8):
+            while True:
+                assert process.returncode is None, "The unattended client exited before connecting"
+                status_file = state / "status.json"
+                if status_file.exists() and json.loads(status_file.read_text())["connection"] == "online":
+                    return process
+                await asyncio.sleep(0.02)
+
+    try:
+        first = await launch()
+        status = await local_control(state, {"command": "status"})
+        assert status["paused"] is True
+        assert status["requested_capabilities"]["shell"] is True
+        assert status["requested_capabilities"]["files"] is False
+        assert status["requested_capabilities"]["browser"] is False
+        async with mcp_connection(network.url, agent["key"]) as mcp:
+            refused = await mcp.call_tool(
+                "session_open", {"device_id": device["id"], "capabilities": ["shell"]}
+            )
+            assert refused.isError is True
+            await local_control(state, {"command": "resume"})
+            async with asyncio.timeout(3):
+                while decode(await mcp.call_tool("devices_list"))["devices"][0]["paused"]:
+                    await asyncio.sleep(0.02)
+            refused = await mcp.call_tool(
+                "session_open", {"device_id": device["id"], "capabilities": ["files"]}
+            )
+            assert refused.isError is True
+            session = decode(
+                await mcp.call_tool(
+                    "session_open",
+                    {
+                        "device_id": device["id"],
+                        "capabilities": ["shell"],
+                    },
+                )
+            )
+            operation = decode(
+                await mcp.call_tool(
+                    "command_execute",
+                    {
+                        "session_id": session["id"],
+                        "command": "printf file-credential-ok",
+                    },
+                )
+            )
+            result = await poll_result(mcp, operation["operation_id"])
+            assert result["result"]["stdout"] == "file-credential-ok"
+            await mcp.call_tool("session_close", {"session_id": session["id"]})
+        await local_control(state, {"command": "pause"})
+        first.terminate()
+        output.extend(await asyncio.wait_for(first.communicate(), timeout=5))
+
+        restarted = await launch()
+        assert (await local_control(state, {"command": "status"}))["paused"] is True
+        unbound = await local_control(state, {"command": "unbind"})
+        assert unbound["ok"] is True
+        assert unbound["cloud_revoked"] is True
+        output.extend(await asyncio.wait_for(restarted.communicate(), timeout=5))
+        assert not credential_file.exists()
+        assert json.loads((state / "config.json").read_text())["revoked"] is True
+        with pytest.raises(InvalidStatus) as refused_key:
+            async with websockets.connect(
+                network.ws_url, additional_headers={"Authorization": "Bearer " + device["key"]}
+            ):
+                pass
+        assert refused_key.value.response.status_code in (401, 403)
+
+        missing = await asyncio.create_subprocess_exec(
+            *command,
+            "run",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        processes.append(missing)
+        stdout, stderr = await asyncio.wait_for(missing.communicate(), timeout=5)
+        output.extend((stdout, stderr))
+        assert missing.returncode == 1
+        assert json.loads(stdout)["error"]
+        assert not helper_marker.exists()
+        assert device["key"].encode() not in b"".join(output)
+    finally:
+        for process in processes:
+            if process.returncode is None:
+                process.terminate()
+                await asyncio.wait_for(process.communicate(), timeout=5)
+
+
+async def test_owner_browser_reuse_keeps_foreground_local_and_remote_refs_isolated(
+    network: Network, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def process_identity(_pid: int | None) -> str:
+        return "a" * 64
+
+    monkeypatch.setattr(cua_boundary, "_process_fingerprint", process_identity)
+    monkeypatch.setattr(cua_boundary, "_chrome_dependency", lambda: {"installed": True, "version": "fixture"})
+    peer = RecordingSDK()
+    adapter = CuaDriverAdapter(
+        sdk=peer.sdk,
+        driver=peer,
+        browser_profile=BrowserProfile(
+            mode="existing_profile", pid=123, window_id=42, fingerprint="a" * 64, approved=True
+        ),
+    )
+    response = await network.alice.post(
+        "/api/devices", json={"name": "Foreground boundary", "capabilities": ["browser"]}
+    )
+    assert response.status_code == 201
+    device = response.json()
+    response = await network.alice.post(
+        "/api/client-grants",
+        json={"name": "Browser Agent", "device_ids": [device["id"]], "capabilities": ["browser"]},
+    )
+    assert response.status_code == 201
+    grant = response.json()
+    state = tmp_path / "device"
+    async with (
+        connected_device(
+            network,
+            device,
+            state,
+            executor=LocalExecutor(driver=adapter),
+            capabilities={"browser": True},
+        ),
+        mcp_connection(network.url, grant["key"]) as mcp,
+    ):
+        tools = await mcp.list_tools()
+        assert not {"browser_prepare", "browser-prepare"} & {tool.name for tool in tools.tools}
+        before_prepare = await mcp.call_tool(
+            "session_open", {"device_id": device["id"], "capabilities": ["browser"]}
+        )
+        assert before_prepare.isError is True
+        denied = await mcp.call_tool(
+            "browser_prepare", {"session_id": "not-an-owner", "delivery_mode": "foreground"}
+        )
+        assert denied.isError is True
+        assert peer.calls == []
+        prepared = await local_control(state, {"command": "browser-prepare"})
+        assert prepared["ok"] is True
+        assert len(peer.sessions) == 1
+        owner_session = next(iter(peer.sessions))
+        assert peer.trusted_options[0].ttl_seconds == 8 * 60 * 60
+        assert peer.trusted_options[0].idle_ttl_seconds == 30 * 60
+        session = decode(
+            await mcp.call_tool("session_open", {"device_id": device["id"], "capabilities": ["browser"]})
+        )
+        opened = await mcp.call_tool(
+            "browser_open",
+            {"session_id": session["id"], "url": "https://example.invalid", "delivery_mode": "foreground"},
+        )
+        if opened.isError:
+            opened = await mcp.call_tool(
+                "browser_open", {"session_id": session["id"], "url": "https://example.invalid"}
+            )
+        opened = decode(opened)
+        assert opened["status"] == "executed"
+        old_observation = opened["result"]["observation_id"]
+        prepares = [arguments for tool, arguments in peer.calls if tool == "browser_prepare"]
+        assert len(prepares) == 1
+        assert prepares[0]["delivery_mode"] == "foreground"
+        await mcp.call_tool("session_close", {"session_id": session["id"]})
+        async with asyncio.timeout(2):
+            while peer.sessions != {owner_session}:
+                await asyncio.sleep(0.01)
+        assert peer.closed_handles == []
+        second = decode(
+            await mcp.call_tool("session_open", {"device_id": device["id"], "capabilities": ["browser"]})
+        )
+        current = decode(
+            await mcp.call_tool(
+                "browser_open", {"session_id": second["id"], "url": "https://example.invalid"}
+            )
+        )
+        assert current["status"] == "executed"
+        assert current["result"]["observation_id"] != old_observation
+        stale = decode(
+            await mcp.call_tool(
+                "browser_act",
+                {
+                    "session_id": second["id"],
+                    "observation_id": old_observation,
+                    "action": {"type": "click", "element_ref": "p1:1"},
+                },
+            )
+        )
+        assert stale["status"] == "refused"
+        assert stale["error"]["code"] == "stale_observation"
+        assert peer.actions == []
+        observed = decode(await mcp.call_tool("browser_observe", {"session_id": second["id"]}))
+        assert observed["status"] == "executed"
+        assert observed["result"]["target_id"] == opened["result"]["target_id"]
+        await mcp.call_tool("session_close", {"session_id": second["id"]})
+        paused = await local_control(state, {"command": "pause"})
+        assert paused["ok"] and paused["paused"]
+        assert paused["requested_capabilities"]["browser"] is True
+        assert peer.sessions == set()
+        assert peer.closed_handles == [owner_session]
+        assert sum(tool == "browser_prepare" for tool, _ in peer.calls) == 1
+
+
+async def test_local_browser_target_change_closes_browser_only_and_rejects_stale_identity(
+    network: Network, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current_fingerprint = ["a" * 64]
+
+    async def process_identity(_pid: int | None) -> str:
+        return current_fingerprint[0]
+
+    monkeypatch.setattr(cua_boundary, "_process_fingerprint", process_identity)
+    monkeypatch.setattr(cua_boundary, "_chrome_dependency", lambda: {"installed": True, "version": "fixture"})
+    peer = RecordingSDK()
+    adapter = CuaDriverAdapter(sdk=peer.sdk, driver=peer, browser_profile=BrowserProfile(mode="isolated"))
+    created = await network.alice.post(
+        "/api/devices", json={"name": "Local browser selection", "capabilities": ["browser", "shell"]}
+    )
+    assert created.status_code == 201
+    device = created.json()
+    created = await network.alice.post(
+        "/api/client-grants",
+        json={
+            "name": "Profile acceptance",
+            "device_ids": [device["id"]],
+            "capabilities": ["browser", "shell"],
+        },
+    )
+    assert created.status_code == 201
+    grant = created.json()
+    state = tmp_path / "device"
+    async with (
+        connected_device(
+            network, device, state, executor=LocalExecutor(driver=adapter), capabilities={"browser": True}
+        ),
+        mcp_connection(network.url, grant["key"]) as mcp,
+    ):
+        browser = decode(
+            await mcp.call_tool(
+                "session_open",
+                {
+                    "device_id": device["id"],
+                    "capabilities": ["browser"],
+                },
+            )
+        )
+        assert (
+            decode(
+                await mcp.call_tool(
+                    "browser_open",
+                    {
+                        "session_id": browser["id"],
+                        "url": "https://example.invalid",
+                    },
+                )
+            )["status"]
+            == "executed"
+        )
+        shell = decode(
+            await mcp.call_tool(
+                "session_open",
+                {
+                    "device_id": device["id"],
+                    "capabilities": ["shell"],
+                },
+            )
+        )
+        marker, gate = tmp_path / "shell-started", tmp_path / "shell-gate"
+        command = f"printf ready > {shlex.quote(str(marker))}; while [ ! -f {shlex.quote(str(gate))} ]; do sleep 0.05; done; printf target-change-preserved-shell"
+        operation = decode(
+            await mcp.call_tool("command_execute", {"session_id": shell["id"], "command": command})
+        )
+        await wait_for_file(marker)
+        selected = await local_control(
+            state,
+            {
+                "command": "browser-target",
+                "profile": {
+                    "mode": "existing_profile",
+                    "pid": 123,
+                    "window_id": 42,
+                    "fingerprint": current_fingerprint[0],
+                    "approved": True,
+                },
+            },
+        )
+        assert selected["ok"] is True
+        assert selected["paused"] is False
+        assert selected["requested_capabilities"]["shell"] is True
+        async with asyncio.timeout(3):
+            while True:
+                closed = await mcp.call_tool("browser_observe", {"session_id": browser["id"]})
+                if closed.isError:
+                    break
+                assert decode(closed)["status"] == "refused"
+                await asyncio.sleep(0.02)
+        assert decode(await mcp.call_tool("command_status", {"operation_id": operation["operation_id"]}))[
+            "status"
+        ] in {"accepted", "dispatched"}
+        gate.write_text("continue")
+        assert (await poll_result(mcp, operation["operation_id"]))["result"][
+            "stdout"
+        ] == "target-change-preserved-shell"
+        await mcp.call_tool("session_close", {"session_id": shell["id"]})
+
+        assert (await local_control(state, {"command": "browser-prepare"}))["ok"] is True
+        owner_session = next(iter(peer.sessions))
+        fresh = decode(
+            await mcp.call_tool(
+                "session_open",
+                {
+                    "device_id": device["id"],
+                    "capabilities": ["browser"],
+                },
+            )
+        )
+        prepared_count = sum(tool == "browser_prepare" for tool, _ in peer.calls)
+        current_fingerprint[0] = "b" * 64
+        expired = await local_control(state, {"command": "status"})
+        assert expired["dependencies"]["browser"]["status"] == "expired"
+        assert owner_session in peer.closed_handles
+        refused = await mcp.call_tool(
+            "browser_open", {"session_id": fresh["id"], "url": "https://example.invalid"}
+        )
+        assert refused.isError or decode(refused)["status"] == "refused"
+        assert sum(tool == "browser_prepare" for tool, _ in peer.calls) == prepared_count
+        await mcp.call_tool("session_close", {"session_id": fresh["id"]})
+
+
 @dataclass
 class Network:
     url: str
@@ -559,7 +944,12 @@ async def network(tmp_path: Path) -> AsyncIterator[Network]:
 
 @asynccontextmanager
 async def connected_device(
-    network: Network, device: dict[str, Any], state_dir: Path
+    network: Network,
+    device: dict[str, Any],
+    state_dir: Path,
+    *,
+    executor: LocalExecutor | None = None,
+    capabilities: dict[str, bool] | None = None,
 ) -> AsyncIterator[DeviceClient]:
     config = {
         "url": network.url,
@@ -567,7 +957,9 @@ async def connected_device(
         "paused": False,
         "revoked": False,
     }
-    client = DeviceClient(state_dir, config, device["key"])
+    if capabilities is not None:
+        config["capabilities"].update(capabilities)
+    client = DeviceClient(state_dir, config, device["key"], executor=executor)
     running = asyncio.create_task(client.run())
     try:
         async with asyncio.timeout(5):

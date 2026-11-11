@@ -319,10 +319,12 @@ class Runtime:
             except (RuntimeError, OSError, WebSocketDisconnect):
                 await self.disconnect(device_id, connection)
 
-    async def disable_capabilities(self, device_id: str, capabilities: set[str]) -> None:
+    async def disable_capabilities(
+        self, device_id: str, capabilities: set[str], *, reason: str = "本机能力已关闭"
+    ) -> None:
         for session in self.store.sessions(device_id):
             if capabilities.intersection(session["capabilities"]):
-                await self.end_session(session, reason="本机能力已关闭")
+                await self.end_session(session, reason=reason)
 
     async def disconnect(self, device_id: str, connection: Connection) -> None:
         is_current = self.connections.get(device_id) is connection
@@ -367,6 +369,9 @@ class Runtime:
             raise BridgeError("revoked", "设备凭据已失效")
         if message.get("type") == "local_stop":
             await self.stop_device(device_id, "本机已停止当前执行")
+            return
+        if message.get("type") == "browser_target_changed":
+            await self.disable_capabilities(device_id, {"browser"}, reason="本机浏览器目标已更换")
             return
         if message.get("type") in {"heartbeat", "capabilities"}:
             was_paused = connection.paused

@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from abridge.cua_driver import CuaDriverAdapter, CuaError
+from abridge.cua_driver import BrowserProfile, CuaDriverAdapter, CuaError
 from abridge.diagnostics import runtime_status
 from abridge.protocol import TOOL_CAPABILITIES as TOOL_CAPABILITIES
 
@@ -31,9 +31,18 @@ class ExecutionError(Exception):
 class LocalExecutor:
     """Execute tools, own their subprocesses, and retain short-lived observations."""
 
-    def __init__(self, helper: str | None = None, *, driver: CuaDriverAdapter | None = None) -> None:
+    def __init__(
+        self,
+        helper: str | None = None,
+        *,
+        driver: CuaDriverAdapter | None = None,
+        browser_profile: BrowserProfile | None = None,
+    ) -> None:
         self.helper = helper or os.environ.get("ABRIDGE_DESKTOP_HELPER")
-        self.driver = driver or CuaDriverAdapter()
+        try:
+            self.driver = driver or CuaDriverAdapter(browser_profile=browser_profile)
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
         self.processes: dict[str, asyncio.subprocess.Process] = {}
         self.on_output: Callable[[str, str, str], Awaitable[None]] | None = None
 
@@ -92,6 +101,29 @@ class LocalExecutor:
     async def diagnostics(self) -> dict[str, Any]:
         return {"runtime": runtime_status(), **await self.driver.diagnostics()}
 
+    async def browser_targets(self) -> list[dict[str, Any]]:
+        try:
+            return await self.driver.browser_targets()
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
+    def browser_diagnostics(self) -> dict[str, Any]:
+        """Read owner-local driver diagnostics; this is never an Agent tool."""
+        return self.driver.browser_diagnostics()
+
+    async def prepare_browser(self) -> dict[str, Any]:
+        """Prepare a previously approved browser through an explicit local action."""
+        try:
+            return await self.driver.prepare_browser()
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
+    async def configure_browser(self, profile: BrowserProfile) -> None:
+        try:
+            await self.driver.configure_browser(profile)
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
     async def close_session(self, session_id: str) -> None:
         try:
             await self.driver.close_session(session_id)
@@ -101,6 +133,20 @@ class LocalExecutor:
     async def stop(self) -> None:
         try:
             await self.driver.stop()
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
+    async def release_remote_sessions(self) -> None:
+        """Release disconnected callers without revoking a healthy local browser connection."""
+        try:
+            await self.driver.release_remote_sessions()
+        except CuaError as error:
+            raise ExecutionError(error.code, str(error)) from error
+
+    async def stop_browser(self) -> None:
+        """End the local browser connection without stopping unrelated desktop work."""
+        try:
+            await self.driver.stop_browser()
         except CuaError as error:
             raise ExecutionError(error.code, str(error)) from error
 

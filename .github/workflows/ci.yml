@@ -81,7 +81,7 @@ jobs:
       - name: Install the locked Mac driver
         run: uv sync --locked --extra dev --extra macos
       - name: Check the real embedded SDK without desktop interaction
-        run: uv run --no-sync pytest -q tests/sdk/test_cua_native_contract.py
+        run: uv run --no-sync pytest -q tests/sdk/test_cua_native_contract.py tests/sdk/test_cua_records.py tests/sdk/test_uniffi_async_callbacks.py tests/client/test_macos_access.py
       - name: Build, verify signature, and check unchanged-build reuse
         run: |
           uv run --no-sync python - <<'PY'

@@ -25,7 +25,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
-macos = ["cua-driver==0.46.1; sys_platform == 'darwin'"]
+macos = ["cua-driver==0.46.1+abridge.1; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
+[tool.uv.sources]
+cua-driver = { path = "vendor/cua-driver/wheels/cua_driver-0.46.1+abridge.1-py3-none-macosx_14_0_arm64.whl" }
 
 [project.scripts]
 abridge = "abridge.__main__:main"
@@ -66,6 +69,7 @@ only-include = [
   "abridge",
   "native",
   "deploy",
+  "vendor/cua-driver",
   "tests",
   "docs",
   "README.md",
