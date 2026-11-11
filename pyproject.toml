@@ -1,0 +1,99 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "abridge"
+dynamic = ["version"]
+description = "An independent, permission-aware bridge from MCP agents to your Mac."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "mcp>=1.26,<2",
+  "websockets>=14,<16",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+
+[project.scripts]
+abridge = "abridge.__main__:main"
+
+[tool.hatch.version]
+path = "abridge/__init__.py"
+
+[tool.hatch.build]
+exclude = [
+  "._*",
+  "**/._*",
+  ".DS_Store",
+  "__pycache__",
+  "*.py[cod]",
+  ".local",
+  "dist",
+  "build",
+  "*.app",
+  "*.egg-info",
+  ".venv",
+  ".cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".mypy_cache",
+  ".coverage*",
+  "htmlcov",
+  "*.db",
+  "*.db-*",
+  "*.sqlite",
+  "*.sqlite3",
+  "*.sqlite3-*",
+  ".env",
+  ".env.*",
+]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "abridge",
+  "native",
+  "deploy",
+  "tests",
+  "docs",
+  "README.md",
+  "pyproject.toml",
+  "uv.lock",
+  "Makefile",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "AGENTS.md",
+  ".editorconfig",
+  ".gitattributes",
+  ".gitignore",
+  ".github",
+  "abridge-review.html",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["abridge"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 110
+extend-exclude = ["._*"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
