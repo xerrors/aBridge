@@ -21,6 +21,8 @@
 
 [技术架构图](prototype/design-review.html#tech-stack) 集中展示调用方、aBridge 服务和 Mac 执行层，版本与取舍收进折叠参考。模块细节见 [架构文档](architecture.md)，实际结果见 [验证范围](verification.md)。
 
+[浏览器接入图](prototype/design-review.html#browser-connection) 展示现有 Profile、Cookie、CDP 与本机授权的关系。
+
 [交互原型](../abridge-review.html) 与折叠的历史评审保留为设计输入；当前能力以架构图、README 和架构文档为准。
 
 旧版截图、设计迭代和真实机器验证截图已移入本机 `.local/archive/`；源码只保留当前可运行的原型源。
