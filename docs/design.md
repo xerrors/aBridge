@@ -19,8 +19,8 @@
 
 ## 原型边界
 
-[完整技术栈剖析](prototype/design-review.html#tech-stack) 补在原设计文档前部，按当前代码说明服务、协议、数据库、管理台、Mac 客户端、Cua 原生驱动、Chrome、鉴权、构建和部署的职责、依赖与取舍。版本和运行边界对应 0.2.0，声明依赖范围与锁定版本分开列示；模块细节见 [架构文档](architecture.md)，实际验证结果见 [验证范围](verification.md)。
+[技术架构图](prototype/design-review.html#tech-stack) 集中展示调用方、aBridge 服务和 Mac 执行层，版本与取舍收进折叠参考。模块细节见 [架构文档](architecture.md)，实际结果见 [验证范围](verification.md)。
 
-[交互原型](../abridge-review.html) 和原设计文档的历史评审章节保留为设计输入。历史部分包含演示数据、候选架构与未实现界面，不是产品功能清单；阅读时以新增的当前技术栈章节、README 和架构文档为准。
+[交互原型](../abridge-review.html) 与折叠的历史评审保留为设计输入；当前能力以架构图、README 和架构文档为准。
 
 旧版截图、设计迭代和真实机器验证截图已移入本机 `.local/archive/`；源码只保留当前可运行的原型源。
