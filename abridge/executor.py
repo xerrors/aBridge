@@ -60,7 +60,7 @@ class LocalExecutor:
         session_id = session_id or "local"
         try:
             if tool == "computer_apps":
-                return await self.driver.list_apps(session_id)
+                return await self.driver.list_apps(session_id, query=arguments.get("query"))
             if tool == "computer_windows":
                 return await self.driver.list_windows(session_id, arguments["pid"])
             if tool == "computer_observe":

@@ -180,6 +180,99 @@ async def test_running_command_streams_output_before_it_exits(tmp_path: Path) ->
         assert result["result"]["stdout"] == "earlylate"
 
 
+async def test_conditional_pause_rechecks_inflight_input_and_manual_pause_persists(tmp_path: Path) -> None:
+    state = tmp_path / "device"
+    executor = ControlledDesktopExecutor()
+    async with device_peer(state, executor=executor, capabilities={"screen": True, "input": True}) as peer:
+        await peer.dispatch(
+            "read-only",
+            "computer_windows",
+            {"pid": 123},
+            session_id="ses_read",
+            session_capabilities=["screen"],
+        )
+        await asyncio.wait_for(executor.read_started.wait(), timeout=1)
+        status = await local_control(state, {"command": "status"})
+        assert "read-only" in status["active_operations"] and status.get("desktop_active_until", 0) == 0
+        ignored = await local_control(state, {"command": "pause", "if_desktop_active": True})
+        assert ignored["ok"] and ignored["paused"] is False
+        executor.release_read.set()
+        assert (await peer.result("read-only"))["status"] == "executed"
+
+        arguments = {"observation_id": "obs_recorded", "action": {"type": "click", "x": 1, "y": 1}}
+        finished = await peer.call(
+            "input-finished", "computer_act", arguments, session_id="ses_done", session_capabilities=["input"]
+        )
+        assert finished["status"] == "executed"
+        late = await local_control(state, {"command": "pause", "if_desktop_active": True})
+        assert late["paused"] is False and late.get("desktop_active_until", 0) == 0
+
+        executor.hold_input = True
+        await peer.dispatch(
+            "input-active", "computer_act", arguments, session_id="ses_live", session_capabilities=["input"]
+        )
+        await asyncio.wait_for(executor.input_started.wait(), timeout=1)
+        active = await local_control(state, {"command": "status"})
+        assert active["desktop_active_until"] > time.time()
+        paused = await local_control(state, {"command": "pause", "if_desktop_active": True})
+        assert paused["paused"] is True and paused["desktop_active_until"] == 0
+        assert (await peer.result("input-active"))["status"] == "outcome_unknown"
+        assert executor.input_cancelled.is_set()
+
+        assert (await local_control(state, {"command": "resume"}))["paused"] is False
+        executor.input_started.clear()
+        await peer.dispatch(
+            "input-closed", "computer_act", arguments, session_id="ses_closed", session_capabilities=["input"]
+        )
+        await asyncio.wait_for(executor.input_started.wait(), timeout=1)
+        await peer.connection.send(
+            json.dumps({"type": "session_close", "session_id": "ses_closed", "connection_epoch": peer.epoch})
+        )
+        assert (await peer.result("input-closed"))["status"] == "outcome_unknown"
+        late = await local_control(state, {"command": "pause", "if_desktop_active": True})
+        assert late["paused"] is False and late.get("desktop_active_until", 0) == 0
+
+        manual = await local_control(state, {"command": "pause"})
+        assert manual["paused"] is True
+        assert json.loads((state / "config.json").read_text())["paused"] is True
+
+
+class ControlledDesktopExecutor(LocalExecutor):
+    """Keep real device transport and local control, without native input or capture."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_started = asyncio.Event()
+        self.release_read = asyncio.Event()
+        self.input_started = asyncio.Event()
+        self.input_cancelled = asyncio.Event()
+        self.hold_input = False
+
+    async def diagnostics(self) -> dict[str, Any]:
+        return {
+            "driver": {"ready": True},
+            "permissions": {"screen": True, "input": True, "checked": True},
+            "browser": {"mode": "existing_profile", "ready": False},
+        }
+
+    async def execute(
+        self, operation_id: str, tool: str, arguments: dict[str, Any], *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        if tool == "computer_windows":
+            self.read_started.set()
+            await self.release_read.wait()
+            return {"windows": []}
+        assert tool == "computer_act"
+        if self.hold_input:
+            self.input_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.input_cancelled.set()
+                raise
+        return {"recorded": True}
+
+
 class DevicePeer:
     def __init__(self) -> None:
         self.connection: Any = None

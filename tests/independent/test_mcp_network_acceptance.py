@@ -9,9 +9,11 @@ import shlex
 import socket
 import subprocess
 import sys
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import httpx
@@ -630,6 +632,78 @@ async def test_unattended_file_credential_cli_restart_pause_and_unbind(
                 await asyncio.wait_for(process.communicate(), timeout=5)
 
 
+async def test_mcp_application_query_filters_without_changing_default_requests(
+    network: Network, tmp_path: Path
+) -> None:
+    apps = [
+        ApplicationRecord(101, "Google Chrome", "com.google.Chrome"),
+        ApplicationRecord(102, "aBridge Verification", "dev.abridge.fixture"),
+        ApplicationRecord(103, "Bundleless Tool", None),
+    ]
+    peer = RecordingSDK()
+    app_requests = []
+
+    async def list_apps(request: Any) -> Any:
+        app_requests.append(request)
+        return SimpleNamespace(apps=apps)
+
+    peer.list_apps = list_apps
+    peer.sdk.current_mac_os_permission_status = lambda: SimpleNamespace(
+        screen_recording=True, accessibility=True
+    )
+    adapter = CuaDriverAdapter(sdk=peer.sdk, driver=peer)
+    created = await network.alice.post(
+        "/api/devices", json={"name": "Application search fixture", "capabilities": ["screen"]}
+    )
+    assert created.status_code == 201
+    device = created.json()
+    granted = await network.alice.post(
+        "/api/client-grants",
+        json={"name": "Screen only", "device_ids": [device["id"]], "capabilities": ["screen"]},
+    )
+    assert granted.status_code == 201
+    async with (
+        connected_device(
+            network,
+            device,
+            tmp_path / "client",
+            executor=LocalExecutor(driver=adapter),
+            capabilities={"screen": True},
+        ),
+        mcp_connection(network.url, granted.json()["key"]) as mcp,
+    ):
+        tools = await mcp.list_tools()
+        schema = next(tool.inputSchema for tool in tools.tools if tool.name == "computer_apps")
+        assert "query" not in schema.get("required", [])
+        assert {part["type"] for part in schema["properties"]["query"]["anyOf"]} == {"string", "null"}
+        session = decode(
+            await mcp.call_tool("session_open", {"device_id": device["id"], "capabilities": ["screen"]})
+        )
+        arguments = {"session_id": session["id"], "operation_id": "apps-default"}
+        default = decode(await mcp.call_tool("computer_apps", arguments))
+        assert default["status"] == "executed"
+        assert [app["pid"] for app in default["result"]["apps"]] == [101, 102, 103]
+        replay = decode(await mcp.call_tool("computer_apps", {**arguments, "query": None}))
+        assert replay == default
+        assert len(app_requests) == 1
+
+        for query, expected in (
+            ("", [101, 102, 103]),
+            ("cHrOmE", [101]),
+            ("ABRIDGE.FIX", [102]),
+            ("missing", []),
+        ):
+            response = decode(
+                await mcp.call_tool("computer_apps", {"session_id": session["id"], "query": query})
+            )
+            assert response["status"] == "executed"
+            assert [app["pid"] for app in response["result"]["apps"]] == expected
+        assert len(app_requests) == 5
+        assert (
+            decode(await mcp.call_tool("session_close", {"session_id": session["id"]}))["status"] == "stopped"
+        )
+
+
 async def test_owner_browser_reuse_keeps_foreground_local_and_remote_refs_isolated(
     network: Network, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -740,6 +814,68 @@ async def test_owner_browser_reuse_keeps_foreground_local_and_remote_refs_isolat
         assert peer.sessions == set()
         assert peer.closed_handles == [owner_session]
         assert sum(tool == "browser_prepare" for tool, _ in peer.calls) == 1
+
+
+async def test_mcp_idle_budget_and_stopped_errors_remain_distinct(network: Network, tmp_path: Path) -> None:
+    device = await network.add_device(network.alice, "Idle budget device")
+    grant = await network.add_grant(network.alice, "Idle budget Agent", [device["id"]])
+    other = await network.add_grant(network.alice, "Other Agent", [device["id"]])
+    target = tmp_path / "lease-content.txt"
+    target.write_text("still readable", encoding="utf-8")
+    state = tmp_path / "client"
+    async with (
+        connected_device(network, device, state),
+        mcp_connection(network.url, grant["key"]) as mcp,
+        mcp_connection(network.url, other["key"]) as foreign,
+    ):
+        session = decode(
+            await mcp.call_tool("session_open", {"device_id": device["id"], "capabilities": ["files"]})
+        )
+        assert 299 <= session["lease_until"] - session["created_at"] <= 301
+        store = Store(tmp_path / "server.db")
+        try:
+            # Consume a minute of the persisted idle budget without sleeping or
+            # changing transport clocks. A former 30-second budget cannot survive.
+            store.renew_session(session["id"], session["lease_until"] - 60)
+            read = decode(
+                await mcp.call_tool("file_read", {"session_id": session["id"], "path": str(target)})
+            )
+            assert read["status"] == "executed" and read["result"]["content"] == "still readable"
+            assert store.session(session["id"])["lease_until"] > time.time() + 290
+
+            store.renew_session(session["id"], time.time() - 1)
+            expired = await mcp.call_tool("file_read", {"session_id": session["id"], "path": str(target)})
+            assert expired.isError
+            assert "session_expired:" in " ".join(b.text for b in expired.content if b.type == "text")
+            assert store.session(session["id"])["lease_until"] < time.time()
+        finally:
+            store.close()
+
+        stopped = decode(
+            await mcp.call_tool("session_open", {"device_id": device["id"], "capabilities": ["files"]})
+        )
+        await mcp.call_tool("session_close", {"session_id": stopped["id"]})
+        closed = await mcp.call_tool("file_read", {"session_id": stopped["id"], "path": str(target)})
+        assert closed.isError
+        assert "session_stopped:" in " ".join(b.text for b in closed.content if b.type == "text")
+
+        paused = decode(
+            await mcp.call_tool("session_open", {"device_id": device["id"], "capabilities": ["files"]})
+        )
+        assert (await local_control(state, {"command": "pause"}))["paused"] is True
+        async with asyncio.timeout(2):
+            while True:
+                devices = (await network.alice.get("/api/devices")).json()["devices"]
+                if next(d for d in devices if d["id"] == device["id"])["paused"]:
+                    break
+                await asyncio.sleep(0.01)
+        refused = await mcp.call_tool("file_read", {"session_id": paused["id"], "path": str(target)})
+        assert refused.isError
+        assert "device_paused:" in " ".join(b.text for b in refused.content if b.type == "text")
+        hidden = await foreign.call_tool("file_read", {"session_id": paused["id"], "path": str(target)})
+        assert hidden.isError
+        error_text = " ".join(b.text for b in hidden.content if b.type == "text")
+        assert "not_found:" in error_text and "device_paused" not in error_text
 
 
 async def test_local_browser_target_change_closes_browser_only_and_rejects_stale_identity(
@@ -866,6 +1002,16 @@ async def test_local_browser_target_change_closes_browser_only_and_rejects_stale
         assert refused.isError or decode(refused)["status"] == "refused"
         assert sum(tool == "browser_prepare" for tool, _ in peer.calls) == prepared_count
         await mcp.call_tool("session_close", {"session_id": fresh["id"]})
+
+
+@dataclass(frozen=True)
+class ApplicationRecord:
+    """SDK-shaped records keep the real adapter's projection boundary in this test."""
+
+    pid: int
+    name: str
+    bundle_id: str | None
+    running: bool = True
 
 
 @dataclass

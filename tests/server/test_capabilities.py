@@ -95,6 +95,10 @@ async def test_mcp_and_device_share_the_implemented_capability_contract(tmp_path
         }
         schema = tools["session_open"].inputSchema["properties"]["capabilities"]["items"]
         assert set(schema["enum"]) == CAPABILITIES == set(CLIENT_CAPABILITIES)
+        apps_schema = tools["computer_apps"].inputSchema
+        assert "query" not in apps_schema["required"]
+        assert apps_schema["properties"]["query"]["default"] is None
+        assert apps_schema["properties"]["query"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
         assert SERVER_TOOL_CAPABILITIES == TOOL_CAPABILITIES
     finally:
         store.close()

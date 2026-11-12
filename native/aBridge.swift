@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var environmentLabels: [String: NSTextField] = [:]
     private var capabilityButtons: [String: NSButton] = [:]
     private var connectButton: NSButton!
+    private var pauseButton: NSButton!
     private var repairButton: NSButton!
     private let browserPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private var pauseItem: NSMenuItem!
@@ -67,16 +68,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             Task { @MainActor in self?.poll() }
         }
         monitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .mouseMoved, .keyDown]
+            matching: [.leftMouseDown, .rightMouseDown, .keyDown]
         ) { [weak self] event in
             // Cua posts input from the device process without the retired helper's event tag.
             let sourcePID = event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID)
             Task { @MainActor in
                 guard let self,
+                      self.daemon?.isRunning == true,
                       sourcePID != Int64(self.daemon?.processIdentifier ?? -1),
-                      (self.current["desktop_active_until"] as? Double ?? 0) > Date().timeIntervalSince1970
+                      self.desktopInputIsActive()
                 else { return }
-                self.control(["command": "pause"])
+                self.control(["command": "pause", "if_desktop_active": true])
             }
         }
         if !FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path) {
@@ -176,7 +178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         connectButton.contentTintColor = .systemBlue
         let unbind = NSButton(title: "解除绑定", target: self, action: #selector(unbindDevice))
         unbind.bezelStyle = .rounded
-        root.addArrangedSubview(NSStackView(views: [connectButton, unbind]))
+        pauseButton = NSButton(title: "暂停访问", target: self, action: #selector(togglePause))
+        pauseButton.bezelStyle = .rounded
+        root.addArrangedSubview(NSStackView(views: [connectButton, pauseButton, unbind]))
         let separator = NSBox()
         separator.boxType = .separator
         root.addArrangedSubview(separator)
@@ -264,16 +268,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             self.render(result)
             guard selected["mode"] as? String != "isolated" else { return }
-            self.browserConnectionFailed = false
-            self.preparingBrowser = true
-            self.statusLabel.stringValue = "正在连接 Chrome，请允许浏览器中的调试请求…"
-            self.runClient(["control", "browser-prepare"]) { [weak self] prepared in
-                guard let self else { return }
-                self.preparingBrowser = false
-                self.browserConnectionFailed = prepared["ok"] as? Bool != true
-                if prepared["ok"] as? Bool == true { self.render(prepared) }
-                else { self.statusLabel.stringValue = prepared["error"] as? String ?? "浏览器尚未连接，请查看安装说明" }
-            }
+            self.prepareBrowser()
+        }
+    }
+
+    private func prepareBrowser() {
+        guard !preparingBrowser else { return }
+        browserConnectionFailed = false
+        preparingBrowser = true
+        statusLabel.stringValue = "正在连接 Chrome，请允许浏览器中的调试请求…"
+        runClient(["control", "browser-prepare"]) { [weak self] result in
+            guard let self else { return }
+            self.preparingBrowser = false
+            self.browserConnectionFailed = result["ok"] as? Bool != true
+            if result["ok"] as? Bool == true { self.render(result) }
+            else { self.statusLabel.stringValue = result["error"] as? String ?? "浏览器尚未连接，请查看安装说明" }
         }
     }
 
@@ -355,7 +364,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func togglePause() {
-        control(["command": current["paused"] as? Bool == true ? "resume" : "pause"])
+        guard current["paused"] as? Bool == true else {
+            control(["command": "pause"])
+            return
+        }
+        runClient(["control", "resume"]) { [weak self] result in
+            guard let self else { return }
+            guard result["ok"] as? Bool == true else {
+                self.statusLabel.stringValue = result["error"] as? String ?? "恢复访问失败"
+                return
+            }
+            self.render(result)
+            let requested = result["requested_capabilities"] as? [String: Bool] ?? [:]
+            let dependencies = result["dependencies"] as? [String: Any] ?? [:]
+            let browser = dependencies["browser"] as? [String: Any] ?? [:]
+            if requested["browser"] == true,
+               browser["mode"] as? String == "existing_profile",
+               browser["selection_ready"] as? Bool == true {
+                self.prepareBrowser()
+            }
+        }
     }
 
     @objc private func stop() { control(["command": "stop"]) }
@@ -534,10 +562,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
            let enabled = request["enabled"] as? Bool {
             arguments += ["--capability", capability, "--enabled", enabled ? "true" : "false"]
         }
+        if command == "pause", request["if_desktop_active"] as? Bool == true {
+            arguments.append("--if-desktop-active")
+        }
         runClient(arguments) { [weak self] result in
             if result["ok"] as? Bool == true { self?.render(result) }
             else { self?.statusLabel.stringValue = result["error"] as? String ?? "本机控制暂不可用" }
         }
+    }
+
+    private func desktopInputIsActive() -> Bool {
+        // Input may finish between UI polls; use the latest state, then let the
+        // client check its live operations again before applying an automatic pause.
+        let location = stateDirectory.appendingPathComponent("status.json")
+        guard let data = try? Data(contentsOf: location),
+              let latest = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (latest["desktop_active_until"] as? Double ?? 0) > Date().timeIntervalSince1970
     }
 
     private func poll() {
@@ -584,7 +625,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if preparingBrowser {
             statusLabel.stringValue = "正在连接 Chrome，请允许浏览器中的调试请求…"
         } else if paused {
-            statusLabel.stringValue = "已暂停，需在本机恢复"
+            let reason = status["pause_reason"] as? [String: Any] ?? [:]
+            statusLabel.stringValue = reason["source"] as? String == "desktop_input"
+                ? "本机输入触发暂停，请点“恢复访问”"
+                : "已暂停，请点“恢复访问”"
         } else if !active.isEmpty {
             statusLabel.stringValue = "\(controllers.isEmpty ? "Agent" : controllers.joined(separator: "、")) 正在执行 \(active.count) 项操作"
         } else if connection == "online" {
@@ -593,7 +637,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             statusLabel.stringValue = connection == "connecting" ? "正在连接" : "连接已断开"
         }
         if let error = status["error"] as? String, !error.isEmpty { statusLabel.stringValue = error }
-        pauseItem.title = paused ? "恢复访问" : "暂停访问"
+        let pauseTitle = paused ? "恢复访问" : "暂停访问"
+        pauseItem.title = pauseTitle
+        pauseButton.title = pauseTitle
         item.button?.title = paused ? "aB ‖" : (active.isEmpty ? "aB" : "aB ●")
         let requested = status["requested_capabilities"] as? [String: Bool] ?? [:]
         for (key, button) in capabilityButtons { button.state = requested[key] == true ? .on : .off }
@@ -654,7 +700,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if driver["ready"] as? Bool != true {
                 environmentLabels["browser"]?.stringValue = "\(version) · 已安装，等待驱动"
             } else if browser["mode"] as? String == "existing_profile" {
-                if browser["status"] as? String == "expired" {
+                if browser["status"] as? String == "window_unavailable" {
+                    environmentLabels["browser"]?.stringValue = "\(version) · 原窗口不可用，请重新选择"
+                } else if browser["status"] as? String == "expired" {
                     environmentLabels["browser"]?.stringValue = "\(version) · 请重新选择窗口"
                 } else if browser["selection_ready"] as? Bool != true {
                     environmentLabels["browser"]?.stringValue = "\(version) · 请先选择窗口"

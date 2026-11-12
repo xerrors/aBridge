@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
+from abridge.protocol import SESSION_IDLE_SECONDS
 from abridge.protocol import TOOL_CAPABILITIES as TOOL_CAPABILITY
 from abridge.storage import CAPABILITIES, Store, identifier
 
@@ -126,7 +127,9 @@ class Runtime:
                 continue
             elif "input" in capabilities and "input" in session["capabilities"]:
                 raise BridgeError("desktop_busy", "桌面正在由另一个会话控制")
-        session = self.store.create_session(grant["id"], device_id, capabilities, time.time() + 30)
+        session = self.store.create_session(
+            grant["id"], device_id, capabilities, min(time.time() + SESSION_IDLE_SECONDS, grant["expires_at"])
+        )
         self.store.audit(grant["owner_id"], device_id, grant["id"], None, "session_open", "active")
         return session
 
@@ -209,7 +212,7 @@ class Runtime:
         future = asyncio.get_running_loop().create_future()
         self.pending[operation_id] = future
         self.output[operation_id] = {"stdout": "", "stderr": ""}
-        self.store.renew_session(session_id, time.time() + 30)
+        self.store.renew_session(session_id, min(time.time() + SESSION_IDLE_SECONDS, grant["expires_at"]))
         connection.sequence += 1
         payload = {
             "type": "dispatch",
@@ -468,7 +471,9 @@ class Runtime:
                     if not grant or grant["revoked_at"] or grant["expires_at"] <= time.time():
                         await self.end_session(session, reason="Agent 授权已失效", status="expired")
                     elif any(self.store.operation(op)["session_id"] == session["id"] for op in self.pending):
-                        self.store.renew_session(session["id"], time.time() + 30)
+                        self.store.renew_session(
+                            session["id"], min(time.time() + SESSION_IDLE_SECONDS, grant["expires_at"])
+                        )
                     elif session["lease_until"] <= time.time():
                         await self.end_session(session, reason="会话租约到期", status="expired")
             # Results can contain screenshots or file contents: retain only briefly in RAM.
@@ -483,8 +488,15 @@ class Runtime:
         session = self.store.session(session_id)
         if not session or session["grant_id"] != grant["id"]:
             raise BridgeError("not_found", "会话不存在或未获授权", 404)
-        if session["status"] != "active" or session["lease_until"] <= time.time():
-            raise BridgeError("session_expired", "会话已停止或租约到期，请建立新会话")
+        if session["status"] == "expired" or (
+            session["status"] == "active" and session["lease_until"] <= time.time()
+        ):
+            raise BridgeError("session_expired", "会话租约已到期，请建立新会话")
+        if session["status"] != "active":
+            connection = self.connections.get(session["device_id"])
+            if connection and connection.paused:
+                raise BridgeError("device_paused", "本机已暂停，请在本机恢复后建立新会话")
+            raise BridgeError("session_stopped", "会话已停止，请建立新会话")
         return session
 
     def authorized_operation(self, grant: dict[str, Any], operation_id: str) -> dict[str, Any]:

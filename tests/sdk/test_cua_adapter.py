@@ -75,6 +75,142 @@ async def test_late_authorization_after_shutdown_is_denied_without_driver(constr
     assert loops == [asyncio.get_running_loop()]
 
 
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (None, [44, 55, 66, 77]),
+        ("", [44, 55, 66, 77]),
+        ("cHroMe", [44]),
+        ("EXAMPLE.edi", [55]),
+        ("工作", [66]),
+        ("STRASSE", [77]),
+        ("no matching app", []),
+    ],
+)
+async def test_apps_query_filters_name_or_optional_bundle_without_changing_order(
+    monkeypatch, query, expected
+):
+    adapter, driver = make_adapter()
+
+    async def list_apps(request):
+        return SimpleNamespace(
+            apps=[
+                AppInfo(44, "Google Chrome", "com.google.Chrome"),
+                AppInfo(55, "Writer", "org.example.Editor"),
+                AppInfo(66, "工作台", None),
+                AppInfo(77, "Straße", None),
+            ]
+        )
+
+    monkeypatch.setattr(driver, "list_apps", list_apps)
+    try:
+        if query is None:
+            result = await adapter.list_apps("selection")
+        else:
+            result = await adapter.list_apps("selection", query=query)
+        assert list(result) == ["apps"]
+        assert [app["pid"] for app in result["apps"]] == expected
+        assert all(set(app) == {"pid", "name", "bundle_id"} for app in result["apps"])
+        assert driver.captures == 0
+        assert driver.window_requests == []
+    finally:
+        await adapter.shutdown()
+
+
+async def test_apps_query_preserves_all_matches_without_generic_list_truncation(monkeypatch):
+    adapter, driver = make_adapter()
+    apps = [AppInfo(index + 1, f"Fixture {index}", None) for index in range(501)]
+
+    async def list_apps(request):
+        return SimpleNamespace(apps=apps)
+
+    monkeypatch.setattr(driver, "list_apps", list_apps)
+    try:
+        for query in (None, "Fixture"):
+            result = await adapter.list_apps("selection", query=query)
+            assert [app["pid"] for app in result["apps"]] == list(range(1, 502))
+    finally:
+        await adapter.shutdown()
+
+
+async def test_invalid_apps_query_is_refused_before_driver_load():
+    adapter = CuaDriverAdapter()
+    with pytest.raises(CuaError) as error:
+        await adapter.list_apps("selection", query=42)
+    assert error.value.code == "invalid_arguments"
+    assert adapter._driver is None
+
+
+@pytest.mark.parametrize("process_state", ["running", "exited", "permission_denied"])
+async def test_empty_windows_distinguish_process_exit_without_guessing_a_space(monkeypatch, process_state):
+    adapter, driver = make_adapter()
+    driver.reported_windows = []
+    probes = []
+
+    def process_probe(pid, signal):
+        probes.append((pid, signal))
+        if process_state == "exited":
+            raise ProcessLookupError
+        if process_state == "permission_denied":
+            raise PermissionError
+
+    monkeypatch.setattr("abridge.cua_driver.os.kill", process_probe)
+    result = await adapter.list_windows("one", 44)
+    assert probes == [(44, 0)]
+    assert result["windows"] == []
+    assert result["requested_pid"] == 44
+    assert result["process_running"] is (process_state != "exited")
+    assert result["empty_reason"] == (
+        "process_not_running" if process_state == "exited" else "no_windows_reported"
+    )
+    assert result["current_space_id"] == 1
+    assert result["on_screen_only"] is False
+    assert "computer_apps" in result["guidance"]
+    assert "pid and window_id" in result["guidance"]
+    assert driver.window_requests[0].on_screen_only is False
+    assert driver.captures == 0
+
+
+async def test_unfiltered_empty_windows_do_not_invent_an_app_state(monkeypatch):
+    adapter, driver = make_adapter()
+    driver.reported_windows = []
+
+    def unexpected_probe(*args):
+        pytest.fail("An unfiltered window list has no single process to probe")
+
+    monkeypatch.setattr("abridge.cua_driver.os.kill", unexpected_probe)
+    result = await adapter.list_windows("one")
+    assert result["requested_pid"] is None
+    assert result["process_running"] is None
+    assert result["empty_reason"] == "no_windows_reported"
+
+
+async def test_window_listing_preserves_offscreen_space_metadata(monkeypatch):
+    adapter, driver = make_adapter()
+    driver.reported_windows = [Window(is_on_screen=False, on_current_space=False, space_ids=[2])]
+    monkeypatch.setattr("abridge.cua_driver.os.kill", lambda pid, signal: None)
+    result = await adapter.list_windows("one", 44)
+    assert result["process_running"] is True
+    assert result["empty_reason"] is None
+    assert "guidance" not in result
+    assert result["windows"][0]["is_on_screen"] is False
+    assert result["windows"][0]["on_current_space"] is False
+    assert result["windows"][0]["space_ids"] == [2]
+    assert driver.window_requests[0].on_screen_only is False
+
+
+async def test_missing_foreground_window_guides_explicit_selection_without_capture():
+    adapter, driver = make_adapter()
+    driver.reported_windows = []
+    with pytest.raises(CuaError) as error:
+        await adapter.computer_observe("one", screenshot=False)
+    assert error.value.code == "focus_unavailable"
+    assert "computer_apps and computer_windows" in str(error.value)
+    assert "explicit pid and window_id" in str(error.value)
+    assert driver.captures == 0
+    assert driver.window_requests[0].on_screen_only is True
+
+
 async def test_expired_observation_refuses_before_native_dispatch(monkeypatch):
     adapter, driver = make_adapter()
     observed = await adapter.computer_observe("one", 44, 99, screenshot=False)
@@ -117,6 +253,7 @@ async def test_unknown_window_stacking_does_not_capture_or_guess_by_array_order(
     with pytest.raises(CuaError) as error:
         await adapter.computer_observe("one", screenshot=False)
     assert error.value.code == "focus_unavailable"
+    assert "explicit pid and window_id" in str(error.value)
     assert driver.captures == 0
 
 
@@ -271,6 +408,49 @@ async def test_approved_config_alone_does_not_allow_remote_preparation(existing_
     assert caught.value.code == "browser_not_prepared"
     assert driver.calls == []
     assert driver.started == []
+
+
+@pytest.mark.parametrize("change", ["empty", "window_id", "window_owner"])
+async def test_current_process_without_the_approved_window_is_not_ready(existing_adapter, change):
+    adapter, driver = existing_adapter
+    if change == "empty":
+        driver.reported_windows = []
+    elif change == "window_id":
+        driver.focus_window = 100
+    else:
+        driver.window_owner = 55
+    browser = (await adapter.diagnostics())["browser"]
+    assert browser["status"] == "window_unavailable"
+    assert browser["selection_ready"] is False
+    assert browser["owner_ready"] is False
+    assert browser["ready"] is False
+    with pytest.raises(CuaError) as error:
+        await adapter.prepare_browser()
+    assert error.value.code == "browser_window_unavailable"
+    assert driver.calls == []
+    assert driver.started == []
+    assert all(request.pid == 44 and request.on_screen_only is False for request in driver.window_requests)
+
+
+@pytest.mark.parametrize("entry_point", ["diagnostics", "prepare_browser"])
+async def test_missing_approved_window_releases_owner_without_lock_reentry(existing_adapter, entry_point):
+    adapter, driver = existing_adapter
+    await adapter.prepare_browser()
+    driver.reported_windows = []
+    if entry_point == "diagnostics":
+        browser = (await asyncio.wait_for(adapter.diagnostics(), timeout=1))["browser"]
+        assert browser["status"] == "window_unavailable"
+        assert browser["selection_ready"] is False
+        assert browser["owner_ready"] is False
+        assert browser["ready"] is False
+    else:
+        with pytest.raises(CuaError) as error:
+            await asyncio.wait_for(adapter.prepare_browser(), timeout=1)
+        assert error.value.code == "browser_window_unavailable"
+    assert driver.handles[0].closed is True
+    assert driver.ended == driver.started
+    assert sum(tool == "browser_prepare" for tool, _ in driver.calls) == 1
+    assert adapter.browser_diagnostics()["prepared"] is False
 
 
 async def test_owner_context_has_explicit_trusted_ttls_and_one_foreground_connection(existing_adapter):
@@ -482,7 +662,7 @@ async def test_owner_prepare_proves_exact_chrome_before_any_mutation(existing_ad
         driver.focus_window = 100
     with pytest.raises(CuaError) as caught:
         await adapter.prepare_browser()
-    assert caught.value.code == "browser_selection_expired"
+    assert caught.value.code == "browser_window_unavailable"
     assert driver.calls == []
     assert driver.started == []
 
@@ -565,12 +745,20 @@ async def test_owner_host_refuses_nonmatching_resource_or_request(existing_adapt
     await adapter.stop()
 
 
-async def test_owner_host_accepts_only_current_local_approval(existing_adapter):
+async def test_owner_host_accepts_only_current_local_approval_without_metadata_reentry(
+    existing_adapter, monkeypatch
+):
     adapter, driver = existing_adapter
     checked = []
 
     async def probe(session):
-        checked.append(await adapter._authorize_existing_profile(authorization_request(session)))
+        async def forbidden(request):
+            pytest.fail("An authorization callback must not re-enter the waiting SDK")
+
+        with monkeypatch.context() as context:
+            context.setattr(driver, "list_apps", forbidden)
+            context.setattr(driver, "list_windows", forbidden)
+            checked.append(await adapter._authorize_existing_profile(authorization_request(session)))
 
     driver.authorization_probe = probe
     await adapter.prepare_browser()
@@ -659,6 +847,13 @@ async def test_non_macos_does_not_import_optional_binary(monkeypatch):
 
 
 @dataclass
+class AppInfo:
+    pid: int
+    name: str
+    bundle_id: str | None
+
+
+@dataclass
 class Window:
     pid: int = 44
     window_id: int = 99
@@ -666,6 +861,8 @@ class Window:
     title: str = "文稿"
     is_on_screen: bool = True
     z_index: int | None = 3
+    on_current_space: bool | None = True
+    space_ids: list[int] | None = None
 
 
 @dataclass
@@ -714,6 +911,8 @@ class FakeDriver:
         self.focus_window = 99
         self.bundle_id = "com.google.Chrome"
         self.window_owner = None
+        self.reported_windows = None
+        self.window_requests = []
         self.z_index = 3
         self.captures = 0
         self.change_during_capture = False
@@ -772,15 +971,19 @@ class FakeDriver:
         )
 
     async def list_windows(self, request):
-        return SimpleNamespace(
-            windows=[
+        self.window_requests.append(request)
+        windows = self.reported_windows
+        if windows is None:
+            windows = [
                 Window(
                     pid=self.window_owner or request.pid or 44,
                     window_id=self.focus_window,
                     title=self.focus_title,
                     z_index=self.z_index,
                 )
-            ],
+            ]
+        return SimpleNamespace(
+            windows=windows,
             current_space_id=1,
         )
 

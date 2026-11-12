@@ -21,7 +21,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         "aBridge",
         stateless_http=True,
         json_response=True,
-        instructions="Choose device_id explicitly. Open a scoped session before execution. Never retry side effects with a new operation_id after an unknown outcome; observe first. Local pause and capability limits always apply.",
+        instructions="Choose device_id explicitly. Open a scoped session before execution. Refresh application/window inventory instead of reusing old PIDs or window IDs. Prefer an explicitly selected window; unavailable browser access is not permission to fall back to a whole-desktop screenshot. Images are returned as native MCP image blocks and do not require shell/files access. Never retry side effects with a new operation_id after an unknown outcome; observe first. Local pause and capability limits always apply.",
         transport_security=TransportSecuritySettings(
             allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*", "testserver"],
             allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
@@ -41,7 +41,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
 
     @mcp.tool()
     async def session_open(device_id: str, capabilities: list[Capability], ctx: Context) -> dict[str, Any]:
-        """Open a 30-second scoped session. Input control is exclusive per desktop."""
+        """Open a scoped session with a 5-minute idle lease, renewed by admitted tool requests and running operations. Expired sessions cannot be resumed. Observation references still expire after 10s. Input control is exclusive per desktop."""
         return guarded(lambda: runtime.open_session(agent(ctx), device_id, capabilities))
 
     @mcp.tool()
@@ -58,7 +58,7 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         window_id: int | None = None,
         screenshot: bool = True,
     ) -> list[Any]:
-        """Observe a Mac window's AX elements and optional PNG. Choose pid/window_id from computer_apps/windows, or omit both for the current desktop. Use its element_ref or reported coordinate_space within 10s; observations belong only to this session."""
+        """Observe a Mac window's AX elements and optional native PNG image block; no shell or file permission is needed to receive the image. Choose exact pid/window_id from computer_apps/windows. Omitting both observes the current desktop and requires reliable foreground evidence; if focus_unavailable, choose an explicit window. Use its element_ref or reported coordinate_space within 10s; observations belong only to this session."""
         arguments = {"screenshot": screenshot}
         if pid is not None:
             arguments["pid"] = pid
@@ -70,15 +70,20 @@ def create_mcp(runtime: Runtime) -> FastMCP:
         return image_response(response)
 
     @mcp.tool()
-    async def computer_apps(session_id: str, ctx: Context, operation_id: str | None = None) -> dict[str, Any]:
-        """List local application names and PIDs without reading their windows. Requires screen capability."""
-        return await guarded_async(runtime.execute(agent(ctx), session_id, "computer_apps", {}, operation_id))
+    async def computer_apps(
+        session_id: str, ctx: Context, operation_id: str | None = None, query: str | None = None
+    ) -> dict[str, Any]:
+        """List local application names and PIDs without reading windows. For a known app, pass query='Chrome' first to keep discovery focused. Query matches case-insensitive substrings of app name or bundle_id; omitted or empty query returns the complete list. Requires screen capability."""
+        arguments = {} if query is None else {"query": query}
+        return await guarded_async(
+            runtime.execute(agent(ctx), session_id, "computer_apps", arguments, operation_id)
+        )
 
     @mcp.tool()
     async def computer_windows(
         session_id: str, pid: int, ctx: Context, operation_id: str | None = None
     ) -> dict[str, Any]:
-        """List windows for the explicitly selected application PID. Observe an exact window before acting."""
+        """List windows for the explicitly selected application PID across available Spaces, including off-screen windows. An empty list does not establish a Space or permission problem; read its metadata and refresh computer_apps rather than reusing an old PID/window_id. Observe an exact returned window before acting."""
         return await guarded_async(
             runtime.execute(agent(ctx), session_id, "computer_windows", {"pid": pid}, operation_id)
         )

@@ -358,8 +358,6 @@ class DeviceClient:
             if len(self.operations) >= 8:
                 raise ExecutionError("device_busy", "The device has reached its concurrent operation limit")
             self.journal.start(operation_id, request_hash)
-            if capability in ("screen", "input"):
-                self.status["desktop_active_until"] = time.time() + 30
             self.operation_capabilities[operation_id] = capability
             self.operation_controllers[operation_id] = message.get("client_name", "Agent")
             if session_id is not None:
@@ -450,6 +448,23 @@ class DeviceClient:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for operation_id in selected:
+            if operation_id not in self.operations:
+                continue
+            # A task cancelled before its first turn never enters _execute's
+            # finally block. Finish its intent and clear takeover state here.
+            self.journal.finish(operation_id, "outcome_unknown")
+            self.operations.pop(operation_id, None)
+            self.operation_capabilities.pop(operation_id, None)
+            self.operation_controllers.pop(operation_id, None)
+            self.operation_sessions.pop(operation_id, None)
+            with suppress(ConnectionClosed, OSError):
+                await self._result(
+                    operation_id,
+                    "outcome_unknown",
+                    {},
+                    ExecutionError("operation_cancelled", "Execution was stopped before acknowledgement"),
+                )
         # command_execute owns its process cleanup. Do not race two killpg calls
         # against the same process group while cancellation is unwinding.
         await self.executor.cancel(selected)
@@ -460,7 +475,6 @@ class DeviceClient:
                 await self.executor.release_remote_sessions()
             self.closed_sessions.update(self.session_capabilities)
             self.session_capabilities.clear()
-            self.status["desktop_active_until"] = 0
         else:
             for session_id in affected_sessions:
                 await self._close_session(session_id)
@@ -517,11 +531,23 @@ class DeviceClient:
             command = request.get("command")
             details: dict[str, Any] = {}
             if command == "pause":
-                self.config["paused"] = True
-                save_config(self.state_dir, self.config)
-                await self._stop_operations()
+                # Automatic takeover may arrive after an input has already ended.
+                # Decide from live operations here, not a polled status timestamp.
+                if request.get("if_desktop_active") is True and "input" not in (
+                    self.operation_capabilities.values()
+                ):
+                    details["pause_ignored"] = "desktop_inactive"
+                else:
+                    self.config["paused"] = True
+                    self.config["pause_reason"] = {
+                        "source": "desktop_input" if request.get("if_desktop_active") is True else "manual",
+                        "at": time.time(),
+                    }
+                    save_config(self.state_dir, self.config)
+                    await self._stop_operations()
             elif command == "resume":
                 self.config["paused"] = False
+                self.config.pop("pause_reason", None)
                 save_config(self.state_dir, self.config)
             elif command == "stop":
                 await self._stop_operations()
@@ -573,6 +599,7 @@ class DeviceClient:
                     await self._send({"type": "browser_target_changed", "connection_epoch": self.epoch})
             elif command == "unbind":
                 self.config["paused"] = True
+                self.config.pop("pause_reason", None)
                 self.config["revoked"] = True
                 save_config(self.state_dir, self.config)
                 cloud_revoked = False
@@ -624,8 +651,12 @@ class DeviceClient:
 
     def _write_status(self) -> None:
         self.status["paused"] = bool(self.config.get("paused", False))
+        self.status["pause_reason"] = self.config.get("pause_reason") if self.status["paused"] else None
         self.status["active_operations"] = list(self.operations)
         self.status["active_controllers"] = list(dict.fromkeys(self.operation_controllers.values()))
+        self.status["desktop_active_until"] = (
+            time.time() + 30 if "input" in self.operation_capabilities.values() else 0
+        )
         self.status["requested_capabilities"] = self.config.get("capabilities", {})
         self.status["browser_profile"] = self.config.get(
             "browser_profile", {"mode": "existing_profile", "approved": False}
@@ -735,6 +766,7 @@ def main() -> None:
     control.add_argument("--window-id", type=int)
     control.add_argument("--fingerprint")
     control.add_argument("--approve", action="store_true")
+    control.add_argument("--if-desktop-active", action="store_true")
     args = parser.parse_args()
     try:
         asyncio.run(_main(args))
@@ -764,6 +796,8 @@ async def _main(args: argparse.Namespace) -> None:
             "paused": bool(previous.get("paused", False)),
             "revoked": False,
         }
+        if config["paused"] and "pause_reason" in previous:
+            config["pause_reason"] = previous["pause_reason"]
         if previous.get("url") == url and "browser_profile" in previous:
             config["browser_profile"] = previous["browser_profile"]
         save_config(args.state_dir, config)
@@ -771,6 +805,10 @@ async def _main(args: argparse.Namespace) -> None:
         return
     if args.command == "control":
         request: dict[str, Any] = {"command": args.action}
+        if args.if_desktop_active:
+            if args.action != "pause":
+                raise ValueError("--if-desktop-active is only available for pause")
+            request["if_desktop_active"] = True
         if args.action == "capability":
             if args.capability is None or args.enabled is None:
                 raise ValueError("capability and enabled are required")

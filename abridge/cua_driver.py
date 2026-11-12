@@ -10,6 +10,7 @@ import importlib
 import inspect
 import json
 import math
+import os
 import plistlib
 import re
 import sys
@@ -225,7 +226,13 @@ class CuaDriverAdapter:
             raise CuaError("driver_stopping", "The Cua runtime is stopping or closed")
         if self._browser_profile.mode != "existing_profile":
             raise CuaError("browser_consent_required", "Select an existing Chrome window before preparing it")
-        await self._require_browser_selection()
+        try:
+            await self._require_browser_selection()
+        except CuaError:
+            # This entry point has not acquired the selection lock yet. End an
+            # invalid owner here rather than recursively locking in the probe.
+            await self._close_owner_browser()
+            raise
         if self._owner_browser is not None:
             await self._require_owner_browser("local-browser-prepare")
             return {"prepared": True, "already_prepared": True, **self.browser_diagnostics()}
@@ -311,12 +318,23 @@ class CuaDriverAdapter:
             "side_effects": {key: value for key, value in effects.items() if isinstance(value, bool)},
         }
 
-    async def list_apps(self, session_id: str) -> dict[str, Any]:
+    async def list_apps(self, session_id: str, query: str | None = None) -> dict[str, Any]:
+        if query is not None and not isinstance(query, str):
+            raise CuaError("invalid_arguments", "query must be text or null")
         await self._session(session_id)
         result = await self._invoke(session_id, self._driver.list_apps(self._sdk.ListAppsInput()))
-        return {"apps": _project(result.apps)}
+        apps = result.apps
+        if query:
+            needle = query.casefold()
+            apps = [
+                app
+                for app in apps
+                if needle in app.name.casefold() or needle in (app.bundle_id or "").casefold()
+            ]
+        return {"apps": [_project(app) for app in apps]}
 
     async def list_windows(self, session_id: str, pid: int | None = None) -> dict[str, Any]:
+        """List SDK windows; process_running checks PID existence, not app identity."""
         if pid is not None:
             _positive_integer(pid, "pid")
         await self._session(session_id)
@@ -324,7 +342,37 @@ class CuaDriverAdapter:
             session_id,
             self._driver.list_windows(self._sdk.ListWindowsInput(pid=pid, on_screen_only=False)),
         )
-        return {"windows": _project(result.windows), "current_space_id": result.current_space_id}
+        windows = _project(result.windows)
+        process_running = None
+        if pid is not None:
+            # Signal zero checks process existence without sending an input or
+            # inspecting app content. An empty SDK result alone proves neither
+            # process exit nor a Space/permission failure.
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                process_running = False
+            except PermissionError:
+                process_running = True
+            else:
+                process_running = True
+        response = {
+            "windows": windows,
+            "current_space_id": result.current_space_id,
+            "requested_pid": pid,
+            "process_running": process_running,
+            "on_screen_only": False,
+            "empty_reason": None,
+        }
+        if not windows:
+            response["empty_reason"] = (
+                "process_not_running" if process_running is False else "no_windows_reported"
+            )
+            response["guidance"] = (
+                "Refresh computer_apps and computer_windows, then call computer_observe with a returned "
+                "pid and window_id. Off-screen windows are included when reported by the SDK."
+            )
+        return response
 
     async def computer_observe(
         self,
@@ -782,7 +830,10 @@ class CuaDriverAdapter:
             )
         if not all(checks.values()):
             return False
-        selection = await self._browser_selection_status()
+        # Preparation already verified the exact window before entering the
+        # SDK. Its authorization callback must not re-enter the waiting driver;
+        # recheck the local process identity alongside the attested resource.
+        selection = await self._browser_selection_status(check_window=False)
         checks["local_selection_ready"] = selection["selection_ready"]
         if not selection["selection_ready"]:
             return False
@@ -801,7 +852,7 @@ class CuaDriverAdapter:
         diagnostic["decision"] = "allow"
         return True
 
-    async def _browser_selection_status(self) -> dict[str, Any]:
+    async def _browser_selection_status(self, *, check_window: bool = True) -> dict[str, Any]:
         profile = self._browser_profile
         if profile.mode == "isolated":
             return {
@@ -815,10 +866,29 @@ class CuaDriverAdapter:
         if profile.approved:
             ready = await _process_fingerprint(profile.pid) == profile.fingerprint
             status = "ready" if ready else "expired"
+            if ready and check_window:
+                try:
+                    targets = await self._chrome_targets("local-browser-selection", pid=profile.pid)
+                except CuaError:
+                    # The dependency diagnostic still reports its exact load
+                    # error. Selection cannot be ready without window evidence.
+                    targets = []
+                ready = any(
+                    target["pid"] == profile.pid
+                    and target["window_id"] == profile.window_id
+                    and target["fingerprint"] == profile.fingerprint
+                    for target in targets
+                )
+                if not ready:
+                    status = "window_unavailable"
         active = self._sessions.get(self._existing_browser_session)
         owner = self._owner_browser
         owner_ready = (
-            owner is not None and not owner.tainted and not owner.session.closed and not owner.session.closing
+            ready
+            and owner is not None
+            and not owner.tainted
+            and not owner.session.closed
+            and not owner.session.closing
         )
         if owner_ready:
             now = time.monotonic()
@@ -844,9 +914,11 @@ class CuaDriverAdapter:
             raise CuaError("browser_selection_changing", "The owner is changing the browser selection")
         status = await self._browser_selection_status()
         if not status["selection_ready"]:
-            code = (
-                "browser_selection_expired" if status["status"] == "expired" else "browser_consent_required"
-            )
+            code = "browser_consent_required"
+            if status["status"] == "expired":
+                code = "browser_selection_expired"
+            elif status["status"] == "window_unavailable":
+                code = "browser_window_unavailable"
             raise CuaError(code, "Select and approve a current Chrome window in aBridge on this Mac")
 
     async def _session(self, session_id: str) -> _Session:
@@ -1061,7 +1133,7 @@ class CuaDriverAdapter:
             target["window_id"] == profile.window_id and target["fingerprint"] == profile.fingerprint
             for target in targets
         ):
-            raise CuaError("browser_selection_expired", "The selected window is no longer owned by Chrome")
+            raise CuaError("browser_window_unavailable", "The selected Chrome window could not be verified")
         return profile
 
     async def _prepare_isolated_browser(self, session: _Session) -> dict[str, str]:
@@ -1134,11 +1206,15 @@ class CuaDriverAdapter:
             raise CuaError("session_closed", "The Cua session is stopping or closed")
 
     async def _desktop_focus(self, session_id: str) -> tuple[int, int, str]:
+        guidance = (
+            "; use computer_apps and computer_windows, then computer_observe with an explicit "
+            "pid and window_id"
+        )
         self._require_live_session(self._sessions[session_id])
         apps = await self._invoke(session_id, self._driver.list_apps(self._sdk.ListAppsInput()))
         active = [app for app in apps.apps if app.active is True and app.running is True and app.pid > 0]
         if len(active) != 1:
-            raise CuaError("focus_unavailable", "The foreground application could not be verified")
+            raise CuaError("focus_unavailable", "The foreground application could not be verified" + guidance)
         pid = active[0].pid
         self._require_live_session(self._sessions[session_id])
         result = await self._invoke(
@@ -1152,12 +1228,14 @@ class CuaDriverAdapter:
         ]
         if not visible or any(not isinstance(window.z_index, int) for window in visible):
             raise CuaError(
-                "focus_unavailable", "The foreground window's stacking order could not be verified"
+                "focus_unavailable", "The foreground window's stacking order could not be verified" + guidance
             )
         highest = max(window.z_index for window in visible)
         front = [window for window in visible if window.z_index == highest]
         if len(front) != 1:
-            raise CuaError("focus_unavailable", "The foreground window could not be identified uniquely")
+            raise CuaError(
+                "focus_unavailable", "The foreground window could not be identified uniquely" + guidance
+            )
         return pid, front[0].window_id, front[0].title
 
     def _observation(

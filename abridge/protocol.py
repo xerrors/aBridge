@@ -5,6 +5,7 @@ from typing import Literal, get_args
 Capability = Literal["screen", "input", "shell", "files", "browser"]
 CAPABILITIES = frozenset(get_args(Capability))
 OBSERVATION_SECONDS = 10
+SESSION_IDLE_SECONDS = 300
 TOOL_CAPABILITIES = {
     "computer_apps": "screen",
     "computer_windows": "screen",
