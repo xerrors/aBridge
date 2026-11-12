@@ -48,6 +48,8 @@ SQLite 和在线设备连接由同一服务进程持有，仅支持一个 worker
 
 Cua 锁定为内部 `cua-driver==0.46.1+abridge.1`，基于固定上游源码修复中文 Chrome 授权弹窗的候选窗口过滤，补丁与产物信息保存在 `vendor/cua-driver/`。当前产物仅支持 Apple Silicon/macOS 14+。设备端通过公开 configured SDK 构造入口加载当前 Python 进程内的原生库，并检查 embedded 模式与空 socket；不安装原 CLI、CuaDriver.app、第二套 daemon、模型服务或浏览器引擎。SDK 的浏览器调用限制在固定工具与字段内，模型不能提交任意 JavaScript 或 CDP 方法。
 
+固定驱动在部分窗口截图、AX 窗口映射和键盘投递路径中使用私有 SkyLight/AX 符号；窗口截图也有系统 `screencapture` 命令的兼容路径。同进程 SDK 不等于只用公开 API 或绝不启动短时子进程。macOS 14 是当前产物的最低构建目标，不代表所有系统版本和截图分支均已真实验收；这些依赖及兼容性代价见技术栈章节。
+
 原生 SDK 与异步授权回调使用同一 asyncio 事件循环。构造前通过 UniFFI 官方公开 setter 绑定循环；固定 wheel 仅在生成绑定模块导出该函数，适配边界明确保留这一依赖。活运行时禁止跨循环复用，关闭后新运行时重新绑定。授权会话身份使用当前 driver 的公开 `runtime_scope_prefix()` 与本机准备会话名精确合成，不信任请求自报前缀或后缀匹配。
 
 Swift App 直接启动 Python 子进程，App 负责系统权限 UI。内嵌 SDK 不另外发起授权弹窗。权限归属与实际可操作性须以已安装 App 身份验证；从终端运行相同 Python 的结果只说明终端责任链。
@@ -94,6 +96,7 @@ Swift App 直接启动 Python 子进程，App 负责系统权限 UI。内嵌 SDK
 
 ## 验证与演进
 
-`abridge/__init__.py` 是版本唯一来源。此前受控验收已独立复核普通窗口 AX 中文输入、点击及回收，以及现有 Chrome 登录态、DOM 业务和 owner 连接复用；这不代表所有日常路径可用。用户反馈追查发现两次已停止会话在 16.6 秒、24.8 秒内被误报为租约到期，不能归因于原 30 秒租约自然到期，具体历史暂停事件也未记录。本次修复已部署，`make check` 为 176 项通过、4 项跳过，部署后的 Yuxi 业务复验仍待完成。此前小窗坐标请求实际由 SDK 走 AX hit-test 背景路由，不能作为物理 CGEvent 或来源 PID 过滤的业务证据；后者仍未实测。具体见 [验证范围](verification.md)。
 
-后续事项见 [工作计划](roadmap.md)，设计与资产入口见 [设计说明](design.md)。原型中的候选架构和演示界面不等于已实现系统。
+小窗坐标请求实际由 SDK 走 AX hit-test 背景路由，不能作为物理 CGEvent 或来源 PID 过滤的业务证据；后者仍未实测。上述受控用例不代表所有应用、网站和日常路径。具体证据与限制见 [验证范围](verification.md)。
+
+当前技术栈的分层剖析见 [原设计文档中的技术栈章节](prototype/design-review.html#tech-stack)，后续事项见 [工作计划](roadmap.md)，设计与资产入口见 [设计说明](design.md)。原型中的候选架构和演示界面不等于已实现系统。
