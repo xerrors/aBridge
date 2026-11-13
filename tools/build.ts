@@ -35,7 +35,7 @@ for (const app of ["server", "desktop"] as const) {
     plugins: [workspaceSources],
     platform: "node",
     format: "esm",
-    target: "node26",
+    target: "node22.13",
     packages: "external",
     metafile: true,
     sourcemap: true,
@@ -65,7 +65,7 @@ const manifest = JSON.parse(await readFile(join(extension, "manifest.json"), "ut
 manifest.version = packageInfo.version;
 await writeFile(join(extension, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 await build({
-  entryPoints: ["worker", "options", "popup"].map((name) => join(root, "apps/browser/src", name + ".ts")),
+  entryPoints: ["worker", "popup"].map((name) => join(root, "apps/browser/src", name + ".ts")),
   outdir: extension,
   bundle: true,
   plugins: [workspaceSources],

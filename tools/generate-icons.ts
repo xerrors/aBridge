@@ -55,6 +55,34 @@ try {
     await cp(join(root, "docs/assets/brand/bridge.svg"), join(target, "brand.svg"));
     await cp(wordmark, join(target, "wordmark.svg"));
   }
+  // The store artwork uses the same wordmark, rather than a separately edited copy.
+  const store = join(root, "docs/assets/store");
+  const storeMark = source.replace("<svg ", '<svg x="182" y="55" width="76" height="52.25" ');
+  const storeWordmark = (await readFile(wordmark, "utf8"))
+    .replace("<svg ", '<svg x="84" y="125" ')
+    .replace(/width="[^"]+" height="[^"]+"/, 'width="272" height="74.382"');
+  const promo = join(store, "promo.svg");
+  await mkdir(store, { recursive: true });
+  await writeFile(
+    promo,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="440" height="280" viewBox="0 0 440 280" role="img" aria-label="aBridge for Browser"><rect width="440" height="280" fill="#F6F9FF"/><path d="M0 .5H440M0 279.5H440" stroke="#E2EBFA"/>${storeMark}
+${storeWordmark}
+<text x="220" y="226" text-anchor="middle" fill="${blue}" font-family="Helvetica,Arial,sans-serif" font-size="20" font-weight="700">for Browser</text></svg>
+`,
+  );
+  const promoRaster = join(work, "promo.png");
+  render(promo, promoRaster, 440);
+  execFileSync("sips", [
+    "-s",
+    "format",
+    "jpeg",
+    "-s",
+    "formatOptions",
+    "90",
+    promoRaster,
+    "--out",
+    join(store, "promo.jpg"),
+  ]);
 } finally {
   await rm(work, { recursive: true, force: true });
 }

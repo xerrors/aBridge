@@ -11,11 +11,16 @@ concurrency:
   cancel-in-progress: true
 jobs:
   check:
-    name: Node / ${{ matrix.os }}
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - { os: ubuntu-latest, node: "22.13.0" }
+          - { os: ubuntu-latest, node: "24" }
+          - { os: ubuntu-latest, node: "26" }
+          - { os: macos-latest, node: "22" }
+          - { os: macos-latest, node: "26" }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -24,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version-file: .node-version
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
@@ -32,7 +37,7 @@ jobs:
         if: runner.os == 'macOS'
         run: swiftc -typecheck apps/desktop/native/aBridge.swift -framework AppKit -framework ApplicationServices
       - name: Retain local package candidates
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.node == '22.13.0'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-candidates

@@ -11,17 +11,35 @@ func permissions() -> [String: Any] {
     ["screen": CGPreflightScreenCaptureAccess(), "input": AXIsProcessTrusted()]
 }
 
+private final class StatusTextField: NSTextField {
+    override var stringValue: String {
+        didSet { toolTip = stringValue }
+    }
+}
+
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSTextFieldDelegate {
     private var item: NSStatusItem!
     private var window: NSWindow!
     private let urlField = NSTextField(string: "http://127.0.0.1:8765")
-    private let keyField = NSSecureTextField(string: "")
-    private let statusLabel = NSTextField(labelWithString: "尚未连接")
+    private let statusLabel = StatusTextField(labelWithString: "尚未连接")
     private var environmentLabels: [String: NSTextField] = [:]
-    private var capabilityButtons: [String: NSButton] = [:]
+    private var capabilityButtons: [String: NSSwitch] = [:]
     private var connectButton: NSButton!
     private var pauseButton: NSButton!
+    private var unbindButton: NSButton!
+    private var authorizationCancelButton: NSButton!
+    private var authorizationOpenButton: NSButton!
+    private let authorizationLabel = StatusTextField(labelWithString: "")
+    private var authorizationProcess: Process?
+    private var authorizationInput: FileHandle?
+    private var authorizationURL: URL?
+    private var authorizationServer: String?
+    private var authorizationCommitting = false
+    private var settingsRoot: NSStackView!
+    private var diagnosticsDisclosure: NSButton!
+    private var diagnosticsContent: NSStackView!
+    private var diagnosticsBox: NSBox!
     private var permissionButtons: [String: NSButton] = [:]
     private var pauseItem: NSMenuItem!
     private var menuStatus: NSMenuItem!
@@ -63,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         buildMenu()
         buildWindow()
         loadConfig()
+        renderMenu()
         startDaemon()
         if daemon?.isRunning != true { checkEnvironment() }
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -82,12 +101,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self.control(["command": "pause", "if_desktop_active": true])
             }
         }
-        if !FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path) {
+        if boundServerAddress() == nil {
             showWindow()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        cancelAuthorization()
         stopDaemon()
         if let monitor { NSEvent.removeMonitor(monitor) }
     }
@@ -158,14 +178,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let active = current["active_operations"] as? Int ?? 0
         let fresh = Date().timeIntervalSince1970 - (current["updated_at"] as? Double ?? 0) < 5
         let online = running && fresh && current["connection"] as? String == "online"
-        let bound = FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path)
+        let bound = boundServerAddress() != nil
         menuStatus.title = !bound ? "尚未绑定这台 Mac" : paused ? "访问已暂停" : online ? "已连接 · \(current["owner_name"] as? String ?? "这台 Mac")" : "当前离线"
         menuActivity.title = running && fresh && active > 0 ? "正在执行 \(active) 项操作" : "当前没有执行中的操作"
         pauseItem.title = paused ? "恢复访问" : "暂停访问"
         pauseItem.image = NSImage(systemSymbolName: paused ? "play.circle" : "pause.circle", accessibilityDescription: nil)
         pauseItem.isEnabled = running && fresh
         stopItem.isEnabled = running && fresh && active > 0
-        reconnectItem.isEnabled = bound && !stoppingDaemon
+        reconnectItem.isEnabled = bound && !stoppingDaemon && !authorizationCommitting
+        pauseButton?.isEnabled = running && fresh
+        unbindButton?.isHidden = !bound
+        unbindButton?.isEnabled = !authorizationCommitting
+        connectButton?.title = authorizationProcess != nil ? "等待浏览器授权…"
+            : bound && sameServer(urlField.stringValue, boundServerAddress()) ? "重新连接" : "在浏览器授权"
+        connectButton?.isEnabled = authorizationProcess == nil && !stoppingDaemon
+        authorizationCancelButton?.isHidden = authorizationProcess == nil
+        authorizationCancelButton?.isEnabled = !authorizationCommitting
+        authorizationOpenButton?.isHidden = authorizationProcess == nil
+        authorizationOpenButton?.isEnabled = authorizationURL != nil && !authorizationCommitting
+        urlField.isEditable = !authorizationCommitting
         let requested = current["requested_capabilities"] as? [String: Bool] ?? [:]
         for (key, entry) in menuCapabilities {
             entry.state = requested[key] == true ? .on : .off
@@ -181,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc private func reconnectFromMenu() {
-        guard !stoppingDaemon else { return }
+        guard !stoppingDaemon, !authorizationCommitting else { return }
         stopDaemon { [weak self] in self?.startDaemon(); self?.renderMenu() }
     }
 
@@ -192,163 +223,475 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func buildWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 580),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false
         )
         window.title = "aBridge 设置"
-        window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
-        let root = NSStackView()
-        root.orientation = .vertical
-        root.alignment = .leading
-        root.spacing = 11
-        root.translatesAutoresizingMaskIntoConstraints = false
+        let root = verticalStack(spacing: 18)
+        settingsRoot = root
         window.contentView?.addSubview(root)
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 28),
-            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -28),
-            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 24),
+            root.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 24),
+            root.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -24),
+            root.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 22),
         ])
+
+        let identity = verticalStack(spacing: 6)
         if let wordmark = NSImage(named: "Wordmark") {
             let heading = NSImageView(image: wordmark)
             heading.imageScaling = .scaleProportionallyUpOrDown
             heading.setAccessibilityLabel("aBridge")
-            heading.widthAnchor.constraint(equalToConstant: min(220, wordmark.size.width / max(1, wordmark.size.height) * 32)).isActive = true
-            heading.heightAnchor.constraint(equalToConstant: 32).isActive = true
-            root.addArrangedSubview(heading)
+            heading.widthAnchor.constraint(equalToConstant: 112).isActive = true
+            heading.heightAnchor.constraint(equalToConstant: 31).isActive = true
+            identity.addArrangedSubview(heading)
         } else {
             let heading = NSTextField(labelWithString: "aBridge")
-            heading.font = NSFont(name: "Helvetica-Bold", size: 23) ?? .boldSystemFont(ofSize: 23)
-            heading.textColor = NSColor(srgbRed: 0, green: 0.4, blue: 0.867, alpha: 1)
-            root.addArrangedSubview(heading)
+            heading.font = NSFont(name: "Helvetica-Bold", size: 24) ?? .boldSystemFont(ofSize: 24)
+            heading.textColor = .systemBlue
+            identity.addArrangedSubview(heading)
         }
-        statusLabel.font = .systemFont(ofSize: 13)
+        statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.maximumNumberOfLines = 2
-        statusLabel.lineBreakMode = .byWordWrapping
-        root.addArrangedSubview(statusLabel)
-        addDivider(to: root)
-        addSectionTitle("连接", to: root)
-        for (label, field) in [("服务地址", urlField), ("设备 Key", keyField)] {
-            let name = NSTextField(labelWithString: label)
-            name.font = .systemFont(ofSize: 13)
-            name.widthAnchor.constraint(equalToConstant: 78).isActive = true
-            field.placeholderString = label == "设备 Key" ? "已绑定可留空" : "https://…"
-            field.font = .systemFont(ofSize: 13)
-            field.widthAnchor.constraint(equalToConstant: 414).isActive = true
-            let row = NSStackView(views: [name, field])
-            row.spacing = 12
-            row.alignment = .centerY
-            root.addArrangedSubview(row)
-        }
-        connectButton = NSButton(title: "连接", target: self, action: #selector(connect))
-        connectButton.bezelStyle = .rounded
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.allowsExpansionToolTips = true
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addFullWidth(statusLabel, to: identity)
+        pauseButton = actionButton("暂停访问", action: #selector(togglePause))
+        let header = NSStackView(views: [identity, pauseButton])
+        header.distribution = .fill
+        header.alignment = .centerY
+        header.spacing = 20
+        identity.setHuggingPriority(.defaultLow, for: .horizontal)
+        pauseButton.setContentHuggingPriority(.required, for: .horizontal)
+        addFullWidth(header, to: root)
+
+        let connection = addSettingsGroup("连接", to: root)
+        let addressLabel = textLabel("服务地址")
+        addressLabel.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        urlField.placeholderString = "https://…"
+        urlField.font = .systemFont(ofSize: 13)
+        urlField.bezelStyle = .roundedBezel
+        urlField.delegate = self
+        urlField.setAccessibilityLabel("服务地址")
+        urlField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let addressRow = NSStackView(views: [addressLabel, urlField])
+        addressRow.distribution = .fill
+        addressRow.spacing = 12
+        addressRow.alignment = .centerY
+        addressRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+        addFullWidth(addressRow, to: connection)
+        authorizationLabel.font = .systemFont(ofSize: 12)
+        authorizationLabel.textColor = .secondaryLabelColor
+        authorizationLabel.lineBreakMode = .byTruncatingTail
+        authorizationLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addFullWidth(authorizationLabel, to: connection)
+        authorizationLabel.isHidden = true
+        connectButton = actionButton("在浏览器授权", action: #selector(connect))
         connectButton.keyEquivalent = "\r"
-        connectButton.contentTintColor = .systemBlue
-        pauseButton = NSButton(title: "暂停访问", target: self, action: #selector(togglePause))
-        pauseButton.bezelStyle = .rounded
-        let unbind = NSButton(title: "解除绑定…", target: self, action: #selector(unbindDevice))
-        unbind.bezelStyle = .rounded
-        let connectionActions = NSStackView(views: [connectButton, pauseButton, unbind])
+        connectButton.bezelColor = NSColor(srgbRed: 0, green: 0.4, blue: 0.867, alpha: 1)
+        unbindButton = actionButton("解除绑定…", action: #selector(unbindDevice))
+        unbindButton.isBordered = false
+        unbindButton.contentTintColor = .secondaryLabelColor
+        authorizationCancelButton = actionButton("取消", action: #selector(cancelAuthorization))
+        authorizationOpenButton = actionButton("重新打开授权页", action: #selector(openAuthorization))
+        authorizationCancelButton.isHidden = true
+        authorizationOpenButton.isHidden = true
+        let connectionActions = NSStackView(views: [unbindButton, NSView(), authorizationOpenButton, authorizationCancelButton, connectButton])
+        connectionActions.distribution = .fill
+        connectionActions.alignment = .centerY
         connectionActions.spacing = 8
-        root.addArrangedSubview(connectionActions)
-        addDivider(to: root)
-        addSectionTitle("本机能力", to: root)
-        let capabilities = NSStackView()
-        capabilities.spacing = 22
-        for (key, label) in [("screen", "截图"), ("input", "键鼠"), ("shell", "Shell"), ("files", "文件")] {
-            let button = NSButton(checkboxWithTitle: label, target: self, action: #selector(capabilityChanged(_:)))
-            button.identifier = NSUserInterfaceItemIdentifier(key)
-            capabilityButtons[key] = button
-            capabilities.addArrangedSubview(button)
+        addFullWidth(connectionActions, to: connection)
+
+        let capabilities = addSettingsGroup("本机能力", to: root)
+        let capabilityRows = [
+            [("screen", "屏幕截图", "viewfinder"), ("input", "键鼠操作", "cursorarrow")],
+            [("shell", "Shell 命令", "terminal"), ("files", "文件访问", "folder")],
+        ]
+        for (index, entries) in capabilityRows.enumerated() {
+            if index > 0 { addDivider(to: capabilities) }
+            let row = NSStackView()
+            row.distribution = .fillEqually
+            row.spacing = 28
+            row.alignment = .centerY
+            for (key, title, symbol) in entries {
+                let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!)
+                icon.contentTintColor = .secondaryLabelColor
+                icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+                let toggle = NSSwitch()
+                toggle.target = self
+                toggle.action = #selector(capabilityChanged(_:))
+                toggle.identifier = NSUserInterfaceItemIdentifier(key)
+                toggle.setAccessibilityLabel(title)
+                toggle.controlSize = .small
+                toggle.setContentHuggingPriority(.required, for: .horizontal)
+                capabilityButtons[key] = toggle
+                let control = NSStackView(views: [icon, textLabel(title), NSView(), toggle])
+                control.distribution = .fill
+                control.alignment = .centerY
+                control.spacing = 8
+                control.heightAnchor.constraint(greaterThanOrEqualToConstant: 30).isActive = true
+                row.addArrangedSubview(control)
+            }
+            addFullWidth(row, to: capabilities)
         }
-        root.addArrangedSubview(capabilities)
-        addDivider(to: root)
-        let environmentTitle = NSTextField(labelWithString: "系统与运行时")
-        environmentTitle.font = .systemFont(ofSize: 13, weight: .semibold)
-        let refresh = NSButton(title: "重新检查", target: self, action: #selector(checkEnvironment))
-        refresh.bezelStyle = .rounded
-        let environmentHeading = NSStackView(views: [environmentTitle, refresh])
-        environmentHeading.spacing = 16
-        root.addArrangedSubview(environmentHeading)
-        addEnvironmentRow("runtime", title: "Node.js", action: "检查", selector: #selector(checkEnvironment), to: root)
-        addEnvironmentRow("driver", title: "Cua Driver", action: "安装说明", selector: #selector(showSetupGuide), to: root)
-        permissionButtons["screen"] = addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: root)
-        permissionButtons["input"] = addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: root)
-        let guide = NSButton(title: "安装说明", target: self, action: #selector(showSetupGuide))
-        let diagnostics = NSButton(title: "连接诊断", target: self, action: #selector(showDiagnostics))
-        let logs = NSButton(title: "查看日志", target: self, action: #selector(openLogs))
-        for button in [guide, diagnostics, logs] { button.bezelStyle = .rounded }
-        let footer = NSStackView(views: [diagnostics, logs, guide])
-        footer.spacing = 8
-        root.addArrangedSubview(footer)
-        window.setContentSize(NSSize(width: 560, height: max(640, ceil(root.fittingSize.height) + 56)))
+
+        let access = addSettingsGroup("系统权限", to: root)
+        permissionButtons["screen"] = addEnvironmentRow("screen", title: "屏幕录制", action: "前往设置", selector: #selector(requestScreen), to: access)
+        addDivider(to: access)
+        permissionButtons["input"] = addEnvironmentRow("input", title: "辅助功能", action: "前往设置", selector: #selector(requestInput), to: access)
+
+        let diagnostics = verticalStack(spacing: 10)
+        diagnosticsDisclosure = NSButton(title: "运行诊断", target: self, action: #selector(toggleDiagnostics))
+        diagnosticsDisclosure.setButtonType(.onOff)
+        diagnosticsDisclosure.bezelStyle = .inline
+        diagnosticsDisclosure.isBordered = false
+        diagnosticsDisclosure.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+        diagnosticsDisclosure.imagePosition = .imageLeading
+        diagnosticsDisclosure.font = .systemFont(ofSize: 12)
+        diagnosticsDisclosure.contentTintColor = .secondaryLabelColor
+        diagnosticsDisclosure.setAccessibilityLabel("展开运行诊断")
+        diagnostics.addArrangedSubview(diagnosticsDisclosure)
+        diagnosticsContent = verticalStack(spacing: 10)
+        diagnosticsBox = settingsBox(diagnosticsContent)
+        addFullWidth(diagnosticsBox, to: diagnostics)
+        diagnosticsContent.isHidden = true
+        diagnosticsBox.isHidden = true
+        addEnvironmentRow("runtime", title: "Node.js", to: diagnosticsContent)
+        addEnvironmentRow("driver", title: "Cua Driver", to: diagnosticsContent)
+        addEnvironmentRow("execution", title: "执行权限", to: diagnosticsContent)
+        addDivider(to: diagnosticsContent)
+        let refresh = actionButton("重新检查", action: #selector(checkEnvironment))
+        let details = actionButton("连接诊断", action: #selector(showDiagnostics))
+        let logs = actionButton("查看日志", action: #selector(openLogs))
+        let diagnosticActions = NSStackView(views: [refresh, NSView(), details, logs])
+        diagnosticActions.distribution = .fill
+        diagnosticActions.alignment = .centerY
+        diagnosticActions.spacing = 8
+        addFullWidth(diagnosticActions, to: diagnosticsContent)
+        addFullWidth(diagnostics, to: root)
+        resizeSettingsWindow()
         window.center()
+        window.initialFirstResponder = window.contentView
+        window.makeFirstResponder(window)
     }
 
-    private func addSectionTitle(_ title: String, to root: NSStackView) {
+    private func verticalStack(spacing: CGFloat) -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = spacing
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        return stack
+    }
+
+    private func textLabel(_ title: String) -> NSTextField {
         let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        root.addArrangedSubview(label)
+        label.font = .systemFont(ofSize: 13)
+        return label
+    }
+
+    private func actionButton(_ title: String, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: 12)
+        return button
+    }
+
+    private func addFullWidth(_ view: NSView, to stack: NSStackView) {
+        stack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    }
+
+    private func settingsBox(_ content: NSStackView) -> NSBox {
+        let box = NSBox()
+        box.boxType = .custom
+        box.titlePosition = .noTitle
+        box.borderWidth = 0
+        box.isTransparent = false
+        box.fillColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? .quaternaryLabelColor : .underPageBackgroundColor
+        }
+        box.cornerRadius = 10
+        box.contentViewMargins = NSSize(width: 14, height: 12)
+        let container = box.contentView!
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        return box
+    }
+
+    private func addSettingsGroup(_ title: String, to root: NSStackView) -> NSStackView {
+        let section = verticalStack(spacing: 8)
+        let heading = textLabel(title)
+        heading.font = .systemFont(ofSize: 12, weight: .semibold)
+        heading.textColor = .secondaryLabelColor
+        section.addArrangedSubview(heading)
+        let content = verticalStack(spacing: 9)
+        addFullWidth(settingsBox(content), to: section)
+        addFullWidth(section, to: root)
+        return content
     }
 
     private func addDivider(to root: NSStackView) {
         let separator = NSBox()
         separator.boxType = .separator
-        separator.widthAnchor.constraint(equalToConstant: 504).isActive = true
-        root.addArrangedSubview(separator)
+        addFullWidth(separator, to: root)
     }
 
     @discardableResult
     private func addEnvironmentRow(
-        _ key: String, title: String, action: String, selector: Selector, to root: NSStackView
-    ) -> NSButton {
-        let name = NSTextField(labelWithString: title)
+        _ key: String, title: String, action: String? = nil, selector: Selector? = nil, to root: NSStackView
+    ) -> NSButton? {
+        let name = textLabel(title)
         name.widthAnchor.constraint(equalToConstant: 82).isActive = true
-        let value = NSTextField(labelWithString: "检查中…")
+        let value = textLabel("检查中…")
+        value.font = .systemFont(ofSize: 12)
         value.textColor = .secondaryLabelColor
+        value.alignment = .right
         value.lineBreakMode = .byTruncatingTail
-        value.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        value.allowsExpansionToolTips = true
+        value.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         environmentLabels[key] = value
-        let button = NSButton(title: action, target: self, action: selector)
-        button.bezelStyle = .rounded
-        let row = NSStackView(views: [name, value, button])
-        row.spacing = 8
-        root.addArrangedSubview(row)
+        let row = NSStackView(views: [name, value])
+        row.distribution = .fill
+        row.alignment = .centerY
+        row.spacing = 10
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
+        var button: NSButton?
+        if let action, let selector {
+            button = actionButton(action, action: selector)
+            button!.setContentHuggingPriority(.required, for: .horizontal)
+            row.addArrangedSubview(button!)
+        }
+        addFullWidth(row, to: root)
         return button
     }
 
+    @objc private func toggleDiagnostics() {
+        let expanded = diagnosticsDisclosure.state == .on
+        diagnosticsDisclosure.setAccessibilityLabel(expanded ? "收起运行诊断" : "展开运行诊断")
+        diagnosticsDisclosure.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)
+        diagnosticsContent.isHidden = !expanded
+        diagnosticsBox.isHidden = !expanded
+        resizeSettingsWindow()
+    }
+
+    private func resizeSettingsWindow() {
+        guard let root = settingsRoot else { return }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let height = ceil(root.fittingSize.height) + 44
+        let previousTop = window.frame.maxY
+        window.setContentSize(NSSize(width: 580, height: height))
+        var frame = window.frame
+        frame.origin.y = previousTop - frame.height
+        window.setFrame(frame, display: true)
+    }
+
+    private func boundServerAddress() -> String? {
+        let configURL = stateDirectory.appendingPathComponent("config.json")
+        let credentialURL = stateDirectory.appendingPathComponent("credentials/device.json")
+        guard let data = try? Data(contentsOf: configURL),
+              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              config["revoked"] as? Bool != true,
+              let address = config["url"] as? String,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: credentialURL.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600,
+              (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+              let credentialData = try? Data(contentsOf: credentialURL),
+              let credential = try? JSONSerialization.jsonObject(with: credentialData) as? [String: Any],
+              credential["server_url"] as? String == address,
+              let key = credential["device_key"] as? String,
+              key.hasPrefix("abr_device_"), key.count <= 4096 else { return nil }
+        return address
+    }
+
+    private func normalizedServerAddress(_ value: String) -> String? {
+        guard var parts = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let rawScheme = parts.scheme, let rawHost = parts.host,
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return nil }
+        let scheme = rawScheme.lowercased()
+        let host = rawHost.lowercased()
+        guard scheme == "https" || (scheme == "http" && ["localhost", "127.0.0.1", "[::1]", "::1"].contains(host)) else { return nil }
+        parts.scheme = scheme
+        parts.host = host
+        if parts.port == (scheme == "https" ? 443 : 80) { parts.port = nil }
+        guard var address = parts.url?.absoluteString else { return nil }
+        if address.hasSuffix("/") { address.removeLast() }
+        return address
+    }
+
+    private func sameServer(_ value: String, _ expected: String?) -> Bool {
+        guard let expected, let normalized = normalizedServerAddress(value),
+              let bound = normalizedServerAddress(expected) else { return false }
+        return normalized == bound
+    }
+
+    private func validAuthorizationOrigin(_ destination: URL, server: String) -> Bool {
+        guard let normalized = normalizedServerAddress(server), let expected = URL(string: normalized),
+              let scheme = destination.scheme?.lowercased(), let host = destination.host?.lowercased(),
+              destination.user == nil, destination.password == nil, destination.fragment == nil else { return false }
+        let port = destination.port ?? (scheme == "https" ? 443 : 80)
+        let expectedPort = expected.port ?? (expected.scheme == "https" ? 443 : 80)
+        return scheme == expected.scheme && host == expected.host?.lowercased() && port == expectedPort
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard notification.object as? NSTextField === urlField else { return }
+        if authorizationProcess != nil && !sameServer(urlField.stringValue, authorizationServer) {
+            cancelAuthorization()
+        }
+        renderMenu()
+    }
+
     @objc private func connect() {
-        if keyField.stringValue.isEmpty {
-            let configURL = stateDirectory.appendingPathComponent("config.json")
-            if let data = try? Data(contentsOf: configURL),
-               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                guard config["url"] as? String == urlField.stringValue else {
-                    statusLabel.stringValue = "更换服务地址时需填写新的设备 Key"
-                    return
-                }
-                stopDaemon { [weak self] in self?.startDaemon() }
-            } else {
-                statusLabel.stringValue = "请输入设备 Key"
-            }
+        guard authorizationProcess == nil, !stoppingDaemon else { return }
+        if sameServer(urlField.stringValue, boundServerAddress()) {
+            authorizationLabel.isHidden = true
+            stopDaemon { [weak self] in self?.startDaemon(); self?.renderMenu() }
             return
         }
-        stopDaemon { [weak self] in
-            guard let self else { return }
-            self.runClient(["configure", "--stdin"], input: [
-                "url": self.urlField.stringValue, "device_key": self.keyField.stringValue,
-                "capabilities": self.capabilityButtons.mapValues { $0.state == .on },
-            ]) { [weak self] result in
-                guard let self else { return }
-                if result["ok"] as? Bool == true {
-                    self.keyField.stringValue = ""
-                    self.startDaemon()
-                } else {
-                    self.statusLabel.stringValue = result["error"] as? String ?? "连接配置失败"
+        beginAuthorization()
+    }
+
+    private func sendAuthorization(_ value: [String: Any]) throws {
+        guard let handle = authorizationInput else { throw CocoaError(.fileWriteUnknown) }
+        var data = try JSONSerialization.data(withJSONObject: value)
+        data.append(0x0a)
+        try handle.write(contentsOf: data)
+    }
+
+    private func beginAuthorization() {
+        guard let process = runtimeProcess(arguments: clientArguments(["authorize", "--stdin"])) else {
+            statusLabel.stringValue = "运行时文件缺失"
+            return
+        }
+        let output = Pipe()
+        let input = Pipe()
+        process.standardOutput = output
+        process.standardInput = input
+        process.standardError = errorLog()
+        authorizationProcess = process
+        authorizationInput = input.fileHandleForWriting
+        authorizationServer = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        authorizationURL = nil
+        authorizationCommitting = false
+        authorizationLabel.stringValue = "正在打开浏览器授权…"
+        authorizationLabel.isHidden = false
+        do {
+            try process.run()
+            try sendAuthorization(["url": authorizationServer!])
+        } catch {
+            finishAuthorization("无法启动浏览器授权，请查看日志")
+            return
+        }
+        renderMenu()
+        resizeSettingsWindow()
+        DispatchQueue.global().async { [weak self] in
+            var pending = Data()
+            while true {
+                let data = output.fileHandleForReading.availableData
+                if data.isEmpty { break }
+                pending.append(data)
+                if pending.count > 65536 { process.terminate(); break }
+                while let end = pending.firstIndex(of: 0x0a) {
+                    let line = Data(pending[..<end])
+                    pending.removeSubrange(...end)
+                    guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+                    DispatchQueue.main.async { self?.handleAuthorization(event, from: process) }
                 }
             }
+            process.waitUntilExit()
+            DispatchQueue.main.async {
+                guard let self, self.authorizationProcess === process else { return }
+                self.finishAuthorization("授权未完成，请重新发起")
+            }
         }
+    }
+
+    private func handleAuthorization(_ event: [String: Any], from process: Process) {
+        guard authorizationProcess === process else { return }
+        switch event["event"] as? String {
+        case "authorization":
+            guard let address = event["authorization_url"] as? String,
+                  let destination = URL(string: address),
+                  validAuthorizationOrigin(destination, server: authorizationServer ?? "") else {
+                finishAuthorization("授权页面与服务地址不匹配")
+                return
+            }
+            authorizationURL = destination
+            authorizationLabel.stringValue = "请在浏览器中登录并确认授权"
+            renderMenu()
+            openAuthorization()
+        case "ready":
+            authorizationCommitting = true
+            authorizationLabel.stringValue = "正在完成绑定…"
+            renderMenu()
+            stopDaemon { [weak self] in
+                guard let self, self.authorizationProcess === process else { return }
+                do {
+                    try self.sendAuthorization(["command": "commit", "capabilities": self.capabilityButtons.mapValues { $0.state == .on }])
+                } catch { self.finishAuthorization("无法保存绑定，请重新发起") }
+            }
+        case "complete":
+            guard event["ok"] as? Bool == true else {
+                finishAuthorization("绑定未完成，请重试")
+                return
+            }
+            authorizationProcess = nil
+            try? authorizationInput?.close()
+            authorizationInput = nil
+            authorizationURL = nil
+            authorizationServer = nil
+            authorizationCommitting = false
+            authorizationLabel.isHidden = true
+            loadConfig()
+            renderMenu()
+            resizeSettingsWindow()
+            startDaemon()
+            showWindow()
+        case "error":
+            finishAuthorization(event["error"] as? String ?? "浏览器授权失败，请重试")
+        default:
+            finishAuthorization("授权运行时返回无效结果")
+        }
+    }
+
+    @objc private func openAuthorization() {
+        guard let address = authorizationURL else { return }
+        if !NSWorkspace.shared.open(address) {
+            authorizationLabel.stringValue = "无法打开浏览器，请点击重新打开授权页"
+        }
+    }
+
+    @objc private func cancelAuthorization() {
+        guard authorizationProcess != nil else { return }
+        finishAuthorization("授权已取消")
+    }
+
+    private func finishAuthorization(_ message: String) {
+        let process = authorizationProcess
+        let wasCommitting = authorizationCommitting
+        authorizationProcess = nil
+        try? authorizationInput?.close()
+        authorizationInput = nil
+        authorizationURL = nil
+        authorizationServer = nil
+        authorizationCommitting = false
+        if process?.isRunning == true { process?.terminate() }
+        authorizationLabel.stringValue = message
+        authorizationLabel.isHidden = false
+        renderMenu()
+        resizeSettingsWindow()
+        if wasCommitting { startDaemon() }
     }
 
     @objc private func togglePause() {
@@ -369,7 +712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @objc private func stop() { control(["command": "stop"]) }
 
-    @objc private func capabilityChanged(_ sender: NSButton) {
+    @objc private func capabilityChanged(_ sender: NSSwitch) {
         guard let capability = sender.identifier?.rawValue else { return }
         setCapability(capability, enabled: sender.state == .on)
     }
@@ -394,10 +737,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc private func unbindDevice() {
         let alert = NSAlert()
         alert.messageText = "解除这台 Mac 的绑定？"
-        alert.informativeText = "当前执行会停止，设备 Key 将从本机删除。"
+        alert.informativeText = "当前执行会停止，设备凭据将从本机删除。"
         alert.addButton(withTitle: "解除绑定")
         alert.addButton(withTitle: "取消")
-        if alert.runModal() == .alertFirstButtonReturn { control(["command": "unbind"]) }
+        if alert.runModal() == .alertFirstButtonReturn {
+            cancelAuthorization()
+            control(["command": "unbind"])
+        }
     }
 
     @objc private func requestScreen() {
@@ -411,12 +757,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-    }
-
-    @objc private func showSetupGuide() {
-        if let location = Bundle.main.url(forResource: "setup", withExtension: "html") {
-            NSWorkspace.shared.open(location)
-        }
     }
 
     @objc private func showDiagnostics() {
@@ -439,15 +779,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         urlField.stringValue = config["url"] as? String ?? urlField.stringValue
         let capabilities = config["capabilities"] as? [String: Bool] ?? [:]
         for (key, button) in capabilityButtons { button.state = capabilities[key] == true ? .on : .off }
-        connectButton.title = "重试连接"
+        connectButton.title = "重新连接"
+        unbindButton.isHidden = false
     }
 
     private func startDaemon() {
         guard !stoppingDaemon,
-              FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("config.json").path),
+              boundServerAddress() != nil,
               daemon?.isRunning != true else { return }
         guard let process = runtimeProcess(arguments: clientArguments(["run"])) else {
-            statusLabel.stringValue = "运行时缺失，请查看安装说明"
+            statusLabel.stringValue = "运行时文件缺失"
             environmentLabels["runtime"]?.stringValue = "未安装 / 路径失效"
             return
         }
@@ -531,30 +872,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func runClient(
-        _ arguments: [String], input: [String: Any]? = nil,
+        _ arguments: [String],
         completion: @escaping ([String: Any]) -> Void
     ) {
         guard let process = runtimeProcess(arguments: clientArguments(arguments)) else {
-            completion(["error": "运行时缺失，请查看安装说明"])
+            completion(["error": "运行时文件缺失"])
             return
         }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = errorLog()
-        if let input, let data = try? JSONSerialization.data(withJSONObject: input) {
-            let pipe = Pipe()
-            process.standardInput = pipe
-            do { try process.run() } catch {
-                completion(["error": "无法启动运行时，请查看诊断"])
-                return
-            }
-            pipe.fileHandleForWriting.write(data)
-            try? pipe.fileHandleForWriting.close()
-        } else {
-            do { try process.run() } catch {
-                completion(["error": "无法启动运行时，请查看诊断"])
-                return
-            }
+        do { try process.run() } catch {
+            completion(["error": "无法启动运行时，请查看诊断"])
+            return
         }
         DispatchQueue.global().async {
             let data = output.fileHandleForReading.readDataToEndOfFile()
@@ -648,6 +978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let pauseTitle = paused ? "恢复访问" : "暂停访问"
         pauseItem.title = pauseTitle
         pauseButton.title = pauseTitle
+        pauseButton.isEnabled = daemon?.isRunning == true && !stoppingDaemon
         let requested = status["requested_capabilities"] as? [String: Bool] ?? [:]
         for (key, button) in capabilityButtons { button.state = requested[key] == true ? .on : .off }
         renderEnvironment(status)
@@ -659,7 +990,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let node = report["runtime"] as? [String: Any] ?? [:]
         let version = node["node"] as? String ?? ""
         environmentLabels["runtime"]?.stringValue = node["ready"] as? Bool == true
-            ? "\(version) · 已就绪" : "Node.js 不可用，请查看安装说明"
+            ? "\(version) · 已就绪" : "Node.js 不可用"
         let driver = report["driver"] as? [String: Any] ?? [:]
         if driver["installed"] == nil {
             environmentLabels["driver"]?.stringValue = "尚未检查"
@@ -675,19 +1006,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // App authorization and SDK execution readiness are different facts.
         // Native preflight probes never request or reset system permissions.
         let appPermissions = permissions()
+        let checked = permissionReport["checked"] as? Bool == true
+        let missing = [("screen", "屏幕"), ("input", "键鼠")]
+            .filter { permissionReport[$0.0] as? Bool != true }.map { $0.1 }
+        environmentLabels["execution"]?.stringValue = !checked
+            ? "尚未检查" : missing.isEmpty ? "已就绪" : "\(missing.joined(separator: "、"))未就绪"
+        environmentLabels["execution"]?.toolTip = !checked ? "驱动执行权限尚未检查"
+            : missing.isEmpty ? "驱动屏幕与键鼠执行权限均已就绪" : "驱动\(missing.joined(separator: "、"))执行权限尚未就绪"
         for key in ["screen", "input"] {
-            let checked = permissionReport["checked"] as? Bool == true
             let allowed = appPermissions[key] as? Bool == true
-            permissionButtons[key]?.title = allowed ? "已允许" : "前往设置"
             permissionButtons[key]?.isEnabled = !allowed
-            if !checked {
-                environmentLabels[key]?.stringValue = allowed ? "App 已允许 · 驱动尚未检查" : "App 未允许 · 驱动尚未检查"
-            } else if allowed {
-                environmentLabels[key]?.stringValue = permissionReport[key] as? Bool == true
-                    ? "已允许" : "App 已允许 · 执行权限未就绪"
-            } else {
-                environmentLabels[key]?.stringValue = "App 未允许"
-            }
+            permissionButtons[key]?.isHidden = allowed
+            environmentLabels[key]?.stringValue = allowed ? "已允许" : "未允许"
+            environmentLabels[key]?.toolTip = allowed
+                ? "实际安装的 aBridge 已获系统授权；驱动执行状态见运行诊断"
+                : "请在系统设置中允许实际安装的 aBridge"
         }
 
     }

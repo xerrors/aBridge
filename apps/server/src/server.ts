@@ -1,4 +1,3 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
@@ -10,12 +9,21 @@ import {
   VERSION,
   MAX_MESSAGE_BYTES,
   capabilitySchema,
+  connectionPolicySchema,
   deviceKindSchema,
   deviceCapabilities,
   deviceHelloSchema,
   browserHelloSchema,
+  deviceAuthorizationRequestSchema,
+  deviceAuthorizationDecisionSchema,
+  deviceAuthorizationTokenRequestSchema,
+  deviceAuthorizationCancelSchema,
+  adminCreateUserSchema,
+  type AdminOverview,
 } from "@abridge/protocol";
+import { AdminAuth, ADMIN_SESSION_SECONDS, loadAdminToken } from "./admin.js";
 import { Store, acquireInstanceLock } from "./store.js";
+import { DeviceAuthorizations } from "./device-authorization.js";
 import { ControlService } from "./control.js";
 import { createMcpServer } from "./mcp.js";
 import { WebSocketTransport } from "./transport.js";
@@ -29,6 +37,8 @@ export interface ServerConfig {
   allowedHosts?: string[];
   allowedOrigins?: string[];
   publicOrigin?: string;
+  adminToken?: string;
+  resetAdminToken?: boolean;
 }
 const browserOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const loopback = (host: string) => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host);
@@ -41,17 +51,20 @@ const capabilities = z
   .max(5)
   .refine((a) => new Set(a).size === a.length, "Capabilities must be unique");
 const name = z.string().trim().min(1).max(120);
+const connectionSchema = z
+  .object({ name, policy: connectionPolicySchema, expires_at: z.number().finite().nullable().default(null) })
+  .strict();
 const deviceSchema = z.object({ name, capabilities, kind: deviceKindSchema.default("computer") }).strict();
 const bearer = (request: FastifyRequest): string => {
   const value = request.headers.authorization;
   return value?.startsWith("Bearer ") ? value.slice(7) : "";
 };
-const cookie = (request: FastifyRequest): string =>
+const cookie = (request: FastifyRequest, name = "abridge_session"): string =>
   request.headers.cookie
     ?.split(";")
     .map((part) => part.trim())
-    .find((part) => part.startsWith("abridge_session="))
-    ?.slice(16) ?? "";
+    .find((part) => part.startsWith(name + "="))
+    ?.slice(name.length + 1) ?? "";
 const publicGrant = (grant: Grant) => {
   const { token_digest: _, owner_id: __, ...visible } = grant;
   return visible;
@@ -85,18 +98,23 @@ export async function createServer(config: ServerConfig) {
   }
   const release = acquireInstanceLock(config.dbPath);
   let store: Store;
+  let admin: AdminAuth;
   try {
     store = new Store(config.dbPath);
-    store.recoverAfterRestart();
+    try {
+      admin = new AdminAuth(loadAdminToken(store.path, config.adminToken, config.resetAdminToken));
+      store.recoverAfterRestart();
+    } catch (error) {
+      store.close();
+      throw error;
+    }
   } catch (error) {
     release();
     throw error;
   }
+  const authorizations = new DeviceAuthorizations(store);
   const control = new ControlService(store),
     app = Fastify({ bodyLimit: 2 * 1024 * 1024, logger: false, trustProxy: false });
-  const setupToken =
-    loopback(host) && store.userCount() === 0 ? randomBytes(32).toString("base64url") : undefined;
-  const setupDeadline = Date.now() + 600000;
   const attempts = new Map<string, { count: number; expires: number }>();
   const allowedHosts = new Set(config.allowedHosts ?? []),
     allowedOrigins = new Set(config.allowedOrigins ?? []);
@@ -108,7 +126,11 @@ export async function createServer(config: ServerConfig) {
     const origin = request.headers.origin;
     if (!origin) return;
     const pathname = request.url.split("?")[0]!;
-    if (pathname === "/api/browser/register" || pathname === "/ws/browser") {
+    const extensionAuthorization =
+      (pathname === "/api/device-authorizations" && request.method === "POST") ||
+      (pathname === "/api/device-authorizations/token" && request.method === "POST") ||
+      (/^\/api\/device-authorizations\/[^/]+$/.test(pathname) && request.method === "DELETE");
+    if (pathname === "/ws/browser" || (extensionAuthorization && browserOrigin.test(origin))) {
       if (!browserOrigin.test(origin))
         throw new BridgeError("invalid_origin", "A Chrome extension origin is required", 403);
       return;
@@ -122,18 +144,28 @@ export async function createServer(config: ServerConfig) {
     if (!user) throw new BridgeError("unauthorized", "Sign in to the management console", 401);
     return user;
   }
+  function requireAdmin(request: FastifyRequest): void {
+    const token = bearer(request);
+    if (token ? admin.acceptsToken(token) : admin.acceptsSession(cookie(request, "abridge_admin"))) return;
+    rateLimit(request, "admin", 10);
+    throw new BridgeError(
+      "admin_unauthorized",
+      "An instance administrator token or session is required",
+      401,
+    );
+  }
   function owned(request: FastifyRequest): Device {
     const user = account(request),
       device = store.device((request.params as { id: string }).id);
     if (!device || device.owner_id !== user.id) throw new BridgeError("not_found", "Device not found", 404);
     return device;
   }
-  function rateLimit(request: FastifyRequest): void {
+  function rateLimit(request: FastifyRequest, scope = "signin", limit = 10): void {
     const now = Date.now();
     for (const [key, value] of attempts) if (value.expires <= now) attempts.delete(key);
-    const key = request.ip,
+    const key = scope + ":" + request.ip,
       current = attempts.get(key);
-    if (current && current.count >= 10)
+    if (current && current.count >= limit)
       throw new BridgeError("rate_limited", "Too many sign-in attempts; retry later", 429);
     if (current) current.count++;
     else {
@@ -142,10 +174,16 @@ export async function createServer(config: ServerConfig) {
       attempts.set(key, { count: 1, expires: now + 60000 });
     }
   }
-  function setCookie(reply: FastifyReply, request: FastifyRequest, token: string, maxAge = 43200): void {
+  function setCookie(
+    reply: FastifyReply,
+    request: FastifyRequest,
+    token: string,
+    maxAge = 43200,
+    name = "abridge_session",
+  ): void {
     reply.header(
       "set-cookie",
-      `abridge_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${sameOrigin(request).startsWith("https:") ? "; Secure" : ""}`,
+      `${name}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${sameOrigin(request).startsWith("https:") ? "; Secure" : ""}`,
     );
   }
   app.setErrorHandler((error, _request, reply) => {
@@ -194,25 +232,69 @@ export async function createServer(config: ServerConfig) {
   });
   await app.register(websocket, { options: { maxPayload: MAX_MESSAGE_BYTES } });
   app.get("/health", async () => ({ status: "ok", version: VERSION }));
-  app.get("/api/setup", async () => ({ required: store.userCount() === 0 }));
-  app.post("/api/setup", async (request, reply) => {
-    if (
-      !setupToken ||
-      !loopback(host) ||
-      !loopback(request.ip) ||
-      Date.now() > setupDeadline ||
-      store.userCount() !== 0
-    )
-      throw new BridgeError("setup_unavailable", "Initial setup is unavailable", 403);
-    const candidate = Buffer.from(bearer(request)),
-      expected = Buffer.from(setupToken);
-    if (candidate.length !== expected.length || !timingSafeEqual(candidate, expected))
-      throw new BridgeError("unauthorized", "Invalid initial setup token", 401);
-    const body = accountSchema.parse(request.body);
-    await store.createUser(body.username, body.password, { onlyIfEmpty: true });
-    const login = (await store.login(body.username, body.password))!;
-    setCookie(reply, request, login.token);
-    return login.user;
+  app.post("/api/admin/session", async (request, reply) => {
+    if (!admin.acceptsToken(bearer(request))) {
+      rateLimit(request, "admin", 10);
+      throw new BridgeError("admin_unauthorized", "Invalid instance administrator token", 401);
+    }
+    z.object({}).strict().parse(request.body);
+    setCookie(reply, request, admin.createSession(), ADMIN_SESSION_SECONDS, "abridge_admin");
+    return { admin: true };
+  });
+  app.get("/api/admin/session", async (request) => {
+    requireAdmin(request);
+    return { admin: true };
+  });
+  app.delete("/api/admin/session", async (request, reply) => {
+    setCookie(reply, request, "", 0, "abridge_admin");
+    return { ok: true };
+  });
+  app.post("/api/admin/users", async (request, reply) => {
+    requireAdmin(request);
+    rateLimit(request, "admin-create-user", 30);
+    const body = adminCreateUserSchema.parse(request.body);
+    const user = await store.createUser(body.username, body.password);
+    reply.code(201);
+    return user;
+  });
+  app.get("/api/admin/overview", async (request): Promise<AdminOverview> => {
+    requireAdmin(request);
+    const devicesByOwner = new Map<string, AdminOverview["users"][number]["devices"]>();
+    for (const device of store.activeDevices()) {
+      const view = control.deviceView(device);
+      const devices = devicesByOwner.get(device.owner_id) ?? [];
+      devices.push({
+        id: device.id,
+        name: device.name,
+        kind: device.kind,
+        status: view.status === "online" ? "online" : "offline",
+        paused: view.paused === true,
+        last_seen: device.last_seen,
+        created_at: device.created_at,
+      });
+      devicesByOwner.set(device.owner_id, devices);
+    }
+    const users = store.users().map((user) => {
+      const devices = devicesByOwner.get(user.id) ?? [];
+      return {
+        ...user,
+        devices,
+        computer_count: devices.filter((d) => d.kind === "computer").length,
+        browser_count: devices.filter((d) => d.kind === "browser").length,
+        online_count: devices.filter((d) => d.status === "online").length,
+      };
+    });
+    const totals = users.reduce(
+      (sum, user) => ({
+        users: sum.users + 1,
+        devices: sum.devices + user.devices.length,
+        online_devices: sum.online_devices + user.online_count,
+        computers: sum.computers + user.computer_count,
+        browsers: sum.browsers + user.browser_count,
+      }),
+      { users: 0, devices: 0, online_devices: 0, computers: 0, browsers: 0 },
+    );
+    return { totals, users };
   });
   app.post("/api/login", async (request, reply) => {
     rateLimit(request);
@@ -277,32 +359,34 @@ export async function createServer(config: ServerConfig) {
   app.get("/api/client-grants", async (request) => ({
     grants: store.grants(account(request).id).map(publicGrant),
   }));
+  function ownedGrant(request: FastifyRequest): Grant {
+    const user = account(request),
+      grant = store.grant((request.params as { id: string }).id);
+    if (!grant || grant.owner_id !== user.id) throw new BridgeError("not_found", "Connection not found", 404);
+    return grant;
+  }
+  function connectionBody(value: unknown) {
+    const body = connectionSchema.parse(value);
+    if (body.expires_at !== null && body.expires_at <= Date.now() / 1000)
+      throw new BridgeError("invalid_expiry", "Expiry must be in the future or unset", 422);
+    return body;
+  }
   app.post("/api/client-grants", async (request) => {
     const user = account(request),
-      body = z
-        .object({
-          name,
-          device_ids: z
-            .array(z.string().min(1).max(100))
-            .min(1)
-            .max(100)
-            .refine((a) => new Set(a).size === a.length),
-          capabilities,
-          expires_at: z.number().finite().optional(),
-        })
-        .strict()
-        .parse(request.body);
-    for (const id of body.device_ids) {
-      const device = store.device(id);
-      if (!device || device.owner_id !== user.id || device.revoked_at !== null)
-        throw new BridgeError("not_found", "Granted device does not exist", 404);
-    }
-    const expiry = body.expires_at ?? Date.now() / 1000 + 30 * 86400;
-    if (expiry <= Date.now() / 1000 || expiry > Date.now() / 1000 + 366 * 86400)
-      throw new BridgeError("invalid_expiry", "Expiry must be within one year", 422);
-    const result = store.createGrant(user.id, body.name, body.device_ids, body.capabilities, expiry);
+      body = connectionBody(request.body);
+    const result = store.createGrant(user.id, body.name, body.policy, body.expires_at);
     return { ...publicGrant(result.grant), key: result.key };
   });
+  app.patch("/api/client-grants/:id", async (request) => {
+    const grant = ownedGrant(request),
+      body = connectionBody(request.body);
+    return publicGrant(await control.updateGrant(grant, body.name, body.policy, body.expires_at));
+  });
+  app.post("/api/client-grants/:id/rotate", async (request) => {
+    const result = await control.rotateGrant(ownedGrant(request));
+    return { ...publicGrant(result.grant), key: result.key };
+  });
+  app.get("/api/client-grants/:id/preview", async (request) => control.previewGrant(ownedGrant(request)));
   app.post("/api/client-grants/:id/revoke", async (request) => {
     const user = account(request),
       grant = store.grant((request.params as { id: string }).id);
@@ -312,17 +396,59 @@ export async function createServer(config: ServerConfig) {
   });
   app.get("/api/activity", async (request) => {
     const user = account(request);
-    return { operations: store.operations(user.id), events: store.auditEvents(user.id) };
+    const filters = z
+      .object({
+        device_id: z.string().min(1).max(120).optional(),
+        grant_id: z.string().min(1).max(120).optional(),
+        tool: z.string().min(1).max(120).optional(),
+        offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+      })
+      .strict()
+      .parse(request.query);
+    return {
+      operations: store.operations(user.id, filters),
+      total: store.operationCount(user.id, filters),
+      tools: store.operationTools(user.id, filters.device_id),
+      events: store.auditEvents(user.id),
+    };
   });
-  app.post("/api/browser/register", async (request) => {
-    if (!browserOrigin.test(request.headers.origin ?? ""))
-      throw new BridgeError("invalid_origin", "A Chrome extension origin is required", 403);
-    rateLimit(request);
-    const body = accountSchema.extend({ name: name.default("Chrome") }).parse(request.body),
-      user = await store.verifyUser(body.username, body.password);
-    if (!user) throw new BridgeError("unauthorized", "Username or password is incorrect", 401);
-    const result = store.createDevice(user.id, body.name, ["browser"], "browser");
-    return { ...control.deviceView(result.device), device_id: result.device.id, key: result.key };
+  app.post("/api/device-authorizations", async (request) => {
+    rateLimit(request, "device-authorization-start", 30);
+    return authorizations.start(
+      deviceAuthorizationRequestSchema.parse(request.body),
+      request.headers.origin,
+      sameOrigin(request),
+    );
+  });
+  app.get("/api/device-authorizations/:id", async (request) =>
+    authorizations.view((request.params as { id: string }).id, account(request)),
+  );
+  app.post("/api/device-authorizations/:id/decision", async (request) => {
+    const user = account(request);
+    const body = deviceAuthorizationDecisionSchema.parse(request.body);
+    if (body.expected_user_id !== user.id)
+      throw new BridgeError(
+        "account_changed",
+        "The signed-in account changed; review authorization again",
+        409,
+      );
+    return authorizations.decide((request.params as { id: string }).id, user, body.approve);
+  });
+  app.post("/api/device-authorizations/token", async (request) => {
+    rateLimit(request, "device-authorization-token", 30);
+    return authorizations.redeem(
+      deviceAuthorizationTokenRequestSchema.parse(request.body),
+      request.headers.origin,
+    );
+  });
+  app.delete("/api/device-authorizations/:id", async (request) => {
+    rateLimit(request, "device-authorization-cancel", 30);
+    const body = deviceAuthorizationCancelSchema.parse(request.body);
+    return authorizations.cancel(
+      (request.params as { id: string }).id,
+      body.code_verifier,
+      request.headers.origin,
+    );
   });
   app.all("/mcp", async (request, reply) => {
     const grant = store.authenticateAgent(bearer(request));
@@ -470,5 +596,5 @@ export async function createServer(config: ServerConfig) {
       throw error;
     }
   }
-  return { app, store, control, setupToken, start, close };
+  return { app, store, control, adminToken: admin.token, start, close };
 }

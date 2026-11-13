@@ -6,6 +6,7 @@ import {
   capabilitySchema,
   computerActionSchema,
   browserActionSchema,
+  actWaitAfterSchema,
   type DeviceTool,
 } from "@abridge/protocol";
 import { ControlService } from "./control.js";
@@ -85,6 +86,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
     return control.execute(grant, session_id as string, tool, arguments_, operation_id as string | undefined);
   };
   register("devices_list", "List granted devices and currently available capabilities.", {}, () => ({
+    connection: control.connectionInfo(grant),
     devices: control.devices(grant),
   }));
   register(
@@ -95,11 +97,14 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "session_open",
-    "Open a capability-scoped session on an explicit online device. Close it when finished.",
+    "Open a capability-scoped session on an explicit online device. Returns the session and device details including name, kind and platform. Close it when finished.",
     { device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) },
     (a) => {
       const session = control.openSession(grant, a.device_id, a.capabilities);
-      return session;
+      return {
+        ...session,
+        device: control.deviceView(control.authorizedDevice(grant, session.device_id), grant),
+      };
     },
   );
   register(
@@ -151,10 +156,16 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
       return exec("computer_observe", a);
     },
   );
-  const after = { observe_after: z.boolean().default(true), screenshot: z.boolean().default(false) };
+  const after = {
+    observe_after: z.boolean().default(true),
+    screenshot: z.boolean().default(false),
+    wait_after_ms: actWaitAfterSchema.describe(
+      "Wait after the action completes before its follow-up observation or screenshot, in milliseconds (default 2000; 0 skips). Ignored when observe_after=false. This is a delay, not an operation timeout.",
+    ),
+  };
   register(
     "computer_act",
-    "Act once on a current desktop observation. Returns a fresh observation by default. Unknown or executed actions must never be blindly repeated.",
+    "Act once on a current desktop observation. Waits 2000ms by default before returning a fresh observation; configure wait_after_ms for the expected UI response time. Unknown or executed actions must never be blindly repeated.",
     {
       ...base,
       observation_id: z.string().regex(/^obs_[a-f0-9]{32}$/),
@@ -181,7 +192,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_act",
-    "Click or fill a reference from the current DOM observation. Continue from the returned observation. Observation errors never justify repeating an executed action.",
+    "Click or fill a reference from the current DOM observation. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
     { ...base, observation_id: id, action: browserActionSchema, ...after },
     (a) => {
       if (a.screenshot && !a.observe_after)

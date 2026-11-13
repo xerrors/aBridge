@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { capabilitySchema } from "@abridge/protocol";
+import { capabilitySchema, connectionPolicySchema } from "@abridge/protocol";
 export const userSchema = z.object({ id: z.string(), username: z.string() });
 export const deviceSchema = z.object({
   id: z.string(),
@@ -15,11 +15,25 @@ export const deviceSchema = z.object({
 export const grantSchema = z.object({
   id: z.string(),
   name: z.string(),
-  device_ids: z.array(z.string()),
-  capabilities: z.array(capabilitySchema),
-  expires_at: z.number(),
+  policy: connectionPolicySchema,
+  expires_at: z.number().nullable(),
   revoked_at: z.number().nullable(),
 });
+export const connectionPreviewSchema = z.object({
+  connection: z.object({
+    id: z.string(),
+    name: z.string(),
+    status: z.enum(["active", "expired", "revoked"]),
+    expires_at: z.number().nullable(),
+  }),
+  devices: z.array(
+    deviceSchema.extend({
+      access: z.enum(["allowed", "not_granted", "no_capabilities"]),
+      granted_capabilities: z.array(capabilitySchema),
+    }),
+  ),
+});
+export type ConnectionPreview = z.infer<typeof connectionPreviewSchema>;
 export const operationSchema = z.object({
   id: z.string(),
   device_id: z.string(),
@@ -32,10 +46,16 @@ export type User = z.infer<typeof userSchema>;
 export type Device = z.infer<typeof deviceSchema>;
 export type Grant = z.infer<typeof grantSchema>;
 export type Operation = z.infer<typeof operationSchema>;
+export const activitySchema = z.object({
+  operations: z.array(operationSchema),
+  total: z.number(),
+  tools: z.array(z.string()),
+});
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -58,20 +78,22 @@ export async function api<T>(
   });
   const result: unknown = await response.json();
   if (!response.ok) {
-    const parsed = z.object({ error: z.object({ message: z.string() }) }).safeParse(result);
+    const parsed = z
+      .object({ error: z.object({ message: z.string(), code: z.string().optional() }) })
+      .safeParse(result);
     throw new ApiError(
       parsed.success ? parsed.data.error.message : `请求失败 (${response.status})`,
       response.status,
+      parsed.success ? parsed.data.error.code : undefined,
     );
   }
   return schema.parse(result);
 }
 export const objectResultSchema = z.record(z.string(), z.unknown());
 export async function loadData() {
-  const [d, g, a] = await Promise.all([
+  const [d, g] = await Promise.all([
     api("/api/devices", z.object({ devices: z.array(deviceSchema) })),
     api("/api/client-grants", z.object({ grants: z.array(grantSchema) })),
-    api("/api/activity", z.object({ operations: z.array(operationSchema) })),
   ]);
-  return { devices: d.devices, grants: g.grants, operations: a.operations };
+  return { devices: d.devices, grants: g.grants };
 }

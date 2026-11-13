@@ -3,7 +3,14 @@ import { mkdir, readFile, rename, rm, chmod } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { run } from "./process.js";
-export const DESKTOP_NODE_VERSION = "26.13.1";
+export const DESKTOP_NODE_VERSION = "22.23.5";
+export function supportsNodeVersion(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\.\d+$/.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]),
+    minor = Number(match[2]);
+  return (major === 22 && minor >= 13) || (major === 23 && minor >= 4) || major >= 24;
+}
 export function checksumFor(checksums: string, filename: string): string {
   const line = checksums
     .split(/\r?\n/)
@@ -30,9 +37,8 @@ export async function validateNodeBinary(path: string): Promise<void> {
       "JSON.stringify({version:process.versions.node,platform:process.platform,arch:process.arch})",
     ]),
   ) as { version: string; platform: string; arch: string };
-  const [major, minor] = version.version.split(".").map(Number);
-  if (major !== 26 || minor < 7 || version.platform !== "darwin" || version.arch !== "arm64")
-    throw Error("Desktop runtime requires Node >=26.7 <27, darwin-arm64");
+  if (!supportsNodeVersion(version.version) || version.platform !== "darwin" || version.arch !== "arm64")
+    throw Error("Desktop runtime requires Node ^22.13.0 || >=23.4.0, darwin-arm64");
 }
 export async function acquireOfficialNode(
   cacheDirectory: string,

@@ -1,5 +1,7 @@
+import { authorizeBrowser } from "./authorization.js";
 import { BrowserBridge } from "./bridge.js";
 import {
+  BROWSER_AUTH_CALLBACK_PATH,
   PROTOCOL_VERSION,
   CONNECTION_LEASE_SECONDS,
   OPERATION_START_SECONDS,
@@ -37,6 +39,9 @@ let leaseSeconds = CONNECTION_LEASE_SECONDS;
 let sequence = 0;
 let generation = 0;
 let configuration: Promise<unknown> = Promise.resolve();
+let authorization:
+  { controller: AbortController; server: string; label: string; expiresAt?: number } | undefined;
+let authorizationError: string | undefined;
 let cleanup: Promise<void> = Promise.resolve();
 let cleanupError: BridgeError | undefined;
 let journal: Record<string, JournalEntry> = {};
@@ -53,11 +58,6 @@ const incomingSchema = z
     operation_ids: z.array(z.string()).optional(),
   })
   .passthrough();
-const registrationSchema = z.object({ key: z.string(), device_id: z.string() });
-const registrationErrorSchema = z.object({
-  error: z.object({ code: z.string().optional(), message: z.string().optional() }).optional(),
-  detail: z.string().optional(),
-});
 const storedLocalSchema = z.object({
   device: z
     .object({
@@ -90,7 +90,11 @@ const storedSessionSchema = z.object({
   closed_sessions: z.array(z.string()).optional(),
 });
 const RECOVERY_ALARM = "abridge-connection-recovery";
-const notify = () => chrome.runtime.sendMessage({ type: "status_changed" }).catch(() => {});
+const notify = async () => {
+  try {
+    await chrome.runtime.sendMessage({ type: "status_changed" });
+  } catch {}
+};
 export function serverURL(value: string) {
   let url;
   try {
@@ -167,6 +171,7 @@ async function stop(sessionId?: string) {
     await chrome.storage.session.set({ closed_sessions: [...closed] });
     await bridge.stop();
   }
+  notify();
 }
 async function cancelOperation(id: string): Promise<void> {
   const sessionId = active.get(id);
@@ -225,6 +230,7 @@ async function dispatch(connection: WebSocket, message: DeviceDispatchEnvelope) 
     if (active.has(id)) throw fail("duplicate_request", "操作正在处理，不会重放");
     active.set(id, message.session_id);
     tracked = true;
+    notify();
     const digest = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(JSON.stringify([message.tool, message.arguments, message.session_id])),
@@ -287,6 +293,7 @@ async function dispatch(connection: WebSocket, message: DeviceDispatchEnvelope) 
       active.delete(id);
       cancelledOperations.delete(id);
       if (executingOperations.get(message.session_id) === id) executingOperations.delete(message.session_id);
+      notify();
     }
   }
 }
@@ -495,8 +502,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, respond) => {
   } catch {
     return false;
   }
-  const allowedPages = ["options.html", "popup.html"].map((path) => chrome.runtime.getURL(path));
-  if (sender.id !== chrome.runtime.id || !allowedPages.includes(source.href)) return false;
+  if (sender.id !== chrome.runtime.id || source.href !== chrome.runtime.getURL("popup.html")) return false;
   const parsed = uiMessageSchema.safeParse(raw);
   if (!parsed.success) {
     respond({ ok: false, error: { code: "unsupported_message", message: "不支持的配置请求" } });
@@ -518,54 +524,83 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, respond) => {
           configured: !!profile.key,
           revoked: !!profile.revoked,
           paused: !!profile.paused,
-          label: profile.label,
-          server: profile.server,
+          label: authorization?.label ?? profile.label,
+          server: authorization?.server ?? profile.server,
           device_id: profile.device_id,
           active_operations: active.size,
           active_sessions: bridge.sessions.size,
           connection_history: { ...connectionHistory },
+          authorizing: !!authorization,
+          authorization_expires_at: authorization?.expiresAt,
+          authorization_error: authorizationError,
         };
-      if (message.type === "register") {
+      if (message.type === "authorize_cancel") {
+        authorization?.controller.abort();
+        authorization = undefined;
+        authorizationError = undefined;
+        notify();
+        return { ok: true };
+      }
+      if (message.type === "authorize") {
         if (profile.key && !profile.revoked)
           throw fail("already_registered", "当前浏览器已绑定，请先解除绑定");
+        if (authorization) throw fail("authorization_pending", "请先完成或取消当前授权");
         const server = serverURL(message.server);
-        if (typeof message.label !== "string" || !message.label.trim() || message.label.length > 80)
-          throw fail("invalid_name", "请填写浏览器名称");
-        const response = await fetch(server + "/api/browser/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "omit",
-          body: JSON.stringify({
-            username: message.username,
-            password: message.password,
-            name: message.label.trim(),
-          }),
-        });
-        const raw: unknown = await response.json();
-        const data = registrationErrorSchema.parse(raw);
-        if (!response.ok)
-          throw fail(
-            data.error?.code || "registration_failed",
-            data.error?.message || data.detail || "注册失败，请检查账户",
-          );
-        const registration = registrationSchema.safeParse(raw);
-        if (!registration.success) throw fail("invalid_registration", "Server 未返回设备凭据");
-        profile = {
-          instance_id: crypto.randomUUID(),
+        const label = message.label.trim();
+        if (!label || label.length > 80) throw fail("invalid_name", "请填写浏览器名称");
+        const pending = {
+          controller: new AbortController(),
           server,
-          key: registration.data.key,
-          device_id: registration.data.device_id,
-          label: message.label.trim(),
-          paused: !!profile.paused,
+          label,
+          expiresAt: undefined as number | undefined,
         };
-        journal = {};
-        await chrome.storage.local.set({ device: profile, operation_journal: journal });
-        await syncRecoveryAlarm();
-        try {
-          await connect();
-        } catch {}
+        authorization = pending;
+        authorizationError = undefined;
+        // Browser-managed authorization keeps the MV3 worker alive on Chrome 116+.
+        // Its wait stays outside the configuration queue so controls remain responsive.
+        void authorizeBrowser({
+          server,
+          name: label,
+          redirectUri: chrome.identity.getRedirectURL(BROWSER_AUTH_CALLBACK_PATH.slice(1)),
+          open: (url) => chrome.identity.launchWebAuthFlow({ url, interactive: true }),
+          signal: pending.controller.signal,
+          started: (expiresAt) => {
+            pending.expiresAt = expiresAt;
+            notify();
+          },
+        })
+          .then((token) => {
+            configuration = configuration
+              .catch(() => {})
+              .then(async () => {
+                if (authorization !== pending || pending.controller.signal.aborted) return;
+                const next = {
+                  instance_id: crypto.randomUUID(),
+                  server,
+                  key: token.key,
+                  device_id: token.device_id,
+                  label: token.name,
+                  paused: !!profile.paused,
+                };
+                await chrome.storage.local.set({ device: next, operation_journal: {} });
+                profile = next;
+                journal = {};
+                authorization = undefined;
+                authorizationError = undefined;
+                await syncRecoveryAlarm();
+                void connect().catch(() => {});
+                notify();
+              });
+            return configuration;
+          })
+          .catch((caught: unknown) => {
+            if (authorization !== pending) return;
+            authorization = undefined;
+            authorizationError = errorDetails(caught).message;
+            notify();
+          });
         notify();
-        return { ok: true, registered: true };
+        return { ok: true };
       }
       if (message.type === "pause" || message.type === "resume") {
         profile.paused = message.type === "pause";

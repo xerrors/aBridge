@@ -4,6 +4,7 @@ import { defaultDataDirectory } from "@abridge/shared/paths";
 import { startDeviceClient, configureClient, getStatus } from "./runtime.js";
 import { localControl } from "./local-control.js";
 import { LocalExecutor } from "./executor.js";
+import { authorizationCommand } from "./authorization-command.js";
 async function stdinJson(): Promise<Record<string, unknown>> {
   let text = "";
   for await (const chunk of process.stdin) {
@@ -31,7 +32,7 @@ export async function desktopMain(args = process.argv.slice(2)): Promise<void> {
   });
   if (values.help) {
     console.log(
-      "Usage: abridge-desktop <run|configure --stdin|status|control <command>|diagnose> [--state-dir <dir>]",
+      "Usage: abridge-desktop <run|authorize --stdin|configure --stdin|status|control <command>|diagnose> [--state-dir <dir>]",
     );
     return;
   }
@@ -42,6 +43,11 @@ export async function desktopMain(args = process.argv.slice(2)): Promise<void> {
     await startDeviceClient(stateDir, {
       ...(Number.isSafeInteger(parent) && parent > 0 ? { parentPid: parent } : {}),
     });
+    return;
+  }
+  if (action === "authorize") {
+    if (!values.stdin) throw new Error("Use authorize --stdin");
+    await authorizationCommand(stateDir);
     return;
   }
   if (action === "configure") {

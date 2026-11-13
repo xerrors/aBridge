@@ -7,17 +7,6 @@ import { access } from "node:fs/promises";
 import { defaultDataDirectory } from "@abridge/shared/paths";
 import { VERSION } from "@abridge/protocol";
 
-async function stdinJson(): Promise<Record<string, unknown>> {
-  let text = "";
-  for await (const chunk of process.stdin) {
-    text += String(chunk);
-    if (Buffer.byteLength(text) > 65536) throw new Error("Input exceeds 64 KiB");
-  }
-  const value: unknown = JSON.parse(text);
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("A JSON object is required");
-  return value as Record<string, unknown>;
-}
 async function openWeb(url: string): Promise<void> {
   const command =
     process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
@@ -27,7 +16,7 @@ async function openWeb(url: string): Promise<void> {
     child.once("exit", (code) => (code === 0 ? ok() : fail(new Error("No browser opener is available"))));
   });
 }
-const help = `aBridge ${VERSION}\n\nUsage: abridge [serve] [--web] [--host 127.0.0.1] [--port 8765]\n       abridge user create --stdin [--db <file>]\n\nServer options:\n  --db <file>              Persistent SQLite database\n  --data-dir <dir>         Persistent application state\n  --public-origin <url>    Trusted external HTTPS origin behind a proxy\n  --allowed-hosts <list>   Additional exact Host values, comma-separated\n  --allowed-origins <list> Additional MCP origins, comma-separated\n  --web                   Open the local management console\n  --version               Print version\n`;
+const help = `aBridge ${VERSION}\n\nUsage: abridge [serve] [--web] [--host 127.0.0.1] [--port 8765]\n\nServer options:\n  --db <file>              Persistent SQLite database\n  --data-dir <dir>         Persistent application state\n  --public-origin <url>    Trusted external HTTPS origin behind a proxy\n  --allowed-hosts <list>   Additional exact Host values, comma-separated\n  --allowed-origins <list> Additional MCP origins, comma-separated\n  --web                   Open the instance administration console\n  --reset-admin-token     Generate a new administrator token and invalidate admin sessions\n  --version               Print version\n`;
 export async function serverMain(args = process.argv.slice(2)): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -43,7 +32,7 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
       "public-origin": { type: "string" },
       "allowed-hosts": { type: "string" },
       "allowed-origins": { type: "string" },
-      stdin: { type: "boolean" },
+      "reset-admin-token": { type: "boolean" },
     },
   });
   if (values.help) {
@@ -58,22 +47,6 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
     dataDir = resolve(values["data-dir"] ?? defaultDataDirectory()),
     dbPath = resolve(values.db ?? process.env.ABRIDGE_DB ?? join(dataDir, "server", "server.db"));
 
-  if (command === "user") {
-    if (positionals[1] !== "create" || !values.stdin)
-      throw new Error("Use user create --stdin with a JSON username/password object");
-    const data = await stdinJson();
-    if (typeof data.username !== "string" || typeof data.password !== "string")
-      throw new Error("username and password are required");
-    const { Store } = await import("./store.js");
-    const store = new Store(dbPath);
-    try {
-      const user = await store.createUser(data.username, data.password);
-      console.log(JSON.stringify(user));
-    } finally {
-      store.close();
-    }
-    return;
-  }
   if (command !== "serve") throw new Error(`Unknown command: ${command}`);
   const { createServer } = await import("./server.js");
   const port = Number(values.port ?? process.env.ABRIDGE_PORT ?? 8765);
@@ -87,6 +60,8 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
   await access(join(staticRoot, "index.html"));
   const server = await createServer({
     dbPath,
+    adminToken: process.env.ABRIDGE_ADMIN_TOKEN,
+    resetAdminToken: values["reset-admin-token"],
     host: values.host ?? process.env.ABRIDGE_HOST ?? "127.0.0.1",
     port,
     staticRoot,
@@ -105,19 +80,15 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
   try {
     const url = await server.start();
     console.log(`aBridge ${VERSION}: ${url}`);
+    const adminUrl = new URL(values["public-origin"] ?? process.env.ABRIDGE_PUBLIC_ORIGIN ?? url);
+    adminUrl.hash = new URLSearchParams({ admin_token: server.adminToken }).toString();
+    console.log(`Admin console: ${adminUrl.href}`);
     if (values.web) {
       try {
-        await openWeb(
-          (values["public-origin"] ?? process.env.ABRIDGE_PUBLIC_ORIGIN ?? url) +
-            (server.setupToken ? `/#setup=${server.setupToken}` : ""),
-        );
+        await openWeb(adminUrl.href);
       } catch {
-        console.error("Could not open a browser. Use user create --stdin to configure an empty server.");
+        console.error("Could not open a browser. Open the Admin console URL printed above.");
       }
-    } else if (server.setupToken) {
-      console.error(
-        "No management account exists. Create one with abridge user create --stdin or start with --web.",
-      );
     }
   } catch (error) {
     process.off("SIGINT", close);

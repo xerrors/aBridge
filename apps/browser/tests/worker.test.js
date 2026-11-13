@@ -114,7 +114,10 @@ function harness(local = {}, session = {}, settings = {}) {
       getURL: (path) => `chrome-extension://extension/${path}`,
       getManifest: () => ({ version: "0.2.0" }),
       async sendMessage() {},
-      async openOptionsPage() {},
+    },
+    identity: {
+      getRedirectURL: (path) => `https://${"a".repeat(32)}.chromiumapp.org/${path}`,
+      launchWebAuthFlow: (details) => settings.authorize(details.url),
     },
     action: { onClicked: event() },
     tabs: {
@@ -139,7 +142,7 @@ function harness(local = {}, session = {}, settings = {}) {
   };
   globalThis.chrome = chrome;
   globalThis.WebSocket = Socket;
-  const fromPage = (message, page = "options.html") =>
+  const fromPage = (message, page = "popup.html") =>
     new Promise((resolve) =>
       chrome.runtime.onMessage.listeners[0](
         message,
@@ -147,7 +150,7 @@ function harness(local = {}, session = {}, settings = {}) {
         resolve,
       ),
     );
-  const options = (message) => fromPage(message);
+  const popup = (message) => fromPage(message);
   const dispatch = (id, sequence = 1, extra = {}) => ({
     type: "dispatch",
     protocol: "abridge/1",
@@ -169,7 +172,7 @@ function harness(local = {}, session = {}, settings = {}) {
     removed,
     tabs,
     chrome,
-    options,
+    popup,
     dispatch,
     alarms,
     tabsAtConnect,
@@ -191,18 +194,55 @@ test("standalone extension registers once, authenticates directly, isolates brow
   t.after(() => {
     crypto.subtle.digest = originalDigest;
   });
+  let authorizationRequest;
   const local = {},
     session = { owned_task_tabs: [9] },
-    h = harness(local, session);
+    h = harness(local, session, {
+      authorize: async (url) => {
+        assert.equal(new URL(url).origin, "https://abridge.example");
+        return (
+          authorizationRequest.redirect_uri +
+          "?code=" +
+          "c".repeat(43) +
+          "&state=" +
+          authorizationRequest.state
+        );
+      },
+    });
   let requests = 0;
   globalThis.fetch = async (url, request) => {
     requests++;
-    assert.equal(url, "https://abridge.example/api/browser/register");
-    assert.deepEqual(JSON.parse(request.body), { username: "alice", password: "secret", name: "Work" });
+    if (url.endsWith("/api/device-authorizations")) {
+      authorizationRequest = JSON.parse(request.body);
+      assert.equal(authorizationRequest.kind, "browser");
+      assert.deepEqual(authorizationRequest.capabilities, ["browser"]);
+      assert.equal(authorizationRequest.name, "Work");
+      assert.equal(request.redirect, "error");
+      return {
+        ok: true,
+        async json() {
+          return {
+            id: "r".repeat(43),
+            authorization_url: "https://abridge.example/?authorize=" + "r".repeat(43),
+            expires_at: Date.now() / 1000 + 300,
+          };
+        },
+      };
+    }
+    assert.equal(url, "https://abridge.example/api/device-authorizations/token");
+    const body = JSON.parse(request.body);
+    assert.equal(body.redirect_uri, authorizationRequest.redirect_uri);
+    assert.ok(body.code_verifier);
     return {
       ok: true,
       async json() {
-        return { device_id: "browser-device", key: "private-device-key" };
+        return {
+          device_id: "browser-device",
+          key: "abr_device_private-key",
+          name: "Work",
+          kind: "browser",
+          capabilities: ["browser"],
+        };
       },
     };
   };
@@ -212,30 +252,33 @@ test("standalone extension registers once, authenticates directly, isolates brow
   assert.deepEqual(h.removed, [9]);
   assert.equal(
     h.chrome.runtime.onMessage.listeners[0](
-      { type: "register" },
-      { id: "other", url: h.chrome.runtime.getURL("options.html") },
+      { type: "authorize" },
+      { id: "other", url: h.chrome.runtime.getURL("popup.html") },
       () => assert.fail(),
     ),
     false,
   );
   assert.equal(
-    (await h.options({ type: "register", server: "http://remote.example", label: "Work" })).ok,
+    (await h.popup({ type: "authorize", server: "http://remote.example", label: "Work" })).ok,
     false,
   );
   assert.equal(
     (
-      await h.options({
-        type: "register",
+      await h.popup({
+        type: "authorize",
         server: "https://abridge.example",
-        username: "alice",
-        password: "secret",
         label: "Work",
       })
-    ).registered,
+    ).ok,
     true,
   );
-  assert.equal(requests, 1);
-  assert.equal(local.device.key, "private-device-key");
+  const deadline = performance.now() + 3000;
+  while (!(await h.popup({ type: "status" })).configured) {
+    if (performance.now() > deadline) assert.fail("browser authorization did not complete");
+    await delay(5);
+  }
+  assert.equal(requests, 2);
+  assert.equal(local.device.key, "abr_device_private-key");
   assert.ok(local.device.instance_id);
   assert.equal(JSON.stringify(local).includes("secret"), false);
   assert.equal(h.messages[0].device_key, local.device.key);
@@ -264,17 +307,17 @@ test("standalone extension registers once, authenticates directly, isolates brow
   assert.equal(h.sockets.length, 2);
   assert.ok(h.tabs.has(1));
   assert.ok(h.removed.includes(2));
-  assert.equal(requests, 1);
-  assert.equal((await h.options({ type: "status" })).connected, true);
+  assert.equal(requests, 2);
+  assert.equal((await h.popup({ type: "status" })).connected, true);
   const closedResult = h.nextResult("after-close");
   h.sockets[1].receive(h.dispatch("after-close", 1));
   assert.equal((await closedResult).error.code, "session_closed");
-  await h.options({ type: "pause" });
+  await h.popup({ type: "pause" });
   assert.equal(local.device.paused, true);
   assert.equal(h.messages.at(-1).paused, true);
-  await h.options({ type: "resume" });
+  await h.popup({ type: "resume" });
   assert.equal(local.device.paused, false);
-  await h.options({ type: "unbind" });
+  await h.popup({ type: "unbind" });
   await delay(10);
   assert.equal(local.device.revoked, true);
   assert.equal(
@@ -297,7 +340,7 @@ test("startup retains failed cleanup IDs and refuses connection", async () => {
   await delay(10);
   assert.equal(h.sockets.length, 0);
   assert.deepEqual(session.owned_task_tabs, [9]);
-  const status = await h.options({ type: "status" });
+  const status = await h.popup({ type: "status" });
   assert.equal(status.error.code, "cleanup_failed");
   delete globalThis.chrome;
   delete globalThis.WebSocket;
@@ -355,7 +398,7 @@ test("cancel during digest or intent persistence prevents late page effects", as
     assert.equal(local.operation_journal.cancelled.status, "outcome_unknown");
     crypto.subtle.digest = originalDigest;
     h.chrome.storage.local.set = originalSet;
-    await h.options({ type: "unbind" });
+    await h.popup({ type: "unbind" });
     await delay(5);
     delete globalThis.chrome;
     delete globalThis.WebSocket;
@@ -389,8 +432,8 @@ test("recovery alarm restores connection when worker-local reconnect timer is lo
   const hellos = h.messages.filter((m) => m.type === "hello");
   assert.equal(hellos[1].device_key, hellos[0].device_key);
   assert.equal(hellos[1].paused, true, "recovery never clears a persistent pause");
-  assert.equal((await h.options({ type: "status" })).connected, true);
-  await h.options({ type: "unbind" });
+  assert.equal((await h.popup({ type: "status" })).connected, true);
+  await h.popup({ type: "unbind" });
   await delay(10);
   assert.equal(h.alarms.size, 0, "revocation removes background recovery");
   h.chrome.alarms.onAlarm.emit(recovery);
@@ -420,7 +463,7 @@ test("recovery alarm replaces a stale apparently-open socket only after async ta
   Date.now = () => now() + 60000;
   try {
     assert.equal(
-      (await h.options({ type: "status" })).connected,
+      (await h.popup({ type: "status" })).connected,
       false,
       "stale heartbeat cannot be reported connected",
     );
@@ -432,8 +475,8 @@ test("recovery alarm replaces a stale apparently-open socket only after async ta
   assert.equal(h.sockets.length, 2, "missed heartbeat lease replaces an apparently-open socket");
   assert.equal(h.sockets[0].readyState, 3);
   assert.deepEqual(h.tabsAtConnect[1], [1], "old task tab is removed before reconnect");
-  assert.equal((await h.options({ type: "status" })).connected, true);
-  await h.options({ type: "unbind" });
+  assert.equal((await h.popup({ type: "status" })).connected, true);
+  await h.popup({ type: "unbind" });
   await delay(5);
   delete globalThis.chrome;
   delete globalThis.WebSocket;
@@ -464,24 +507,24 @@ test("alarm reconnect during CLOSING completes old task cleanup before replacing
   old.finishClose();
   await delay(10);
   assert.equal(
-    (await h.options({ type: "status" })).connected,
+    (await h.popup({ type: "status" })).connected,
     true,
     "late old close cannot clear new connection",
   );
   assert.equal(h.tabs.size, 1);
-  await h.options({ type: "unbind" });
+  await h.popup({ type: "unbind" });
   h.sockets[1].finishClose();
   await delay(5);
   delete globalThis.chrome;
   delete globalThis.WebSocket;
 });
 
-test("only exact popup or settings pages control the worker; stopping tasks preserves connection and authorization", async () => {
+test("only the exact popup page controls the worker; stopping tasks preserves connection and authorization", async () => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
     h = harness(local, {});
   await import("../src/worker.ts?popup-controls");
   await delay(10);
-  for (const page of ["untrusted.html", "popup.html?spoof=1", "options.html#spoof"]) {
+  for (const page of ["untrusted.html", "options.html", "popup.html?spoof=1", "popup.html#spoof"]) {
     assert.equal(
       h.chrome.runtime.onMessage.listeners[0](
         { type: "pause" },
@@ -507,7 +550,7 @@ test("only exact popup or settings pages control the worker; stopping tasks pres
   assert.equal(local.device.paused, true);
   await h.fromPage({ type: "resume" }, "popup.html");
   assert.equal(local.device.paused, false);
-  await h.options({ type: "unbind" });
+  await h.popup({ type: "unbind" });
   await delay(5);
   delete globalThis.chrome;
   delete globalThis.WebSocket;
@@ -548,10 +591,53 @@ test("closing another session does not cancel a dispatch waiting on durable inte
   assert.equal(result.status, "executed");
   assert.equal(h.tabs.size, 2);
   assert.deepEqual(h.tabsAtConnect[0], [1]);
-  await h.options({ type: "unbind" });
+  await h.popup({ type: "unbind" });
   await delay(10);
   delete globalThis.chrome;
   delete globalThis.WebSocket;
+});
+
+test("an open popup is notified when remote work starts, completes and closes its task session", async (t) => {
+  const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } };
+  const h = harness(local, {});
+  t.after(async () => {
+    await h.popup({ type: "unbind" });
+    local.device.revoked = true;
+    for (const socket of h.sockets) socket.close();
+  });
+  await import("../src/worker.ts?task-status-notifications");
+  await h.popup({ type: "status" });
+  // Wait for authentication rather than assuming the first status read is online.
+  while (!(await h.popup({ type: "status" })).connected) await delay(1);
+  const updates = [];
+  h.chrome.runtime.sendMessage = async (message) => {
+    if (message.type === "status_changed") updates.push(h.popup({ type: "status" }));
+  };
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  const originalSet = h.chrome.storage.local.set;
+  h.chrome.storage.local.set = async (values) => {
+    if (values.operation_journal?.["notified-task"]?.status === "executing") await gate;
+    return originalSet(values);
+  };
+  const result = h.nextResult("notified-task");
+  h.sockets[0].receive(h.dispatch("notified-task"));
+  assert.equal((await updates[0]).active_operations, 1, "Start notification enables local stop controls");
+  release();
+  await result;
+  const completed = await updates.at(-1);
+  assert.equal(completed.active_operations, 0);
+  assert.equal(completed.active_sessions, 1);
+  let closed;
+  const closing = new Promise((resolve) => {
+    closed = resolve;
+  });
+  h.chrome.runtime.sendMessage = async () => closed(await h.popup({ type: "status" }));
+  h.sockets[0].receive({ type: "session_close", connection_epoch: 1, session_id: "task" });
+  assert.equal((await closing).active_sessions, 0, "Remote close also updates the open popup");
 });
 
 test("independent: cancelling digest-waiting A keeps executing B and the control session usable", async (t) => {
@@ -561,7 +647,7 @@ test("independent: cancelling digest-waiting A keeps executing B and the control
   const originalDigest = crypto.subtle.digest;
   t.after(async () => {
     crypto.subtle.digest = originalDigest;
-    await h.options({ type: "unbind" });
+    await h.popup({ type: "unbind" });
     delete globalThis.chrome;
     delete globalThis.WebSocket;
   });
@@ -616,7 +702,7 @@ test("independent: cancelling a completed page action before result publication 
   const session = {},
     h = harness(local, session);
   t.after(async () => {
-    await h.options({ type: "unbind" });
+    await h.popup({ type: "unbind" });
     delete globalThis.chrome;
     delete globalThis.WebSocket;
   });
@@ -660,7 +746,7 @@ for (const fence of ["revoke", "deadline"])
     const originalDigest = crypto.subtle.digest;
     t.after(async () => {
       crypto.subtle.digest = originalDigest;
-      await h.options({ type: "unbind" });
+      await h.popup({ type: "unbind" });
       for (const socket of h.sockets) socket.finishClose?.();
       delete globalThis.chrome;
       delete globalThis.WebSocket;
@@ -696,7 +782,7 @@ test("independent: an expired device lease blocks dispatch even before the heart
   const originalNow = Date.now;
   t.after(async () => {
     Date.now = originalNow;
-    await h.options({ type: "unbind" });
+    await h.popup({ type: "unbind" });
     delete globalThis.chrome;
     delete globalThis.WebSocket;
   });
@@ -708,4 +794,139 @@ test("independent: an expired device lease blocks dispatch even before the heart
   await delay(25);
   assert.equal(h.tabs.size, 1, "An expired connection lease cannot admit browser page work");
   assert.notEqual(h.messages.find((m) => m.operation_id === "lease-expired")?.status, "executed");
+});
+
+test("browser consent completes without an open popup and a reopened popup restores pending details", async () => {
+  let finishBrowser;
+  let started;
+  let tokenRequests = 0;
+  const local = {
+    device: { server: "https://old.example", label: "Old profile", paused: true, revoked: true },
+  };
+  const h = harness(
+    local,
+    {},
+    {
+      authorize: () =>
+        new Promise((resolve) => {
+          finishBrowser = resolve;
+        }),
+    },
+  );
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (url.endsWith("/token")) {
+      tokenRequests++;
+      return Response.json({
+        device_id: "browser-device",
+        key: "abr_device_private-key",
+        name: "Work",
+        kind: "browser",
+        capabilities: ["browser"],
+      });
+    }
+    started = JSON.parse(init.body);
+    return Response.json({
+      id: "r".repeat(43),
+      authorization_url: "https://abridge.example/?authorize=" + "r".repeat(43),
+      expires_at: Date.now() / 1000 + 300,
+    });
+  };
+  try {
+    await import("../src/worker.ts?popup-consent-lifetime");
+    assert.equal(
+      (await h.popup({ type: "authorize", server: "https://abridge.example", label: "Work" })).ok,
+      true,
+    );
+    const deadline = performance.now() + 2000;
+    while (!finishBrowser) {
+      if (performance.now() > deadline) assert.fail("authorization browser did not open");
+      await delay(5);
+    }
+    // Each request uses a fresh popup sender. No UI object or open message port owns this flow.
+    const reopened = await h.fromPage({ type: "status" });
+    assert.equal(reopened.authorizing, true);
+    assert.equal(reopened.server, "https://abridge.example");
+    assert.equal(reopened.label, "Work");
+    assert.equal(
+      local.device.server,
+      "https://old.example",
+      "Pending details cannot replace the saved binding",
+    );
+    finishBrowser(started.redirect_uri + "?code=" + "c".repeat(43) + "&state=" + started.state);
+    // Complete with no further popup messages; the worker must redeem and save the credential itself.
+    while (!local.device.key) {
+      if (performance.now() > deadline) assert.fail("authorization did not complete without a popup");
+      await delay(5);
+    }
+    assert.equal(tokenRequests, 1);
+    assert.equal(local.device.server, "https://abridge.example");
+    assert.equal(local.device.label, "Work");
+    assert.equal(local.device.paused, true);
+    assert.equal((await h.fromPage({ type: "status" })).authorizing, false);
+    await h.popup({ type: "unbind" });
+  } finally {
+    globalThis.fetch = previousFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  }
+});
+
+test("browser consent waits outside control queue and a cancelled late approval cannot bind", async () => {
+  let finishBrowser;
+  let started;
+  let tokenRequests = 0;
+  const local = { device: { paused: true } },
+    session = {};
+  const h = harness(local, session, {
+    authorize: () =>
+      new Promise((resolve) => {
+        finishBrowser = resolve;
+      }),
+  });
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (init.method === "DELETE") return Response.json({ ok: true });
+    if (url.endsWith("/token")) {
+      tokenRequests++;
+      throw Error("Cancelled code must not be redeemed");
+    }
+    started = JSON.parse(init.body);
+    return Response.json({
+      id: "r".repeat(43),
+      authorization_url: "https://abridge.example/?authorize=" + "r".repeat(43),
+      expires_at: Date.now() / 1000 + 300,
+    });
+  };
+  try {
+    await import("../src/worker.ts?browser-consent-cancel");
+    assert.equal(
+      (await h.popup({ type: "authorize", server: "https://abridge.example", label: "Work" })).ok,
+      true,
+    );
+    const deadline = performance.now() + 2000;
+    while (!finishBrowser) {
+      if (performance.now() > deadline) assert.fail("authorization browser did not open");
+      await delay(5);
+    }
+    const status = await Promise.race([
+      h.popup({ type: "status" }),
+      delay(500).then(() => {
+        throw Error("Consent blocked the configuration queue");
+      }),
+    ]);
+    assert.equal(status.authorizing, true);
+    assert.equal(status.paused, true);
+    assert.equal((await h.popup({ type: "authorize_cancel" })).ok, true);
+    finishBrowser(started.redirect_uri + "?code=" + "c".repeat(43) + "&state=" + started.state);
+    await delay(20);
+    assert.equal(tokenRequests, 0);
+    assert.equal((await h.popup({ type: "status" })).authorizing, false);
+    assert.equal(local.device.key, undefined);
+    assert.equal(local.device.paused, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  }
 });

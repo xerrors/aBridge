@@ -1,4 +1,4 @@
-import type { Capability, DeviceKind } from "@abridge/protocol";
+import type { Capability, DeviceKind, ConnectionPolicy } from "@abridge/protocol";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -23,9 +23,8 @@ export interface Grant {
   id: string;
   owner_id: string;
   name: string;
-  device_ids: string[];
-  capabilities: Capability[];
-  expires_at: number;
+  policy: ConnectionPolicy;
+  expires_at: number | null;
   token_digest: string;
   revoked_at: number | null;
   created_at: number;

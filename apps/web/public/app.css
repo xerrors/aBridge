@@ -277,18 +277,6 @@ a {
   align-items: center;
   justify-content: flex-end;
 }
-.device-manage {
-  grid-column: 1/-1;
-  border-top: 1px solid #edf0f5;
-  padding-top: 15px;
-  margin-top: -8px;
-}
-.device-manage summary {
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 13px;
-  width: max-content;
-}
 .edit-form {
   margin-top: 18px;
   max-width: 640px;
@@ -615,9 +603,6 @@ dialog h2 {
     grid-column: 1/-1;
     grid-row: 2;
   }
-  .device-manage {
-    margin-top: 0;
-  }
   .device-name {
     gap: 10px;
   }
@@ -660,5 +645,553 @@ dialog h2 {
     scroll-behavior: auto !important;
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* Connection permissions stay alongside each device instead of a global capability grid. */
+.connection-dialog {
+  width: min(650px, calc(100vw - 28px));
+}
+.field select {
+  display: block;
+  margin-top: 7px;
+}
+.permission-count {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: 5px;
+}
+.connection-menu {
+  position: relative;
+}
+.connection-menu summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  padding: 8px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.connection-menu summary::-webkit-details-marker {
+  display: none;
+}
+.connection-menu[open] > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  min-width: 130px;
+  padding: 5px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 25px #18365820;
+  z-index: 2;
+}
+.connection-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  text-align: left;
+  font-size: 13px;
+}
+.surface:has(.connection-menu) {
+  overflow: visible;
+}
+.permission-devices,
+.preview-devices {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+}
+.permission-device,
+.preview-device {
+  padding: 15px 0;
+}
+.permission-device + .permission-device,
+.preview-device + .preview-device {
+  border-top: 1px solid var(--line);
+}
+.permission-device-head,
+.preview-device-head,
+.preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.permission-device .name,
+.preview-device .name {
+  font-size: 14px;
+}
+.inline-check,
+.permission-checks label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.inline-check input,
+.permission-checks input {
+  margin: 0;
+  accent-color: var(--blue);
+  width: 15px;
+  height: 15px;
+}
+.permission-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin-top: 13px;
+}
+.default-permissions {
+  margin-bottom: 20px;
+}
+.inherited-permissions,
+.preview-device > .caps {
+  margin-top: 12px;
+  align-items: center;
+}
+.connection-expiry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.connection-expiry .field {
+  margin-bottom: 0;
+}
+.preview-heading {
+  margin: -5px 0 18px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.access-state {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.access-state.allowed {
+  color: var(--blue);
+}
+.compact-empty {
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.revoked-connections {
+  margin-top: 24px;
+}
+.revoked-connections > summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+.revoked-connections .count {
+  font-size: 12px;
+  margin-left: 4px;
+}
+.revoked-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+}
+.revoked-row + .revoked-row {
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 760px) {
+  .connection-expiry {
+    grid-template-columns: 1fr;
+  }
+  .agent-row > .actions {
+    flex-wrap: wrap;
+  }
+}
+.connection-invalid {
+  display: inline-block;
+  font-weight: 400;
+  color: #b32c39;
+  font-size: 12px;
+  margin-left: 12px;
+}
+
+/* The browser confirmation stays separate from the management console. */
+.authorization-wrap {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 40px 20px;
+}
+.authorization-panel {
+  width: min(100%, 520px);
+  padding: 36px;
+  border-radius: 16px;
+  background: white;
+}
+.authorization-panel > .brand {
+  margin-bottom: 32px;
+}
+.authorization-heading {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 28px;
+  overflow-wrap: anywhere;
+}
+.authorization-device {
+  display: grid;
+  gap: 8px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.authorization-device h2 {
+  overflow-wrap: anywhere;
+}
+.authorization-device-kind {
+  font-size: 12px;
+  color: var(--muted);
+}
+.authorization-details {
+  display: grid;
+  gap: 18px;
+  margin: 24px 0;
+}
+.authorization-details > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 16px;
+}
+.authorization-details dt {
+  color: var(--muted);
+}
+.authorization-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.authorization-note,
+.authorization-status {
+  margin: 24px 0;
+}
+.authorization-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.authorization-account {
+  display: block;
+  margin: 20px auto -8px;
+}
+.authorization-error {
+  color: #b32c39;
+  margin: 18px 0;
+  overflow-wrap: anywhere;
+}
+.authorization-result {
+  display: grid;
+  justify-items: start;
+  gap: 18px;
+}
+@media (max-width: 540px) {
+  .authorization-panel {
+    padding: 26px 22px;
+  }
+}
+
+.device-setup-steps {
+  display: grid;
+  gap: 16px;
+  padding-left: 22px;
+  margin: 0 0 26px;
+}
+.device-setup-steps .endpoint {
+  margin: 10px 0 0;
+}
+
+/* The instance view presents global counts without exposing device controls. */
+.account-identity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.instance-admin-label {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+}
+.instance-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0 0 30px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.instance-stats > div {
+  padding: 22px 24px;
+}
+.instance-stats > div + div {
+  border-left: 1px solid var(--line);
+}
+.instance-stats dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.instance-stats dd {
+  margin: 6px 0 0;
+  font-size: 34px;
+  font-weight: 650;
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+}
+.instance-stats > div:first-child dd,
+.instance-online {
+  color: var(--blue);
+}
+.instance-list-heading {
+  padding: 22px 24px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.instance-list-heading h2 {
+  font-size: 18px;
+}
+.instance-user {
+  border-top: 1px solid var(--line);
+}
+.instance-user > summary {
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  cursor: pointer;
+  list-style: none;
+}
+.instance-user > summary::-webkit-details-marker {
+  display: none;
+}
+.instance-user > summary::after {
+  content: "+";
+  font-size: 22px;
+  color: var(--muted);
+  width: 14px;
+  flex: none;
+}
+.instance-user[open] > summary::after {
+  content: "−";
+}
+.instance-user > summary > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.instance-created {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.instance-user-counts {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.instance-user-counts strong {
+  font-weight: 600;
+  margin-left: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.instance-devices {
+  margin-bottom: 8px;
+}
+.instance-devices td:first-child {
+  overflow-wrap: anywhere;
+}
+.instance-devices th,
+.instance-devices td {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+.instance-devices td:nth-child(2),
+.instance-devices td:nth-child(3),
+.instance-devices td:nth-child(4) {
+  white-space: nowrap;
+}
+.instance-no-devices {
+  padding: 0 24px 24px;
+}
+.instance-loading {
+  padding: 32px 0;
+}
+@media (max-width: 760px) {
+  .topbar:has(.instance-admin-label) {
+    height: auto;
+    min-height: 78px;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    align-items: flex-start;
+  }
+  .topbar:has(.instance-admin-label) .account {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+  .tabs {
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .instance-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .instance-stats > div {
+    padding: 16px 18px;
+  }
+  .instance-stats > div:nth-child(4) {
+    border-left: 0;
+  }
+  .instance-stats > div:nth-child(n + 4) {
+    border-top: 1px solid var(--line);
+  }
+  .instance-stats dd {
+    font-size: 28px;
+  }
+  .instance-list-heading {
+    padding: 20px;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .instance-user > summary {
+    padding: 20px;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .instance-user > summary::after {
+    order: 2;
+  }
+  .instance-user-counts {
+    width: 100%;
+    order: 3;
+    gap: 20px;
+  }
+  .instance-devices th,
+  .instance-devices td {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+}
+
+/* Device rows lead to a dedicated page; the stop action stays independent. */
+.device-row {
+  position: relative;
+}
+.device-row:hover {
+  background: #f8fafd;
+}
+.device-row:focus-within {
+  background: #edf4ff;
+}
+.device-link {
+  color: inherit;
+  text-decoration: none;
+}
+.device-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.device-row .actions button {
+  position: relative;
+  z-index: 1;
+}
+.device-chevron {
+  color: var(--muted);
+  font-size: 24px;
+  margin-left: 10px;
+}
+.device-back {
+  display: inline-block;
+  margin-bottom: 20px;
+  text-decoration: none;
+  font-size: 13px;
+}
+.device-heading h1 {
+  overflow-wrap: anywhere;
+}
+.device-heading + .caps {
+  margin: -6px 0 24px;
+}
+.detail-tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 26px;
+}
+.detail-tabs button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 0;
+  color: var(--muted);
+}
+.detail-tabs button[aria-current="page"] {
+  color: var(--blue);
+  border-bottom-color: var(--blue);
+}
+.device-settings {
+  padding: 28px;
+  max-width: 640px;
+}
+.device-settings h2 {
+  margin-bottom: 24px;
+}
+.activity-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.activity-filters .field {
+  flex: 1;
+  min-width: 160px;
+  margin-bottom: 0;
+}
+.activity-filters select {
+  text-overflow: ellipsis;
+}
+.activity-filters .text-button {
+  margin-bottom: 5px;
+}
+.record-time {
+  white-space: nowrap;
+}
+.record-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+}
+.record-pagination button:disabled {
+  cursor: default;
+}
+@media (max-width: 760px) {
+  .activity-filters .field {
+    min-width: min(100%, 220px);
+  }
+  .device-settings {
+    padding: 20px;
+  }
+  .record-pagination {
+    padding: 14px;
   }
 }

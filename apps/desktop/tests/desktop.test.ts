@@ -308,6 +308,20 @@ test("real WS client executes one effect, deduplicates and obeys local pause", a
     await waitUntil(() => messages.some((m) => m.type === "hello"));
     await waitUntil(() => Boolean(peer));
     await waitUntil(() => client["epoch"] === 1);
+    const statusPath = join(dir, "status.json");
+    let initial = JSON.parse(await readFile(statusPath, "utf8"));
+    for (let attempt = 0; attempt < 30 && initial.connection !== "online"; attempt++) {
+      await delay(100);
+      initial = JSON.parse(await readFile(statusPath, "utf8"));
+    }
+    assert.equal(initial.connection, "online");
+    let idle = initial;
+    for (let attempt = 0; attempt < 30 && idle.updated_at <= initial.updated_at; attempt++) {
+      await delay(100);
+      idle = JSON.parse(await readFile(statusPath, "utf8"));
+    }
+    assert.ok(idle.updated_at > initial.updated_at, "Idle clients must keep the native UI status fresh");
+    assert.equal(idle.connection, "online");
     const frame = {
       type: "dispatch",
       protocol: "abridge/1",
@@ -351,6 +365,10 @@ test("real WS client executes one effect, deduplicates and obeys local pause", a
   } finally {
     await client.stop();
     await run;
+    const stopped = await readFile(join(dir, "status.json"), "utf8");
+    assert.equal(JSON.parse(stopped).connection, "offline");
+    await delay(1100);
+    assert.equal(await readFile(join(dir, "status.json"), "utf8"), stopped);
     await new Promise<void>((resolve) => ws.close(() => resolve()));
     await rm(dir, { recursive: true, force: true });
   }

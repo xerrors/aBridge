@@ -127,10 +127,12 @@ export function Modal({
   title,
   children,
   close,
+  className,
 }: {
   title: string;
   children: ComponentChildren;
   close: () => void;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -145,6 +147,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
+      class={className}
       onCancel={(event) => {
         event.preventDefault();
         close();

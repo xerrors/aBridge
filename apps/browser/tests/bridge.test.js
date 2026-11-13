@@ -74,7 +74,12 @@ function fixture() {
   };
   const bridge = new BrowserBridge(chrome, { now: () => now, uuid: () => `observation-${++sequence}` });
   const request = (method, session_id = "s1", params = {}) =>
-    bridge.dispatch({ id: `request-${++sequence}`, method, session_id, params });
+    bridge.dispatch({
+      id: `request-${++sequence}`,
+      method,
+      session_id,
+      params: method === "act" ? { wait_after_ms: 0, ...params } : params,
+    });
   return {
     bridge,
     chrome,

@@ -43,7 +43,9 @@ npm publish dist/releases/*.tgz --access public
 
 **编译不要求 Apple Developer 证书。** GitHub `macos-15` Apple Silicon runner 构建 `aBridge-<version>-macos-arm64-unsigned.zip`，其中 App 为 ad hoc 签名候选，未公证。下载后不能宣称已通过 Gatekeeper 分发审核。
 
-App 内含固定官方 Node 发行物、桌面 CLI 和生产依赖闭包；Swift 从 App Bundle 相对解析运行时，用户数据仍在 `~/Library/Application Support/aBridge`。产物不包含 CI 用户名、构建目录或本机凭据。将 App 拖入 Applications 后即可运行，不需要源码目录、Python 或本机 npm 环境。
+App 内含固定官方 Node 22 发行物、桌面 CLI 和生产依赖闭包；Swift 从 App Bundle 相对解析运行时，用户数据仍在 `~/Library/Application Support/aBridge`。产物不包含 CI 用户名、构建目录或本机凭据。将 App 拖入 Applications 后即可运行，不需要源码目录、Python 或本机 npm 环境。
+
+产品最低支持 Node 22.13.0，CI 覆盖最低补丁版本及 Node 22、24、26。npm 发布 job 单独使用 Node 26 附带的新 npm，以满足可信发布要求；这不提高产品的最低运行版本。
 
 本地构建：
 

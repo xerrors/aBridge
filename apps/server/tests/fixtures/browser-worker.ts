@@ -41,7 +41,12 @@ export type FixtureTab = {
   text: string;
   clicks: number;
 };
-export function browserWorkerFixture(url: string, deviceId: string, deviceKey: string) {
+export function browserWorkerFixture(
+  url: string,
+  deviceId: string,
+  deviceKey: string,
+  authorize?: (url: string) => Promise<string>,
+) {
   const local: JsonObject = {
     device: {
       server: url,
@@ -125,7 +130,13 @@ export function browserWorkerFixture(url: string, deviceId: string, deviceKey: s
       getManifest: () => ({ version: VERSION }),
       getURL: (path: string) => `chrome-extension://${EXTENSION_ID}/${path}`,
       async sendMessage() {},
-      async openOptionsPage() {},
+    },
+    identity: {
+      getRedirectURL: (path: string) => `https://${EXTENSION_ID}.chromiumapp.org/${path}`,
+      launchWebAuthFlow: async ({ url }: { url: string }) => {
+        if (!authorize) throw Error("Unexpected authorization flow");
+        return authorize(url);
+      },
     },
     action: { onClicked: event() },
     tabs: {
@@ -229,7 +240,7 @@ export function browserWorkerFixture(url: string, deviceId: string, deviceKey: s
         reject(Error("Worker has not installed UI listener"));
         return;
       }
-      listener(message, { id: EXTENSION_ID, url: chrome.runtime.getURL("options.html") }, resolve);
+      listener(message, { id: EXTENSION_ID, url: chrome.runtime.getURL("popup.html") }, resolve);
     });
   return {
     local,

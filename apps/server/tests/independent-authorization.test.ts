@@ -18,8 +18,7 @@ for (const change of ["revoke", "pause", "disable"] as const)
       const { grant } = store.createGrant(
         user.id,
         "fixture",
-        [device.id],
-        ["files"],
+        { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
         Date.now() / 1000 + 600,
       );
       const transport: DeviceTransport = { async send() {}, async close() {} };
@@ -139,7 +138,12 @@ test("sensitive result that finishes after a local pause cannot escape an existi
   try {
     const user = await store.createUser("fixture", "fixture-password-123");
     const { device, key } = store.createDevice(user.id, "fixture", ["files"]);
-    const { grant } = store.createGrant(user.id, "fixture", [device.id], ["files"], Date.now() / 1000 + 600);
+    const { grant } = store.createGrant(
+      user.id,
+      "fixture",
+      { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
+      Date.now() / 1000 + 600,
+    );
     const ticket = await control.attachConnection(
       key,
       "computer",
@@ -185,7 +189,12 @@ test("terminal results survive a normal disconnect but retain the last local pau
   try {
     const user = await store.createUser("fixture", "fixture-password-123");
     const { device, key } = store.createDevice(user.id, "fixture", ["files"]);
-    const { grant } = store.createGrant(user.id, "fixture", [device.id], ["files"], Date.now() / 1000 + 600);
+    const { grant } = store.createGrant(
+      user.id,
+      "fixture",
+      { mode: "selected", devices: [{ device_id: device.id, capabilities: ["files"] }] },
+      Date.now() / 1000 + 600,
+    );
     const ticket = await control.attachConnection(
       key,
       "computer",

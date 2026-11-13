@@ -76,6 +76,7 @@ export class DeviceClient {
   private reconnectAbort = new AbortController();
   private readonly now: () => number;
   private key: string;
+  private statusWrite = Promise.resolve();
   constructor(readonly options: ClientOptions) {
     this.now = options.now ?? (() => performance.now());
     this.key = options.deviceKey;
@@ -127,10 +128,20 @@ export class DeviceClient {
   async run(): Promise<void> {
     this.controlServer = await listenLocalControl(this.options.stateDir, (request) => this.control(request));
     let parentTimer: NodeJS.Timeout | undefined;
+    let statusTimer: NodeJS.Timeout | undefined;
+    let statusRefresh: Promise<void> | undefined;
     let backoff = 1000;
     try {
       this.journal = new OperationJournal(join(this.options.stateDir, "operations.sqlite3"));
       await chmod(join(this.options.stateDir, "operations.sqlite3"), 0o600);
+      statusTimer = setInterval(() => {
+        if (statusRefresh || this.stopping) return;
+        statusRefresh = this.writeStatus()
+          .catch(() => this.socket?.terminate())
+          .finally(() => {
+            statusRefresh = undefined;
+          });
+      }, 1000);
       if (this.options.parentPid)
         parentTimer = setInterval(() => {
           if (process.ppid !== this.options.parentPid) void this.stop();
@@ -168,6 +179,8 @@ export class DeviceClient {
       }
     } finally {
       if (parentTimer) clearInterval(parentTimer);
+      if (statusTimer) clearInterval(statusTimer);
+      await statusRefresh;
       try {
         await this.stopOperations();
         this.status = "offline";
@@ -637,8 +650,16 @@ export class DeviceClient {
       ...(await this.executor.diagnostics(false)),
     };
   }
-  private async writeStatus(): Promise<void> {
-    await writePrivateJson(join(this.options.stateDir, "status.json"), await this.snapshot());
+  private writeStatus(): Promise<void> {
+    // Serialize snapshots as well as writes so an older periodic update cannot
+    // replace a newer control/operation state after asynchronous diagnostics.
+    const pending = this.statusWrite
+      .catch(() => {})
+      .then(async () => {
+        await writePrivateJson(join(this.options.stateDir, "status.json"), await this.snapshot());
+      });
+    this.statusWrite = pending;
+    return pending;
   }
   async stop(): Promise<void> {
     this.stopping = true;

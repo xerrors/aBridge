@@ -3,7 +3,13 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { promisify } from "node:util";
-import { deviceCapabilities, type Capability, type DeviceKind } from "@abridge/protocol";
+import {
+  deviceCapabilities,
+  type Capability,
+  type DeviceKind,
+  type ConnectionPolicy,
+} from "@abridge/protocol";
+import { validatePolicy } from "./policy.js";
 import {
   BridgeError,
   nowSeconds,
@@ -26,11 +32,11 @@ const SCHEMA = [
   "CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,salt TEXT NOT NULL,password_hash TEXT NOT NULL,created_at REAL NOT NULL);",
   "CREATE TABLE logins(digest TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires_at REAL NOT NULL);",
   "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')));",
-  "CREATE TABLE client_grants(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,device_ids TEXT NOT NULL,capabilities TEXT NOT NULL,expires_at REAL NOT NULL,token_digest TEXT UNIQUE NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
+  "CREATE TABLE client_grants(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
   "CREATE TABLE control_sessions(id TEXT PRIMARY KEY,grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),capabilities TEXT NOT NULL,lease_until REAL NOT NULL,status TEXT NOT NULL,created_at REAL NOT NULL);",
   "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
   "CREATE TABLE audit(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),device_id TEXT,grant_id TEXT,operation_id TEXT,action TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=1;",
+  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=2;",
 ].join("\n");
 
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
@@ -45,10 +51,14 @@ export class Store {
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0);
     if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
-    else if (version !== 1) {
+    else if (version !== 2) {
       this.db.close();
       throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
     }
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS active_session_device ON control_sessions(device_id) WHERE status='active'; " +
+        "CREATE INDEX IF NOT EXISTS active_session_grant ON control_sessions(grant_id) WHERE status='active';",
+    );
   }
   close(): void {
     this.db.close();
@@ -79,18 +89,17 @@ export class Store {
   }
   private decode(row: Record<string, unknown>): Record<string, unknown> {
     const result = { ...row };
-    for (const key of ["capabilities", "device_ids"])
+    for (const key of ["capabilities", "policy"])
       if (typeof result[key] === "string") result[key] = JSON.parse(result[key]);
     return result;
   }
-  userCount(): number {
-    return this.one<{ count: number }>("SELECT count(*) AS count FROM users")?.count ?? 0;
+  users(): (User & { created_at: number })[] {
+    return this.all("SELECT id,username,created_at FROM users ORDER BY created_at DESC,id");
   }
-  async createUser(
-    username: string,
-    password: string,
-    options: { onlyIfEmpty?: boolean } = {},
-  ): Promise<User> {
+  activeDevices(): Device[] {
+    return this.all("SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC,id");
+  }
+  async createUser(username: string, password: string): Promise<User> {
     const normalized = username.trim().toLocaleLowerCase("und");
     if (!normalized || normalized.length > 80 || password.length < 12 || password.length > 1024)
       throw new BridgeError(
@@ -102,8 +111,6 @@ export class Store {
       salt = randomBytes(16).toString("hex");
     const hash = (await derive(password, Buffer.from(salt, "hex"), 390_000, 32, "sha256")).toString("hex");
     return this.transaction(() => {
-      if (options.onlyIfEmpty && this.userCount() !== 0)
-        throw new BridgeError("setup_complete", "Initial account already exists", 409);
       try {
         this.run("INSERT INTO users VALUES(?,?,?,?,?)", user.id, user.username, salt, hash, nowSeconds());
       } catch (error) {
@@ -222,20 +229,19 @@ export class Store {
   createGrant(
     owner: string,
     name: string,
-    deviceIds: string[],
-    capabilities: Capability[],
-    expiresAt: number,
+    policy: ConnectionPolicy,
+    expiresAt: number | null = null,
   ): { grant: Grant; key: string } {
+    const validated = validatePolicy(owner, policy, (id) => this.device(id));
     const id = identifier("agt"),
       key = secretKey("agent");
     this.transaction(() => {
       this.run(
-        "INSERT INTO client_grants VALUES(?,?,?,?,?,?,?,NULL,?,NULL)",
+        "INSERT INTO client_grants VALUES(?,?,?,?,?,?,NULL,?,NULL)",
         id,
         owner,
         name,
-        JSON.stringify(deviceIds),
-        JSON.stringify(capabilities),
+        JSON.stringify(validated),
         expiresAt,
         digest(key),
         nowSeconds(),
@@ -244,13 +250,42 @@ export class Store {
     });
     return { grant: this.grant(id)!, key };
   }
+  updateGrant(id: string, name: string, policy: ConnectionPolicy, expiresAt: number | null): Grant {
+    const grant = this.grant(id);
+    if (!grant || grant.revoked_at !== null) throw new BridgeError("not_found", "Connection not found", 404);
+    const validated = validatePolicy(grant.owner_id, policy, (deviceId) => this.device(deviceId));
+    this.transaction(() => {
+      this.run(
+        "UPDATE client_grants SET name=?,policy=?,expires_at=? WHERE id=?",
+        name,
+        JSON.stringify(validated),
+        expiresAt,
+        id,
+      );
+      this.audit(grant.owner_id, null, id, null, "client_grant_update", "changed");
+    });
+    return this.grant(id)!;
+  }
+  rotateGrant(id: string): { grant: Grant; key: string } {
+    const grant = this.grant(id);
+    if (!grant || grant.revoked_at !== null) throw new BridgeError("not_found", "Connection not found", 404);
+    const key = secretKey("agent");
+    this.transaction(() => {
+      this.run("UPDATE client_grants SET token_digest=? WHERE id=?", digest(key), id);
+      this.audit(grant.owner_id, null, id, null, "client_grant_rotate", "changed");
+    });
+    return { grant: this.grant(id)!, key };
+  }
+  grantSessions(id: string): ControlSession[] {
+    return this.all("SELECT * FROM control_sessions WHERE grant_id=? AND status='active'", id);
+  }
   revokeGrant(id: string): void {
     this.run("UPDATE client_grants SET revoked_at=? WHERE id=?", nowSeconds(), id);
   }
   authenticateAgent(key: string): Grant | undefined {
     if (!key.startsWith("abr_agent_")) return undefined;
     const grant = this.one<Grant>(
-      "SELECT * FROM client_grants WHERE token_digest=? AND revoked_at IS NULL AND expires_at>?",
+      "SELECT * FROM client_grants WHERE token_digest=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)",
       digest(key),
       nowSeconds(),
     );
@@ -299,8 +334,39 @@ export class Store {
   operation(id: string): Operation | undefined {
     return this.one("SELECT * FROM operations WHERE id=?", id);
   }
-  operations(owner: string): Operation[] {
-    return this.all("SELECT * FROM operations WHERE owner_id=? ORDER BY created_at DESC LIMIT 100", owner);
+  operations(
+    owner: string,
+    filters: { device_id?: string; grant_id?: string; tool?: string; offset?: number } = {},
+  ): Operation[] {
+    const { where, values } = this.operationFilters(owner, filters);
+    return this.all(
+      `SELECT * FROM operations WHERE ${where} ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?`,
+      ...values,
+      filters.offset ?? 0,
+    );
+  }
+  operationCount(owner: string, filters: { device_id?: string; grant_id?: string; tool?: string }): number {
+    const { where, values } = this.operationFilters(owner, filters);
+    return this.one<{ count: number }>(`SELECT count(*) AS count FROM operations WHERE ${where}`, ...values)!
+      .count;
+  }
+  operationTools(owner: string, deviceId?: string): string[] {
+    const { where, values } = this.operationFilters(owner, { device_id: deviceId });
+    return this.all<{ tool: string }>(
+      `SELECT DISTINCT tool FROM operations WHERE ${where} ORDER BY tool`,
+      ...values,
+    ).map((row) => row.tool);
+  }
+  private operationFilters(owner: string, filters: { device_id?: string; grant_id?: string; tool?: string }) {
+    const clauses = ["owner_id=?"];
+    const values: SQLInputValue[] = [owner];
+    for (const column of ["device_id", "grant_id", "tool"] as const) {
+      if (filters[column] !== undefined) {
+        clauses.push(`${column}=?`);
+        values.push(filters[column]!);
+      }
+    }
+    return { where: clauses.join(" AND "), values };
   }
   createOperation(operation: Omit<Operation, "status" | "created_at" | "finished_at">): void {
     const o = operation;

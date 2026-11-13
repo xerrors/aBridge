@@ -15,21 +15,14 @@ export function Authentication({
         <Brand />
       </main>
     );
-  const setup = phase === "setup";
   return (
     <main class="login-wrap" id="main">
       <div class="login-panel">
         <Brand />
-        <h1>{setup ? "创建管理账户" : "登录管理台"}</h1>
-        <Form label={setup ? "创建并登录" : "登录"} onSubmit={authenticate}>
+        <h1>登录管理台</h1>
+        <Form label="登录" onSubmit={authenticate}>
           <Field name="username" label="账户" />
-          <Field
-            name="password"
-            label={setup ? "密码（至少12位）" : "密码"}
-            type="password"
-            minLength={setup ? 12 : 1}
-            passwordPurpose={setup ? "new" : "current"}
-          />
+          <Field name="password" label="密码" type="password" minLength={1} passwordPurpose="current" />
         </Form>
         {notice && <p role="alert">{notice}</p>}
       </div>

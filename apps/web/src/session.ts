@@ -1,23 +1,23 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
-import { z } from "zod";
 import { api, objectResultSchema, ApiError, loadData, userSchema, type User } from "./api.js";
 
-export type AdminData = Awaited<ReturnType<typeof loadData>>;
-export const emptyData: AdminData = { devices: [], grants: [], operations: [] };
-export type AuthPhase = "loading" | "login" | "setup" | "ready";
-function takeSetupToken(): string {
-  const token = new URLSearchParams(location.hash.slice(1)).get("setup") ?? "";
-  if (token) history.replaceState(null, "", location.pathname + location.search);
-  return token;
-}
-export function useAdminSession(notify: (message: string) => void) {
+export type ManagementData = Awaited<ReturnType<typeof loadData>>;
+export const emptyData: ManagementData = { devices: [], grants: [] };
+export type AuthPhase = "loading" | "login" | "ready";
+export function useUserSession(notify: (message: string) => void, management = true) {
   const [user, setUser] = useState<User | null>(null);
   const [phase, setPhase] = useState<AuthPhase>("loading");
-  const [data, setData] = useState<AdminData>(emptyData);
-  const [setupToken] = useState(takeSetupToken);
-  const refresh = useCallback(async () => {
-    setData(await loadData());
+  const [data, setData] = useState<ManagementData>(emptyData);
+  const [identityRevision, setIdentityRevision] = useState(0);
+  const reloadIdentity = useCallback(() => {
+    setUser(null);
+    setData(emptyData);
+    setPhase("loading");
+    setIdentityRevision((value) => value + 1);
   }, []);
+  const refresh = useCallback(async () => {
+    if (management) setData(await loadData());
+  }, [management]);
   const signedOut = useCallback(() => {
     setUser(null);
     setData(emptyData);
@@ -27,12 +27,10 @@ export function useAdminSession(notify: (message: string) => void) {
     let active = true;
     void (async () => {
       try {
-        const setup = await api("/api/setup", z.object({ required: z.boolean() }));
-        if (setup.required) {
-          if (active) setPhase("setup");
-          return;
-        }
-        const [me, loaded] = await Promise.all([api("/api/me", userSchema), loadData()]);
+        const [me, loaded] = await Promise.all([
+          api("/api/me", userSchema),
+          management ? loadData() : Promise.resolve(emptyData),
+        ]);
         if (active) {
           setUser(me);
           setData(loaded);
@@ -48,9 +46,9 @@ export function useAdminSession(notify: (message: string) => void) {
     return () => {
       active = false;
     };
-  }, [notify, signedOut]);
+  }, [management, identityRevision, notify, signedOut]);
   useEffect(() => {
-    if (phase !== "ready") return;
+    if (!management || phase !== "ready") return;
     let active = true,
       busy = false;
     const timer = setInterval(() => {
@@ -73,20 +71,13 @@ export function useAdminSession(notify: (message: string) => void) {
       active = false;
       clearInterval(timer);
     };
-  }, [phase, notify, signedOut]);
+  }, [management, phase, notify, signedOut]);
   const authenticate = async (form: FormData) => {
-    if (phase === "setup" && !setupToken) throw new Error("请使用 --web 打开首次配置，或在终端创建管理账户");
-    const me = await api(
-      phase === "setup" ? "/api/setup" : "/api/login",
-      userSchema,
-      {
-        username: form.get("username"),
-        password: form.get("password"),
-      },
-      "POST",
-      phase === "setup" ? setupToken : undefined,
-    );
-    const loaded = await loadData();
+    const me = await api("/api/login", userSchema, {
+      username: form.get("username"),
+      password: form.get("password"),
+    });
+    const loaded = management ? await loadData() : emptyData;
     setUser(me);
     setData(loaded);
     setPhase("ready");
@@ -95,5 +86,5 @@ export function useAdminSession(notify: (message: string) => void) {
     await api("/api/logout", objectResultSchema, {});
     signedOut();
   };
-  return { user, phase, data, refresh, authenticate, logout };
+  return { user, phase, data, refresh, authenticate, logout, requireLogin: signedOut, reloadIdentity };
 }

@@ -118,7 +118,6 @@ export async function nativeBuildInputs(
     target = "arm64-apple-macosx14.0";
   const files = [
     "apps/desktop/native/aBridge.swift",
-    "apps/desktop/native/setup.html",
     "docs/third-party-notices.md",
     "LICENSE",
     "tools/build-native.ts",
@@ -205,7 +204,6 @@ export async function buildNative(
     await writeFile(join(staging, "Contents/Info.plist"), plist(inputs.info));
     for (const name of ICONS) await cp(join(root, "apps/desktop/native/assets", name), join(resources, name));
     await writeFile(join(resources, "runtime.json"), JSON.stringify(inputs.runtime, null, 2) + "\n");
-    await cp(join(root, "apps/desktop/native/setup.html"), join(resources, "setup.html"));
     await cp(join(root, "docs/third-party-notices.md"), join(resources, "third-party-notices.txt"));
     await cp(join(root, "LICENSE"), join(resources, "LICENSE"));
     await writeFile(

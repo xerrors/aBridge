@@ -14,7 +14,7 @@ The project does not configure a developer-operated collection endpoint, adverti
 
 ## Local storage and retention
 
-Chrome extension local storage holds the Server address, device name and identity, Device Key, pause state, operation receipt metadata and connection diagnostics. The Device Key authenticates this browser device. The management password used during initial registration is submitted to the configured Server and is not saved in extension storage.
+Chrome extension local storage holds the Server address, device name and identity, Device Key, pause state, operation receipt metadata and connection diagnostics. The Device Key authenticates this browser device. During binding, the extension opens the configured Server’s sign-in and consent page using a browser-managed authorization window. The extension does not read or store the management password; it exchanges a one-time authorization code bound with PKCE for its Device Key.
 
 Operation receipts help prevent an interrupted action from being repeated. Connection diagnostics record connection events and error codes. They are not a page-browsing history or an analytics feed. This version does not offer a timed automatic deletion policy for all receipt metadata.
 
@@ -25,6 +25,7 @@ The supplied Server implementation keeps device, grant, session, operation and a
 - `debugger`: inspect task-page structure and capture requested screenshots using fixed extension code.
 - `tabs`: create, navigate and close extension-owned task tabs and associate them with the correct control session.
 - `storage`: retain the device binding, local controls and receipt metadata.
+- `identity`: open the Server's authorization page and receive the extension's authorization callback.
 - `alarms`: attempt reconnection when the browser is running.
 - Optional host access: contact the Server origin you enter during registration. The extension asks for that origin when you bind it.
 

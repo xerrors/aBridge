@@ -1,4 +1,10 @@
-import { DESKTOP_OBSERVATION_SECONDS, MAX_IMAGE_BYTES, computerActionSchema } from "@abridge/protocol";
+import {
+  DESKTOP_OBSERVATION_SECONDS,
+  MAX_IMAGE_BYTES,
+  MAX_ACT_WAIT_AFTER_MS,
+  actWaitAfterSchema,
+  computerActionSchema,
+} from "@abridge/protocol";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { DesktopError, checkAbort, integer, invalid } from "./errors.js";
@@ -17,9 +23,11 @@ const short = (value: string | undefined, max: number) =>
   value === undefined ? undefined : Array.from(value).slice(0, max).join("");
 export class Computer {
   private observations = new Map<string, Observation>();
+  private targets = new Map<string, Target>();
   private closed = new Set<string>();
   private sessions = new Set<string>();
   private queues = new Map<string, Promise<unknown>>();
+  private followUpControllers = new Map<string, AbortController>();
   constructor(
     readonly native: NativeDriver,
     private readonly now = () => performance.now(),
@@ -191,7 +199,7 @@ export class Computer {
   ): Promise<Record<string, unknown>> {
     this.assertOpen(session);
     checkAbort(signal);
-    const previous = this.observations.get(session);
+    const previous = this.targets.get(session);
     if (args.desktop !== undefined && typeof args.desktop !== "boolean") invalid("desktop must be a boolean");
     if (args.screenshot !== undefined && typeof args.screenshot !== "boolean")
       invalid("screenshot must be a boolean");
@@ -203,7 +211,7 @@ export class Computer {
         window_id: integer(args.window_id, "window_id", 1, Number.MAX_SAFE_INTEGER),
       };
     } else if (args.desktop === true) target = { desktop: true };
-    else if (previous && "pid" in previous.target) target = previous.target;
+    else if (previous && "pid" in previous) target = previous;
     else throw new DesktopError("target_required", "Select a window, or explicitly request desktop");
     const query = args.query;
     if (query !== undefined && (typeof query !== "string" || query.length > 200))
@@ -225,6 +233,7 @@ export class Computer {
       focus,
     };
     const result = this.compact(raw, observation, typeof query === "string" ? query : undefined);
+    this.targets.set(session, target);
     this.observations.set(session, observation);
     return result;
   }
@@ -330,6 +339,8 @@ export class Computer {
       invalid("screenshot must be a boolean");
     if (outer.screenshot === true && outer.observe_after === false)
       invalid("screenshot requires observe_after=true");
+    const waiting = actWaitAfterSchema.safeParse(outer.wait_after_ms);
+    if (!waiting.success) invalid(`wait_after_ms must be an integer between 0 and ${MAX_ACT_WAIT_AFTER_MS}`);
     const native: NativeAction = {
       action,
       target: observation.target,
@@ -423,7 +434,13 @@ export class Computer {
     this.observations.delete(session);
     const result = await this.native.act(session, native, signal);
     if (outer.observe_after === false && outer.screenshot !== true) return result;
+    const followUp = new AbortController();
+    const followUpSignal = signal ? AbortSignal.any([signal, followUp.signal]) : followUp.signal;
+    this.followUpControllers.set(session, followUp);
     try {
+      this.assertOpen(session);
+      if (waiting.data > 0) await delay(waiting.data, undefined, { signal: followUpSignal });
+      checkAbort(followUpSignal);
       return {
         ...result,
         observation: await this.observeLocked(
@@ -432,10 +449,11 @@ export class Computer {
             ...("pid" in observation.target ? observation.target : { desktop: true }),
             screenshot: outer.screenshot === true,
           },
-          signal,
+          followUpSignal,
         ),
       };
-    } catch (error) {
+    } catch (caught) {
+      const error = followUpSignal.aborted ? followUpSignal.reason : caught;
       return {
         ...result,
         observation_error: {
@@ -443,6 +461,8 @@ export class Computer {
           message: "Action delivered; follow-up observation unavailable",
         },
       };
+    } finally {
+      if (this.followUpControllers.get(session) === followUp) this.followUpControllers.delete(session);
     }
   }
   invalidate(session: string): void {
@@ -462,6 +482,10 @@ export class Computer {
   async closeSession(session: string): Promise<void> {
     this.closed.add(session);
     this.observations.delete(session);
+    this.targets.delete(session);
+    this.followUpControllers
+      .get(session)
+      ?.abort(new DesktopError("session_closed", "Session closed before follow-up observation"));
     await this.queues.get(session)?.catch(() => {});
     await this.native.release(session);
     this.sessions.delete(session);

@@ -1,76 +1,186 @@
 body {
   width: 360px;
   min-width: 360px;
+  max-height: 600px;
+  overflow-y: auto;
   background: var(--surface);
 }
 .popup-shell {
-  padding: 20px;
+  padding: 16px 18px 0;
 }
 .popup-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding-bottom: 15px;
+  border-bottom: 1px solid var(--line);
+}
+.popup-header .brand {
+  gap: 8px;
+}
+.popup-header .brand-symbol {
+  width: 24px;
+  height: 24px;
+}
+.popup-header .brand-wordmark {
+  width: 86px;
+  height: 22px;
+}
+.popup-header .brand-caption {
+  font-size: 8px;
+  letter-spacing: 0.09em;
 }
 .header-actions {
   display: flex;
-  gap: 2px;
+  gap: 4px;
+}
+.header-actions .icon-button {
+  width: 30px;
+  height: 30px;
+}
+.icon-button[aria-expanded="true"] {
+  background: var(--soft);
+  color: var(--accent);
 }
 .connection-summary {
-  padding: 28px 0 24px;
+  padding: 18px 0 16px;
+}
+.device-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.device-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--muted);
+}
+.device-icon svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.device-identity {
+  min-width: 0;
+}
+.connection-summary .status-chip {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  margin-top: 5px;
+}
+.connection-summary .status-dot {
+  width: 6px;
+  height: 6px;
 }
 .connection-summary h1 {
-  font-size: 24px;
-  font-weight: 620;
-  letter-spacing: -0.7px;
-  line-height: 1.3;
-  margin: 10px 0 8px;
-  overflow-wrap: anywhere;
-}
-.connection-summary > p {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.65;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.25px;
+  line-height: 1.4;
   margin: 0;
-  max-width: 300px;
-}
-.connection-summary .server-name {
-  font-size: 11px;
-  margin-top: 12px;
-  color: var(--muted);
   overflow-wrap: anywhere;
+}
+.connection-summary .error-message {
+  color: var(--danger);
+  margin: 12px 0 0;
 }
 .popup-controls {
-  padding-bottom: 22px;
+  padding-bottom: 16px;
 }
-.popup-controls .hint {
-  margin-top: 11px;
+.popup-controls .control-row {
+  gap: 8px;
+}
+.popup-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.popup-controls #pause {
+  flex: 1.6;
+}
+.popup-controls #stop {
+  flex: 1;
+  border-color: transparent;
+  background: var(--bg);
+}
+.control-icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+button:not(:disabled) {
+  transition:
+    background-color 0.15s,
+    color 0.15s;
+}
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+.popup-controls #stop:not(:disabled):hover {
+  background: var(--soft);
 }
 .full-width {
   width: 100%;
 }
-.popup-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.popup-settings {
   border-top: 1px solid var(--line);
-  padding-top: 15px;
-  font-size: 11px;
-  color: var(--muted);
+  padding: 18px 0 20px;
 }
-.footer-note {
+.popup-settings h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+#register {
+  display: grid;
+  gap: 14px;
+}
+.form-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+.device-information {
+  margin: 0 0 18px;
+  font-size: 12px;
+}
+.device-information dt {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
+  margin-top: 12px;
+}
+.device-information dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
 }
 .popup-diagnostics {
-  margin-top: 4px;
-  padding-top: 14px;
+  margin-top: 0;
+  padding: 12px 0 14px;
   border-top: 1px solid var(--line);
+}
+.popup-diagnostics summary {
+  font-size: 11px;
 }
 .popup-diagnostics .diagnostic-list {
   grid-template-columns: 92px minmax(0, 1fr);
   font-size: 10px;
-}
-.connection-summary .error-message {
-  color: var(--danger);
-  margin-top: 12px;
 }

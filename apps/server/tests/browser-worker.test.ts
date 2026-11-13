@@ -49,8 +49,7 @@ test(
     const { key: agentKey } = server.store.createGrant(
       user.id,
       "wire-agent",
-      [device.id],
-      ["browser"],
+      { mode: "selected", devices: [{ device_id: device.id, capabilities: ["browser"] }] },
       Date.now() / 1000 + 600,
     );
     let requestId = 0;

@@ -58,23 +58,6 @@ summary:focus-visible {
   text-decoration: none;
   color: inherit;
 }
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: var(--accent);
-  color: #fff;
-  flex: none;
-}
-.brand-mark img {
-  display: block;
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  filter: brightness(0) invert(1);
-}
 .brand-symbol {
   display: block;
   width: 30px;
@@ -122,7 +105,6 @@ summary:focus-visible {
 }
 .primary,
 .secondary,
-.text-button,
 .danger-button {
   min-height: 39px;
   padding: 9px 14px;
@@ -145,15 +127,6 @@ summary:focus-visible {
 }
 .secondary:hover {
   background: var(--soft);
-}
-.text-button {
-  background: none;
-  color: var(--muted);
-  padding-left: 0;
-  padding-right: 0;
-}
-.text-button:hover {
-  color: var(--ink);
 }
 .danger-button {
   background: none;
@@ -275,9 +248,6 @@ label {
     --accent-hover: #8abdff;
     --soft: #233c5d;
     --danger: #ee9d93;
-  }
-  .brand-mark {
-    color: #14223c;
   }
   .primary {
     color: #10203c;

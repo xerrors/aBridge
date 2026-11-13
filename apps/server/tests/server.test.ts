@@ -51,6 +51,7 @@ async function connect(
   key: string,
   kind = "computer",
   onDispatch?: (frame: JsonObject, socket: WebSocket) => void,
+  platform = kind === "browser" ? "Browser extension" : "darwin",
 ) {
   const socket = new WebSocket(
     f.url.replace("http:", "ws:") + "/ws/" + (kind === "browser" ? "browser" : "device"),
@@ -68,7 +69,7 @@ async function connect(
     JSON.stringify({
       type: "hello",
       protocol: "abridge/1",
-      platform: kind === "browser" ? "Browser extension" : "darwin",
+      platform,
       version: "0.3.0",
       paused: false,
       instance_id: "server-test-instance",
@@ -83,26 +84,23 @@ async function connect(
 test("HTTP bootstrap, exact origin scopes, account auth, and same-data-dir process guard", async () => {
   const f = await fixture();
   try {
-    assert.equal((await fetch(f.url + "/api/setup")).status, 200);
-    let res = await fetch(f.url + "/api/setup", {
+    assert.equal((await fetch(f.url + "/api/setup")).status, 404);
+    let res = await fetch(f.url + "/api/admin/users", {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer " + f.setupToken },
+      headers: { "content-type": "application/json", authorization: "Bearer " + f.adminToken },
+      body: JSON.stringify({ username: "owner", password: "test-password-long" }),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.headers.get("set-cookie"), null, "Creating a user does not log in as that user");
+    assert.equal(((await res.json()) as { username: string }).username, "owner");
+    res = await fetch(f.url + "/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "owner", password: "test-password-long" }),
     });
     assert.equal(res.status, 200);
     const cookie = res.headers.get("set-cookie")!.split(";")[0]!;
-    assert.equal(((await res.json()) as { username: string }).username, "owner");
     assert.equal((await fetch(f.url + "/api/me", { headers: { cookie } })).status, 200);
-    assert.equal(
-      (
-        await fetch(f.url + "/api/setup", {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: "Bearer " + f.setupToken },
-          body: JSON.stringify({ username: "other", password: "test-password-long" }),
-        })
-      ).status,
-      403,
-    );
     assert.equal(
       (
         await fetch(f.url + "/api/devices", {
@@ -121,13 +119,10 @@ test("HTTP bootstrap, exact origin scopes, account auth, and same-data-dir proce
     );
     res = await fetch(f.url + "/api/browser/register", {
       method: "POST",
-      headers: { "content-type": "application/json", origin: "chrome-extension://" + "a".repeat(32) },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "owner", password: "test-password-long", name: "Browser" }),
     });
-    assert.equal(res.status, 200);
-    const browser = (await res.json()) as { id: string; key: string };
-    assert.ok(browser.key.startsWith("abr_device_"));
-    assert.equal(f.store.device(browser.id)!.kind, "browser");
+    assert.equal(res.status, 404, "Password-based extension registration is no longer exposed");
   } finally {
     await f.dispose();
   }
@@ -141,8 +136,10 @@ test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yiel
     const grant = f.store.createGrant(
       user.id,
       "agent",
-      [device.device.id],
-      ["shell", "files", "screen", "input"],
+      {
+        mode: "selected",
+        devices: [{ device_id: device.device.id, capabilities: ["shell", "files", "screen", "input"] }],
+      },
       Date.now() / 1000 + 600,
     );
     let dispatches = 0;
@@ -245,12 +242,60 @@ test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yiel
   }
 });
 
+test("session_open includes the same device details as device_get and devices_list across platforms", async () => {
+  const f = await fixture();
+  try {
+    const user = await f.store.createUser("owner", "test-password-long");
+    for (const { name, kind, platform, capability } of [
+      { name: "工作 Mac", kind: "computer", platform: "darwin", capability: "shell" },
+      { name: "工作 Chrome", kind: "browser", platform: "Browser extension", capability: "browser" },
+      { name: "Windows PC", kind: "computer", platform: "win32", capability: "shell" },
+      { name: "Android 设备", kind: "computer", platform: "android", capability: "shell" },
+    ] as const) {
+      const { device, key } = f.store.createDevice(user.id, name, [capability], kind);
+      const grant = f.store.createGrant(user.id, "agent", {
+        mode: "selected",
+        devices: [{ device_id: device.id, capabilities: [capability] }],
+      });
+      const { socket } = await connect(f, key, kind, undefined, platform);
+      try {
+        const opened = await rpc(f.url, grant.key, "session_open", {
+          device_id: device.id,
+          capabilities: [capability],
+        });
+        assert.equal(opened.isError, undefined);
+        assert.equal(opened.value.device_id, device.id);
+        assert.equal(opened.value.status, "active");
+        assert.deepEqual(opened.value.capabilities, [capability]);
+        assert.equal(opened.value.device.id, device.id);
+        assert.equal(opened.value.device.name, name);
+        assert.equal(opened.value.device.kind, kind);
+        assert.equal(opened.value.device.platform, platform);
+        const detail = await rpc(f.url, grant.key, "device_get", { device_id: device.id });
+        const listed = await rpc(f.url, grant.key, "devices_list");
+        assert.deepEqual(opened.value.device, detail.value);
+        assert.deepEqual(listed.value.devices, [opened.value.device]);
+        await rpc(f.url, grant.key, "session_close", { session_id: opened.value.id });
+      } finally {
+        socket.close();
+      }
+    }
+  } finally {
+    await f.dispose();
+  }
+});
+
 test("browser is an independent device; revocation during wait blocks result access", async () => {
   const f = await fixture();
   try {
     const user = await f.store.createUser("owner", "test-password-long"),
       device = f.store.createDevice(user.id, "Chrome", ["browser"], "browser"),
-      g = f.store.createGrant(user.id, "agent", [device.device.id], ["browser"], Date.now() / 1000 + 600);
+      g = f.store.createGrant(
+        user.id,
+        "agent",
+        { mode: "selected", devices: [{ device_id: device.device.id, capabilities: ["browser"] }] },
+        Date.now() / 1000 + 600,
+      );
     let dispatch: JsonObject | undefined;
     const { socket } = await connect(f, device.key, "browser", (frame) => {
       dispatch = frame;

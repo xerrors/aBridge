@@ -47,16 +47,18 @@ export interface BrowserStatus {
   active_operations: number;
   active_sessions: number;
   connection_history: ConnectionHistory;
+  authorizing?: boolean;
+  authorization_expires_at?: number;
+  authorization_error?: string;
 }
 export type ControlType = "pause" | "resume" | "stop" | "unbind";
 export type UiMessage =
   | { type: "status" }
   | { type: ControlType }
+  | { type: "authorize_cancel" }
   | {
-      type: "register";
+      type: "authorize";
       server: string;
-      username: string;
-      password: string;
       label: string;
     };
 export interface UiResponse {
@@ -71,12 +73,11 @@ export function element<T extends HTMLElement>(id: string, constructor: { new (.
 
 export const uiMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }),
+  z.object({ type: z.literal("authorize_cancel") }),
   z.object({ type: z.enum(["pause", "resume", "stop", "unbind"]) }),
   z.object({
-    type: z.literal("register"),
+    type: z.literal("authorize"),
     server: z.string(),
-    username: z.string(),
-    password: z.string(),
     label: z.string(),
   }),
 ]);

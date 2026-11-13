@@ -5,6 +5,7 @@ import {
   OPERATION_JOURNAL_LIMIT,
   BROWSER_MAX_ELEMENTS,
   BROWSER_MAX_TEXT,
+  actWaitAfterSchema,
 } from "@abridge/protocol";
 import { fail, errorDetails } from "./types.js";
 interface AXValue {
@@ -226,7 +227,11 @@ export class BrowserBridge {
     chrome.tabs.onRemoved.addListener((id) => {
       this.ownedTabs.delete(id);
       void this.persistOwnership().catch(() => {});
-      for (const [key, session] of this.sessions) if (session.tabId === id) this.sessions.delete(key);
+      for (const [key, session] of this.sessions)
+        if (session.tabId === id) {
+          this.sessions.delete(key);
+          session.waitCancel?.();
+        }
     });
     chrome.debugger.onDetach.addListener((source) => {
       for (const session of this.sessions.values())
@@ -234,6 +239,7 @@ export class BrowserBridge {
           session.attached = false;
           session.observation = null;
           session.revision++;
+          session.waitCancel?.();
         }
     });
   }
@@ -393,11 +399,11 @@ export class BrowserBridge {
       if (typeof sessionId !== "string" || !sessionId || sessionId.length > 256)
         throw fail("invalid_session", "缺少有效任务会话");
       const session = this.sessions.get(sessionId);
-      if (session?.busy) throw fail("session_busy", "同一会话操作仍在进行");
       if (method === "close") {
         await this.close(sessionId);
         return { id, result: { closed: true } };
       }
+      if (session?.busy) throw fail("session_busy", "同一会话操作仍在进行");
       if (
         method === "open" &&
         [...this.ownedTabs].some((tabId) => ![...this.sessions.values()].some((item) => item.tabId === tabId))
@@ -499,9 +505,11 @@ export class BrowserBridge {
     result: Result,
     waitForNavigation = false,
     deadline = performance.now() + this.navigationTimeout,
+    waitAfterMilliseconds = 0,
   ): Promise<Result> {
     if (params.observe_after === false) return result;
     try {
+      await this.waitAfterAction(session, waitAfterMilliseconds, deadline);
       if (waitForNavigation) await this.waitReady(session, deadline - performance.now());
       const observed = await this.stableObservation(
         session,
@@ -523,6 +531,35 @@ export class BrowserBridge {
       if (error.code === "navigation_pending") result.navigation_state = "loading";
     }
     return result;
+  }
+  private async waitAfterAction(session: Session, milliseconds: number, deadline: number): Promise<void> {
+    if (milliseconds === 0) return;
+    if (this.sessions.get(session.id) !== session) throw fail("session_closed", "任务已结束");
+    if (!session.attached) throw fail("debugger_detached", "动作已执行，调试连接已断开；请重新观察");
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw fail("observation_timeout", "后续观察等待已超时；不要重复动作");
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (session.waitCancel === cancel) session.waitCancel = null;
+        if (error) reject(error);
+        else resolve();
+      };
+      const cancel = () => finish(fail("session_closed", "动作已执行；等待期间任务或调试连接已结束"));
+      const timer = setTimeout(
+        () =>
+          finish(
+            milliseconds >= remaining
+              ? fail("observation_timeout", "后续观察等待已超时；不要重复动作")
+              : undefined,
+          ),
+        Math.min(milliseconds, remaining),
+      );
+      session.waitCancel = cancel;
+    });
   }
   async stableObservation(session: Session, params: BridgeParams, deadline: number): Promise<Result> {
     let retryDeadline: number | undefined;
@@ -719,6 +756,8 @@ export class BrowserBridge {
   }
   async act(session: Session, params: BridgeParams): Promise<Result> {
     options(params, true);
+    const parsedWait = actWaitAfterSchema.safeParse(params.wait_after_ms);
+    if (!parsedWait.success) throw fail("invalid_params", "wait_after_ms 必须是 0–10000 的整数毫秒");
     const observation = session.observation;
     const action = params.action as { type?: string; element_ref?: string; text?: unknown } | undefined;
     if (
@@ -782,6 +821,8 @@ export class BrowserBridge {
         params,
         { executed: true, route: action.type === "click" ? "dom_event" : "replace_value" },
         true,
+        performance.now() + this.navigationTimeout,
+        parsedWait.data,
       );
     } finally {
       try {

@@ -23,7 +23,14 @@
             <svg viewBox="0 0 24 24">
               <path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" />
             </svg></button
-          ><button id="settings" class="icon-button" aria-label="打开设置" title="设置">
+          ><button
+            id="settings"
+            class="icon-button"
+            aria-label="展开连接设置"
+            title="连接设置"
+            aria-expanded="false"
+            aria-controls="settings-panel"
+          >
             <svg viewBox="0 0 24 24">
               <path
                 d="m9 3-.6 2.5-2.2 1.3-2.4-.7-2 3.5 1.8 1.8v2.6l-1.8 1.8 2 3.5 2.4-.7 2.2 1.3L9 22h4l.6-2.5 2.2-1.3 2.4.7 2-3.5-1.8-1.8V11l1.8-1.8-2-3.5-2.4.7-2.2-1.3L13 3Z"
@@ -34,18 +41,69 @@
         </div>
       </header>
       <section id="connection" class="connection-summary loading" aria-live="polite">
-        <div class="status-chip"><span class="status-dot"></span><span id="status-label">正在检查</span></div>
-        <h1 id="device-name">当前浏览器</h1>
+        <div class="device-row">
+          <div class="device-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+              <path d="M3 9h18M7 6.5h.01M10 6.5h.01" />
+            </svg>
+          </div>
+          <div class="device-identity">
+            <h1 id="device-name">当前浏览器</h1>
+            <div class="status-chip">
+              <span class="status-dot"></span><span id="status-label">正在检查</span>
+            </div>
+          </div>
+        </div>
         <p id="error" class="error-message" role="alert" hidden></p>
       </section>
       <section id="ready-controls" class="popup-controls" hidden>
         <div class="control-row">
-          <button id="pause" class="primary">暂停访问</button
-          ><button id="stop" class="secondary">停止任务</button>
+          <button id="pause" class="primary" type="button">
+            <svg class="control-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path id="pause-icon" d="M6 4v8M10 4v8" /></svg
+            ><span id="pause-label">暂停访问</span>
+          </button>
+          <button id="stop" class="secondary" type="button">
+            <svg class="control-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="4.5" y="4.5" width="7" height="7" rx="1" /></svg
+            ><span>停止任务</span>
+          </button>
         </div>
       </section>
-      <section id="setup" class="popup-controls" hidden>
-        <button id="connect" class="primary full-width">连接当前浏览器</button>
+      <section id="settings-panel" class="popup-settings" aria-labelledby="settings-title" hidden>
+        <h2 id="settings-title">连接设置</h2>
+        <div id="registered-info" hidden>
+          <dl class="device-information">
+            <dt>浏览器名称</dt>
+            <dd id="saved-label"></dd>
+            <dt>Server 地址</dt>
+            <dd id="saved-server"></dd>
+          </dl>
+          <button id="unbind" class="danger-button full-width" type="button">解除绑定</button>
+        </div>
+        <form id="register" hidden>
+          <label
+            >Server 地址<input
+              id="server"
+              type="url"
+              required
+              placeholder="https://abridge.example.com"
+              autocomplete="url"
+          /></label>
+          <label
+            >浏览器名称<input id="label" maxlength="80" required placeholder="例如：Chrome · 工作账号"
+          /></label>
+          <p id="authorization-status" class="hint" role="status" hidden>
+            请在打开的浏览器窗口中确认授权。关闭此面板不影响授权。
+          </p>
+          <div class="form-actions">
+            <button id="submit" class="primary full-width" type="submit">在浏览器授权</button>
+            <button id="cancel-authorization" class="secondary full-width" type="button" hidden>
+              取消授权
+            </button>
+          </div>
+        </form>
       </section>
 
       <details id="diagnostics" class="popup-diagnostics">

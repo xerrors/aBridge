@@ -10,6 +10,7 @@ import {
   type DeviceKind,
   type DeviceTool,
 } from "@abridge/protocol";
+import { deviceAccess, grantExpired, sessionDeadline } from "./policy.js";
 import { Store, identifier } from "./store.js";
 import {
   BridgeError,
@@ -94,19 +95,19 @@ export class ControlService {
   }
   private currentGrant(grant: Grant): Grant {
     const current = this.store.grant(grant.id);
-    if (!current || current.revoked_at !== null || current.expires_at <= this.now())
+    if (
+      !current ||
+      current.token_digest !== grant.token_digest ||
+      current.revoked_at !== null ||
+      grantExpired(current, this.now())
+    )
       throw new BridgeError("unauthorized", "Agent grant is expired or revoked", 401);
     return current;
   }
   authorizedDevice(grant: Grant, deviceId: string): Device {
     const current = this.currentGrant(grant),
       device = this.store.device(deviceId);
-    if (
-      !device ||
-      device.owner_id !== current.owner_id ||
-      !current.device_ids.includes(deviceId) ||
-      device.revoked_at !== null
-    )
+    if (!device || device.owner_id !== current.owner_id || deviceAccess(current, device).access !== "allowed")
       throw new BridgeError("not_found", "Device does not exist or is not granted", 404);
     return device;
   }
@@ -114,19 +115,17 @@ export class ControlService {
     const current = this.currentGrant(grant);
     return this.store
       .devices(current.owner_id)
-      .filter((device) => current.device_ids.includes(device.id) && device.revoked_at === null)
+      .filter((device) => deviceAccess(current, device).access === "allowed")
       .map((device) => this.deviceView(device, current));
   }
   deviceView(device: Device, grant?: Grant): JsonObject {
     const connection = this.connections.get(device.id),
       now = this.mono();
+    const current = grant ? this.currentGrant(grant) : undefined;
     const online = !!connection && now - connection.heartbeatAt <= 30;
-    const capabilities = device.capabilities
-      .filter(
-        (cap) =>
-          deviceCapabilities(device.kind).includes(cap) && (!grant || grant.capabilities.includes(cap)),
-      )
-      .sort();
+    const capabilities = current
+      ? deviceAccess(current, device).capabilities
+      : device.capabilities.filter((cap) => deviceCapabilities(device.kind).includes(cap)).sort();
     return {
       id: device.id,
       name: device.name,
@@ -142,7 +141,7 @@ export class ControlService {
       last_seen: device.last_seen,
       created_at: device.created_at,
       active_operations: [...this.pending.values()]
-        .filter((p) => p.operation.device_id === device.id)
+        .filter((p) => p.operation.device_id === device.id && (!grant || p.operation.grant_id === grant.id))
         .map((p) => p.operation.id),
     };
   }
@@ -173,7 +172,7 @@ export class ControlService {
       capabilities.some((cap) => !CAPABILITIES.includes(cap))
     )
       throw new BridgeError("invalid_capabilities", "Select valid, unique capabilities", 422);
-    if (capabilities.some((cap) => !current.capabilities.includes(cap) || !device.capabilities.includes(cap)))
+    if (capabilities.some((cap) => !deviceAccess(current, device).capabilities.includes(cap)))
       throw new BridgeError("forbidden", "Requested capability is not granted", 403);
     const connection = this.readyConnection(deviceId);
     if (capabilities.some((cap) => !connection.capabilities[cap]))
@@ -189,7 +188,7 @@ export class ControlService {
       current,
       deviceId,
       capabilities,
-      Math.min(this.now() + SESSION_IDLE_SECONDS, current.expires_at),
+      sessionDeadline(current, this.now() + SESSION_IDLE_SECONDS),
     );
   }
   private authorizedSession(grant: Grant, id: string): ControlSession {
@@ -247,7 +246,7 @@ export class ControlService {
   private authorizeResultAccess(grant: Grant, operation: Operation, required: Capability[]): void {
     const current = this.currentGrant(grant);
     const device = this.authorizedDevice(current, operation.device_id);
-    if (required.some((cap) => !current.capabilities.includes(cap) || !device.capabilities.includes(cap)))
+    if (required.some((cap) => !deviceAccess(current, device).capabilities.includes(cap)))
       throw new BridgeError("forbidden", "Result is outside the current capability intersection", 403);
     const local = this.localAccess.get(device.id);
     if (local?.paused) throw new BridgeError("device_paused", "Resume access locally before reading results");
@@ -316,9 +315,7 @@ export class ControlService {
     if (
       required.some(
         (cap) =>
-          !session.capabilities.includes(cap) ||
-          !current.capabilities.includes(cap) ||
-          !device.capabilities.includes(cap),
+          !session.capabilities.includes(cap) || !deviceAccess(current, device).capabilities.includes(cap),
       )
     )
       throw new BridgeError("forbidden", "Operation is outside the current capability intersection", 403);
@@ -367,7 +364,7 @@ export class ControlService {
       output: { stdout: "", stderr: "" },
       starts: { stdout: 0, stderr: 0 },
     });
-    this.store.renewSession(sessionId, Math.min(this.now() + SESSION_IDLE_SECONDS, current.expires_at));
+    this.store.renewSession(sessionId, sessionDeadline(current, this.now() + SESSION_IDLE_SECONDS));
     const sent = await this.safeSend(
       connection,
       operationFrameSchema.parse({
@@ -459,15 +456,87 @@ export class ControlService {
         .map((session) => this.endSession(session, "Local capability disabled")),
     );
   }
+  connectionInfo(grant: Grant): { id: string; name: string } {
+    const current = this.currentGrant(grant);
+    return { id: current.id, name: current.name };
+  }
+  previewGrant(grant: Grant): JsonObject {
+    return {
+      connection: {
+        id: grant.id,
+        name: grant.name,
+        expires_at: grant.expires_at,
+        status:
+          grant.revoked_at !== null ? "revoked" : grantExpired(grant, this.now()) ? "expired" : "active",
+      },
+      devices: this.store
+        .devices(grant.owner_id)
+        .filter((device) => device.revoked_at === null)
+        .map((device) => {
+          const access = deviceAccess(grant, device),
+            view = this.deviceView(device);
+          return {
+            ...view,
+            available: Object.fromEntries(
+              device.capabilities.map((cap) => [
+                cap,
+                access.capabilities.includes(cap) &&
+                  !grantExpired(grant, this.now()) &&
+                  grant.revoked_at === null &&
+                  !!(view.available as Record<string, boolean>)[cap],
+              ]),
+            ),
+            access: access.access,
+            granted_capabilities: access.capabilities,
+          };
+        }),
+    };
+  }
+  private async endGrantSession(session: ControlSession, reason: string): Promise<void> {
+    await this.endSession(session, reason, "revoked");
+    for (const { operation } of [...this.pending.values()])
+      if (operation.session_id === session.id)
+        this.finish(operation.id, "outcome_unknown", undefined, {
+          code: "authorization_changed",
+          message: "Authorization changed while execution was in progress; observe before retrying",
+        });
+  }
+  async updateGrant(
+    grant: Grant,
+    name: string,
+    policy: Grant["policy"],
+    expiresAt: number | null,
+  ): Promise<Grant> {
+    const updated = this.store.updateGrant(grant.id, name, policy, expiresAt);
+    await Promise.allSettled(
+      this.store.grantSessions(grant.id).map(async (session) => {
+        const device = this.store.device(session.device_id);
+        const capabilities = device ? deviceAccess(updated, device).capabilities : [];
+        if (
+          grantExpired(updated, this.now()) ||
+          session.capabilities.some((cap) => !capabilities.includes(cap))
+        )
+          await this.endGrantSession(session, "Connection permissions changed");
+        else this.store.renewSession(session.id, sessionDeadline(updated, session.lease_until));
+      }),
+    );
+    return updated;
+  }
+  async rotateGrant(grant: Grant): Promise<{ grant: Grant; key: string }> {
+    const result = this.store.rotateGrant(grant.id);
+    await Promise.allSettled(
+      this.store
+        .grantSessions(grant.id)
+        .map((session) => this.endGrantSession(session, "Connection key rotated")),
+    );
+    return result;
+  }
   async revokeGrant(grant: Grant): Promise<void> {
     this.store.revokeGrant(grant.id);
     await Promise.allSettled(
-      grant.device_ids.flatMap((id) =>
-        this.store
-          .sessions(id)
-          .filter((s) => s.grant_id === grant.id)
-          .map((s) => this.endSession(s, "Agent grant revoked", "revoked")),
-      ),
+      this.store
+        .grantSessions(grant.id)
+        .map((session) => this.endGrantSession(session, "Agent connection revoked")),
     );
     this.store.audit(grant.owner_id, null, grant.id, null, "client_grant_revoke", "revoked");
   }
@@ -715,10 +784,10 @@ export class ControlService {
     await Promise.allSettled(
       this.store.sessions(ticket.deviceId).map(async (session) => {
         const grant = this.store.grant(session.grant_id);
-        if (!grant || grant.revoked_at !== null || grant.expires_at <= this.now())
-          await this.endSession(session, "Agent grant expired", "revoked");
+        if (!grant || grant.revoked_at !== null || grantExpired(grant, this.now()))
+          await this.endGrantSession(session, "Agent connection expired or revoked");
         else if ([...this.pending.values()].some((p) => p.operation.session_id === session.id))
-          this.store.renewSession(session.id, Math.min(this.now() + SESSION_IDLE_SECONDS, grant.expires_at));
+          this.store.renewSession(session.id, sessionDeadline(grant, this.now() + SESSION_IDLE_SECONDS));
         else if (session.lease_until <= this.now())
           await this.endSession(session, "Idle session expired", "expired");
       }),

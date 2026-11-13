@@ -34,7 +34,7 @@ You must run or have access to an aBridge Server and configure an MCP client wit
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | Website content                    | 页面可见正文、表单观察、控件及按需截图，可能含个人或敏感内容                                                                      |
 | User activity                      | 用户授权的导航、点击、填充及执行结果；不是后台收集全部浏览记录                                                                    |
-| Authentication information         | 设备 Key 的本地保存和认证传输；注册时管理凭据发给指定 Server。Agent 提供的填充内容也可能敏感                                      |
+| Authentication information         | 设备 Key 的本地保存和认证传输；绑定时通过指定 Server 的浏览器授权页确认，扩展不读取管理账户密码。Agent 提供的填充内容也可能敏感   |
 | Web history / personal identifiers | 任务 URL、标题、账户名或页面内容可能落入这些类别；按实际处理定义选择，不能把“不读取全局历史数据库”等同“不涉及任何 URL 或身份数据” |
 
 最后的认证声明应由发布者按事实核对；上表不是对审核结论的保证。
@@ -46,6 +46,7 @@ You must run or have access to an aBridge Server and configure an MCP client wit
 | debugger             | Inspect the accessibility/DOM structure of extension-owned task tabs and capture screenshots when requested by an authorized Agent. All supported inspection and action logic is included in the extension package.      |
 | tabs                 | Create, navigate, identify and close task tabs owned by an authorized control session, and verify the current URL/title and navigation state. The extension does not enumerate personal browsing history for collection. |
 | storage              | Save the chosen Server, browser device binding, pause state, connection diagnostics and operation receipts needed to avoid replaying interrupted actions.                                                                |
+| identity             | Open the user-selected Server authorization page and receive its one-time, PKCE-bound device authorization callback. This does not request access to the user’s Google account.                                          |
 | alarms               | Retry connection after the extension worker is suspended or connectivity is interrupted, while Chrome is running.                                                                                                        |
 | Optional host access | Contact only the Server origin entered during binding. The extension requests that specific origin at the time the user configures it.                                                                                   |
 
@@ -67,10 +68,10 @@ MV3 对远程执行有严格要求，Debugger API 有特定例外；例外不豁
 
 下面步骤供审核人员在隔离环境中使用自己的临时数据。不要提供开发者本人的真实账户、网站登录或 Agent Key。
 
-1. 准备 Node.js 26.7–26.x，克隆本仓库，执行 `npm ci && npm run build`。
+1. 准备 Node.js 22.13.0+，克隆本仓库，执行 `npm ci && npm run build`。
 2. 执行 `npm start -- --web --data-dir /absolute/path/to/review-state`，在打开的本机管理台创建临时管理账户。
-3. 安装审核包，点击扩展图标进入设置，填写 `http://127.0.0.1:8765`、临时账户及浏览器名称，批准访问此 Server 地址。
-4. 管理台出现独立 browser 设备后，创建只覆盖该设备和 `browser` 能力的临时 Agent Key，接入支持 Streamable HTTP 的 MCP 客户端。
+3. 安装审核包，点击扩展图标，在弹窗中填写 `http://127.0.0.1:8765` 和浏览器名称，批准访问此 Server 地址；点击“在浏览器授权”，在打开的页面使用临时账户登录并确认绑定。
+4. 管理台出现独立 browser 设备后，创建 Agent 连接，选择该设备的 `browser` 能力，设置临时到期日期并保存 Agent Key，接入支持 Streamable HTTP 的 MCP 客户端。
 5. 按 `tools/fixtures/README.md` 启动自有表单目标，用浏览器会话打开 `/seed`，再在另一个任务会话中观察登录态、填入文字并提交。关闭会话，检查任务页清理。
 6. 在工具栏暂停访问，确认 Agent 无法继续；恢复访问后使用新会话。测试后撤销临时 Agent Key 并删除本次临时状态。
 

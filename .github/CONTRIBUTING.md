@@ -2,7 +2,7 @@
 
 ## 开发环境
 
-使用 Node.js 26.7.0–26.x 与 npm；根 `package.json` 和锁文件定义依赖及脚本。产品代码统一使用 strict TypeScript，管理台使用 Preact；macOS 壳仍使用 Swift，构建 App 另需 Xcode Command Line Tools。
+使用 Node.js 22.13.0+ 与 npm；根 `package.json` 和锁文件定义依赖及脚本。产品代码统一使用 strict TypeScript，管理台使用 Preact；macOS 壳仍使用 Swift，构建 App 另需 Xcode Command Line Tools。
 
 ```sh
 npm ci
@@ -14,16 +14,16 @@ npm run check
 
 源码按 npm workspaces 管理，运行依赖归应用声明，根目录只声明开发工具：
 
-| 目录                 | 职责                                                  |
-| -------------------- | ----------------------------------------------------- |
-| `apps/server/`       | Server、唯一 Server CLI、MCP、授权和持久化            |
-| `apps/desktop/`      | 桌面执行器与唯一 Desktop CLI；`native/` 内含 Swift 壳 |
-| `apps/browser/`      | 独立扩展；`src/` 为逻辑，`public/` 为静态资源         |
-| `apps/web/`          | 随 Server 分发的管理台                                |
-| `packages/protocol/` | 跨进程共享契约                                        |
-| `packages/shared/`   | Node 应用共享的路径约定                               |
-| `tools/`             | 构建、安装与分发检查                                  |
-| `tools/fixtures/`    | 自有桌面窗口和浏览器表单                              |
+| 目录                           | 职责                                                  |
+| ------------------------------ | ----------------------------------------------------- |
+| `apps/server/`                 | Server、唯一 Server CLI、MCP、授权和持久化            |
+| `apps/desktop/`                | 桌面执行器与唯一 Desktop CLI；`native/` 内含 Swift 壳 |
+| `apps/browser/`                | 独立扩展；`src/` 为逻辑，`public/` 为静态资源         |
+| `apps/web/`                    | 随 Server 分发的管理台                                |
+| `packages/protocol/`           | 跨进程共享契约                                        |
+| `packages/shared/`             | Node 应用共享的路径约定                               |
+| [`tools/`](../tools/README.md) | 构建、安装与分发检查                                  |
+| `tools/fixtures/`              | 自有桌面窗口和浏览器表单                              |
 
 应用内部使用相对导入；共享包只通过 `@abridge/protocol`、`@abridge/shared/paths` 导入，不直接遍历其他应用源码。`npm run architecture:check` 校验生产导入图、声明依赖与 workspace 接口；应用测试放在各自 `tests/` 中。
 
