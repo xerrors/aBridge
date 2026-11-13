@@ -1031,7 +1031,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             deviceNameMessage.isHidden = true
         }
         if !deviceNameDirty && !savingDeviceName {
-            deviceNameField.stringValue = status["device_name"] as? String ?? ""
+            let assignedName = status["device_name"] as? String ?? ""
+            deviceNameField.stringValue = assignedName.isEmpty
+                ? String((Host.current().localizedName ?? ProcessInfo.processInfo.hostName).prefix(80))
+                : assignedName
         }
         let paused = status["paused"] as? Bool == true
         let connection = status["connection"] as? String ?? "offline"
