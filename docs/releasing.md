@@ -33,7 +33,7 @@ npm publish dist/releases/*.tgz --access public
 
 首次引导也可先保持 `NPM_PUBLISH_ENABLED=false`，推送 tag 生成 GitHub 候选产物，再人工发布同版本首包、配置 npm 信任并打开该变量。之后先递增根版本，再创建新的 tag；不要对已人工发布的同版本重跑 npm 发布。
 
-稳定版本使用 npm `latest`，带预发布后缀的版本使用 `next`。已存在版本不可覆盖；修改版本后再创建新的 tag。
+0.x 开发候选版本及带预发布后缀的版本使用 npm `next`，并标记为 GitHub Pre-release；1.0 及以上无预发布后缀的稳定版本使用 npm `latest`。已存在版本不可覆盖；修改版本后再创建新的 tag。
 
 发布验证后，Server 的使用入口为 `npx @xerrors/abridge --web`；在确认 npm 上实际存在之前，不将这个入口表述为已可用。
 

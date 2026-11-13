@@ -107,7 +107,7 @@ jobs:
           set -euo pipefail
           npm --version
           distribution=latest
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then distribution=next; fi
+          if [[ "$GITHUB_REF_NAME" == v0.* || "$GITHUB_REF_NAME" == *-* ]]; then distribution=next; fi
           npm publish dist/releases/*.tgz --access public --provenance --tag "$distribution"
   github-release:
     needs: [build, npm]
@@ -129,7 +129,7 @@ jobs:
         run: |
           set -euo pipefail
           extra=()
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then extra+=(--prerelease); fi
+          if [[ "$GITHUB_REF_NAME" == v0.* || "$GITHUB_REF_NAME" == *-* ]]; then extra+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "aBridge $GITHUB_REF_NAME" --generate-notes "${extra[@]}"
       - name: Explain npm status
         if: needs.npm.result == 'skipped'

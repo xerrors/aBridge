@@ -1,7 +1,5 @@
 <img src="docs/assets/overview.png" width="100%" alt="aBridge connects agents to macOS and browsers through MCP; Windows and Android are planned." />
 
-<p align="left"><img src="docs/assets/brand/bridge.svg" height="48" alt="">&nbsp;&nbsp;<img src="docs/assets/brand/wordmark.svg" height="48" alt="aBridge"></p>
-
 通过 MCP，让 Agent 使用你授权的电脑和浏览器。
 
 | 客户端                  | 能力                       | 运行环境                   |
@@ -11,7 +9,7 @@
 
 两种客户端独立注册为设备并连接 Server。浏览器扩展复用当前 Profile 的网站登录态，不依赖 App。Server、桌面运行时、扩展和管理台统一使用 TypeScript，macOS 界面由 Swift 提供。
 
-当前为 **0.3 开发候选版本**。本仓库尚未发布可直接安装的公共 npm 包、公证 App 或扩展商店版本；源码和本地分发包的运行方式见下文。
+当前为 **0.3 开发候选版本**。本仓库尚未发布可直接安装的公共 npm 包、公证 App 或扩展商店版本；[GitHub Releases](https://github.com/xerrors/aBridge/releases) 提供候选构建：macOS 包使用 ad hoc 签名且未公证，浏览器 ZIP 供开发者加载或提交商店，Server tarball 尚未发布至 npm。源码运行方式见下文。
 
 ## 启动 Server
 
