@@ -58,8 +58,20 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
       .filter(Boolean);
   const staticRoot = resolve(dirname(fileURLToPath(import.meta.url)), "web");
   await access(join(staticRoot, "index.html"));
+  if (
+    process.env.ABRIDGE_DELEGATION_ENABLED &&
+    !["true", "false"].includes(process.env.ABRIDGE_DELEGATION_ENABLED)
+  )
+    throw new Error("ABRIDGE_DELEGATION_ENABLED must be true or false");
   const server = await createServer({
     dbPath,
+    identity: {
+      issuer: process.env.ABRIDGE_OIDC_ISSUER_URL,
+      backchannelOrigin: process.env.ABRIDGE_OIDC_BACKCHANNEL_ORIGIN,
+      clientId: process.env.ABRIDGE_OIDC_CLIENT_ID,
+      clientSecret: process.env.ABRIDGE_OIDC_CLIENT_SECRET,
+      delegationEnabled: process.env.ABRIDGE_DELEGATION_ENABLED === "true",
+    },
     adminToken: process.env.ABRIDGE_ADMIN_TOKEN,
     resetAdminToken: values["reset-admin-token"],
     host: values.host ?? process.env.ABRIDGE_HOST ?? "127.0.0.1",
@@ -82,7 +94,7 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
     console.log(`aBridge ${VERSION}: ${url}`);
     const adminUrl = new URL(values["public-origin"] ?? process.env.ABRIDGE_PUBLIC_ORIGIN ?? url);
     adminUrl.hash = new URLSearchParams({ admin_token: server.adminToken }).toString();
-    console.log(`Admin console: ${adminUrl.href}`);
+    console.log(`Admin console: ${adminUrl.origin}`);
     if (values.web) {
       try {
         await openWeb(adminUrl.href);

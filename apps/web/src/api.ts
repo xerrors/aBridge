@@ -13,6 +13,8 @@ export const deviceSchema = z.object({
   active_operations: z.array(z.string()).default([]),
 });
 export const grantSchema = z.object({
+  authentication: z.enum(["key", "platform"]).default("key"),
+  can_reconnect: z.boolean().default(false),
   id: z.string(),
   name: z.string(),
   policy: connectionPolicySchema,

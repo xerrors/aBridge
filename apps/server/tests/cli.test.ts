@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -90,7 +90,8 @@ test("compiled CLI starts outside repository, serves bundled web and persists ac
       const task = launch(["--db", db, "--port", "0"], dir);
       running = task.child;
       const { url, adminUrl } = await task.ready;
-      const token = new URLSearchParams(new URL(adminUrl).hash.slice(1)).get("admin_token");
+      assert.equal(new URL(adminUrl).hash, "", "startup never prints administrator credentials");
+      const token = (await readFile(db + ".admin-token", "utf8")).trim();
       assert.ok(token);
       if (savedToken) assert.equal(token, savedToken);
       savedToken = token;
@@ -136,7 +137,7 @@ test("compiled CLI honors administrator env token, prints public links and remov
     running = task.child;
     const { url, adminUrl } = await task.ready;
     assert.equal(new URL(adminUrl).origin, "https://bridge.example.com");
-    assert.equal(new URLSearchParams(new URL(adminUrl).hash.slice(1)).get("admin_token"), token);
+    assert.equal(new URL(adminUrl).hash, "", "environment administrator token is not logged");
     const created = await fetch(url + "/api/admin/users", {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer " + token },
@@ -154,6 +155,13 @@ test("compiled CLI honors administrator env token, prints public links and remov
     assert.equal(help.status, 0);
     assert.equal(help.stdout.includes("user create"), false);
     assert.match(help.stdout, /--reset-admin-token/);
+    const invalidDelegation = spawnSync(process.execPath, [serverCli, "--data-dir", dir, "--port", "0"], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, ABRIDGE_DELEGATION_ENABLED: "tru" },
+    });
+    assert.notEqual(invalidDelegation.status, 0);
+    assert.match(invalidDelegation.stderr, /ABRIDGE_DELEGATION_ENABLED must be true or false/);
   } finally {
     if (running) await stop(running);
     await rm(dir, { recursive: true, force: true });

@@ -112,7 +112,7 @@ export const connectionPolicySchema = z.discriminatedUnion("mode", [
       mode: z.literal("selected"),
       devices: z
         .array(devicePermissionSchema.extend({ capabilities: policyCapabilities.min(1) }))
-        .min(1)
+        .min(0)
         .max(100)
         .refine(uniqueDevices, "Devices must be unique"),
     })

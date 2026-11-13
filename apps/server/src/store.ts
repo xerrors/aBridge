@@ -29,14 +29,16 @@ export const secretKey = (kind: string): string =>
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 const SCHEMA = [
-  "CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,salt TEXT NOT NULL,password_hash TEXT NOT NULL,created_at REAL NOT NULL);",
+  "CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT UNIQUE NOT NULL,salt TEXT,password_hash TEXT,created_at REAL NOT NULL);",
+  "CREATE TABLE external_identities(issuer TEXT NOT NULL,subject TEXT NOT NULL,user_id TEXT NOT NULL REFERENCES users(id),PRIMARY KEY(issuer,subject));",
+  "CREATE TABLE platform_grants(issuer TEXT NOT NULL,subject TEXT NOT NULL,client_id TEXT NOT NULL,grant_id TEXT NOT NULL REFERENCES client_grants(id),PRIMARY KEY(issuer,subject,client_id),FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject));",
   "CREATE TABLE logins(digest TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),expires_at REAL NOT NULL);",
   "CREATE TABLE devices(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,capabilities TEXT NOT NULL,token_digest TEXT UNIQUE NOT NULL,credential_version INTEGER NOT NULL,epoch INTEGER NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_seen REAL,kind TEXT NOT NULL CHECK(kind IN ('computer','browser')));",
-  "CREATE TABLE client_grants(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE NOT NULL,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
+  "CREATE TABLE client_grants(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),name TEXT NOT NULL,policy TEXT NOT NULL,expires_at REAL,token_digest TEXT UNIQUE,revoked_at REAL,created_at REAL NOT NULL,last_used REAL);",
   "CREATE TABLE control_sessions(id TEXT PRIMARY KEY,grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),capabilities TEXT NOT NULL,lease_until REAL NOT NULL,status TEXT NOT NULL,created_at REAL NOT NULL);",
   "CREATE TABLE operations(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),grant_id TEXT NOT NULL REFERENCES client_grants(id),device_id TEXT NOT NULL REFERENCES devices(id),session_id TEXT NOT NULL REFERENCES control_sessions(id),tool TEXT NOT NULL,request_hash TEXT NOT NULL,status TEXT NOT NULL,epoch INTEGER NOT NULL,created_at REAL NOT NULL,finished_at REAL);",
   "CREATE TABLE audit(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL REFERENCES users(id),device_id TEXT,grant_id TEXT,operation_id TEXT,action TEXT NOT NULL,outcome TEXT NOT NULL,created_at REAL NOT NULL);",
-  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=2;",
+  "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=3;",
 ].join("\n");
 
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
@@ -51,7 +53,7 @@ export class Store {
     this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
     const version = Number(this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0);
     if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
-    else if (version !== 2) {
+    else if (version !== 3) {
       this.db.close();
       throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
     }
@@ -144,9 +146,100 @@ export class Store {
   async login(username: string, password: string): Promise<{ user: User; token: string } | undefined> {
     const user = await this.verifyUser(username, password);
     if (!user) return undefined;
-    const token = randomBytes(36).toString("base64url");
-    this.run("INSERT INTO logins VALUES(?,?,?)", digest(token), user.id, nowSeconds() + 43200);
+    const token = this.createLogin(user.id);
     return { user, token };
+  }
+  /** 为已验证身份签发本地浏览器会话。 */
+  createLogin(userId: string): string {
+    const token = randomBytes(36).toString("base64url");
+    this.run("INSERT INTO logins VALUES(?,?,?)", digest(token), userId, nowSeconds() + 43200);
+    return token;
+  }
+  /** 以签发方和稳定主体首次开户，绝不按显示名称合并。 */
+  externalUser(issuer: string, subject: string, label: string, clientId?: string): User {
+    return this.transaction(() => {
+      const existing = this.one<{ user_id: string }>(
+        "SELECT user_id FROM external_identities WHERE issuer=? AND subject=?",
+        issuer,
+        subject,
+      );
+      const user = existing ? this.user(existing.user_id)! : { id: identifier("usr"), username: "" };
+      if (!existing) {
+        user.username = label.slice(0, 50) + " · " + user.id.slice(4);
+        this.run("INSERT INTO users VALUES(?,?,NULL,NULL,?)", user.id, user.username, nowSeconds());
+        this.run("INSERT INTO external_identities VALUES(?,?,?)", issuer, subject, user.id);
+      }
+      if (!clientId) return user;
+      const linked = this.one<{ grant_id: string }>(
+        "SELECT grant_id FROM platform_grants WHERE issuer=? AND subject=? AND client_id=?",
+        issuer,
+        subject,
+        clientId,
+      );
+      if (!linked) {
+        const grantId = identifier("agt");
+        this.run(
+          "INSERT INTO client_grants VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
+          grantId,
+          user.id,
+          clientId + " 平台连接",
+          JSON.stringify({ mode: "selected", devices: [] }),
+          nowSeconds(),
+        );
+        this.run("INSERT INTO platform_grants VALUES(?,?,?,?)", issuer, subject, clientId, grantId);
+      }
+      return user;
+    });
+  }
+  /** 仅解析已登录建立且尚有效的外部平台授权。 */
+  delegatedGrant(issuer: string, subject: string, clientId: string): Grant | undefined {
+    const row = this.one<{ grant_id: string }>(
+      "SELECT grant_id FROM platform_grants WHERE issuer=? AND subject=? AND client_id=?",
+      issuer,
+      subject,
+      clientId,
+    );
+    const grant = row ? this.grant(row.grant_id) : undefined;
+    if (
+      !grant ||
+      grant.revoked_at !== null ||
+      (grant.expires_at !== null && grant.expires_at <= nowSeconds())
+    )
+      return undefined;
+    this.run("UPDATE client_grants SET last_used=? WHERE id=?", nowSeconds(), grant.id);
+    return grant;
+  }
+  /** 只有当前平台授权的撤销记录允许显式重新建立空权限连接。 */
+  canReconnectPlatformGrant(grant: Grant): boolean {
+    return (
+      grant.token_digest === null &&
+      grant.revoked_at !== null &&
+      !!this.one("SELECT grant_id FROM platform_grants WHERE grant_id=?", grant.id)
+    );
+  }
+  /** 保留旧授权墓碑及会话，新连接必须重新选择设备能力。 */
+  reconnectPlatformGrant(grant: Grant): Grant {
+    return this.transaction(() => {
+      const current = this.grant(grant.id);
+      if (!current || !this.canReconnectPlatformGrant(current))
+        throw new BridgeError(
+          "invalid_reconnect",
+          "Only the current revoked platform connection can be reauthorized",
+          409,
+        );
+      const id = identifier("agt");
+      this.run(
+        "INSERT INTO client_grants VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
+        id,
+        current.owner_id,
+        current.name,
+        JSON.stringify({ mode: "selected", devices: [] }),
+        nowSeconds(),
+      );
+      this.run("UPDATE platform_grants SET grant_id=? WHERE grant_id=?", id, current.id);
+      this.audit(current.owner_id, null, id, null, "platform_grant_reconnect", "changed");
+      return this.grant(id)!;
+    });
   }
   account(token: string): User | undefined {
     return this.one(
@@ -275,6 +368,8 @@ export class Store {
   rotateGrant(id: string): { grant: Grant; key: string } {
     const grant = this.grant(id);
     if (!grant || grant.revoked_at !== null) throw new BridgeError("not_found", "Connection not found", 404);
+    if (grant.token_digest === null)
+      throw new BridgeError("external_connection", "External platform connections do not have keys", 409);
     const key = secretKey("agent");
     this.transaction(() => {
       this.run("UPDATE client_grants SET token_digest=? WHERE id=?", digest(key), id);

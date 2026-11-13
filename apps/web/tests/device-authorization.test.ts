@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { oidcLoginPath } from "../src/authentication.js";
 import { authorizationCallbackUrl } from "../src/device-authorization.js";
 
 const state = "a".repeat(43);
@@ -64,4 +65,21 @@ test("authorization callbacks reject duplicate, missing or secret-bearing query 
     "?code=code&state=%3Cscript%3E",
   ])
     assert.throws(() => authorizationCallbackUrl(callback + parameters, "computer"), parameters);
+});
+
+test("OIDC login retains the actual device authorization query without forwarding unrelated queries", () => {
+  const id = "fixture_Authorization-123";
+  const location = new URL(oidcLoginPath("?authorize=" + id, ""), "https://bridge.example");
+  assert.equal(location.searchParams.get("return_to"), "/?authorize=" + id);
+  for (const search of [
+    "?authorize=a&authorize=b",
+    "?authorize=a&token=secret",
+    "?return_to=https://evil.example",
+    "?authorize=",
+  ]) {
+    assert.equal(
+      new URL(oidcLoginPath(search, ""), "https://bridge.example").searchParams.get("return_to"),
+      "/",
+    );
+  }
 });

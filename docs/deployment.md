@@ -14,7 +14,7 @@ npm run build
 npm start -- --web
 ```
 
-`abridge` 默认等同于 `abridge serve`。每次启动都会输出普通地址和带管理员 Token 的 `Admin console` 链接；`--web` 自动打开该链接。首次启动自动生成实例管理员 Token，保存在数据库旁的 `<数据库文件>.admin-token`，文件权限为 `600`，之后重启复用。也可用 `ABRIDGE_ADMIN_TOKEN` 覆盖，值须为 32–512 个不含空白的可打印 ASCII 字符；环境变量覆盖不会改写已保存的 Token。
+`abridge` 默认等同于 `abridge serve`。每次启动只输出普通地址；`--web` 在本机浏览器打开带管理员 Token 的管理链接，终端不输出凭据。首次启动自动生成实例管理员 Token，保存在数据库旁的 `<数据库文件>.admin-token`，文件权限为 `600`，之后重启复用。也可用 `ABRIDGE_ADMIN_TOKEN` 覆盖，值须为 32–512 个不含空白的可打印 ASCII 字符；环境变量覆盖不会改写已保存的 Token。
 
 打开管理链接后，前端立即清除 URL fragment 中的 Token，再通过 API 兑换有效期 30 天的 `HttpOnly`、`SameSite=Strict` Cookie；HTTPS 使用 `Secure`。管理员会话跨 Server 重启保留，在同一浏览器、同一 Origin 下再次访问普通地址即可恢复。退出管理员清除浏览器会话；重置 Token 会使旧 Token 和全部旧管理员会话失效。自动生成的 Token 使用以下命令重置并启动：
 
@@ -22,7 +22,7 @@ npm start -- --web
 node dist/server/cli.js --reset-admin-token
 ```
 
-环境变量配置的 Token 通过修改变量并重启更换。管理链接包含实例管理员凭据，仅在启动终端输出，不写入请求日志；普通用户使用不带 fragment 的地址。
+环境变量配置的 Token 通过修改变量并重启更换。管理链接包含实例管理员凭据，不写入终端或请求日志；也可通过已配置的管理员 Token 登录。普通用户使用不带 fragment 的地址。
 
 实例管理员独立于普通账户，进入“实例管理”即可创建用户、查看用户及其设备统计，不需要先登录普通账户。第一个用户和后续用户统一由管理员 API 创建，不提供 CLI 创建用户或公开注册入口。普通账户登录后维护自己的设备与 Agent 连接，管理员凭据不授予设备操作权限。完整接口与外部调用示例见 [Server API](../apps/server/README.md#管理员-api)。
 
@@ -155,3 +155,29 @@ npm run build
 ## 发布与便携 App
 
 tag 驱动的 npm、Chrome ZIP 和 macOS 分发流程见[发布说明](releasing.md)。`npm run package:macos` 生成内置 Node 的便携 App ZIP；未配置 Developer ID 时文件名明确标注 unsigned，不能将其视为已公证版本。
+
+## 可选 OIDC 登录与平台 MCP 委托
+
+未配置时继续使用本地账户与 Agent Key。接入支持 discovery、Authorization Code + S256 PKCE、RS256 ID Token 的身份提供方：
+
+```dotenv
+ABRIDGE_PUBLIC_ORIGIN=https://bridge.example.com
+ABRIDGE_OIDC_ISSUER_URL=https://yuxi.example.com/api/auth/provider
+ABRIDGE_OIDC_CLIENT_ID=abridge
+ABRIDGE_OIDC_CLIENT_SECRET=<在提供方登记的客户端秘密>
+ABRIDGE_DELEGATION_ENABLED=true
+# 可选：仅限可信私有网络，容器内访问提供方的地址
+ABRIDGE_OIDC_BACKCHANNEL_ORIGIN=http://api:5050
+```
+
+公开 issuer 在容器内部不能直接访问时，可显式配置 `ABRIDGE_OIDC_BACKCHANNEL_ORIGIN` 为内部 HTTP(S) 纯 Origin，不含路径、结尾斜杠、凭据、查询或 fragment。只有与 issuer 相同 Origin 的服务端认证请求（discovery、token、JWKS）会改用该地址，保留原有路径和查询；浏览器链接、issuer 和令牌校验不变。不跟随重定向，不将其他域名自动映射为内部地址；未配置时保持正常公开访问。HTTP backchannel 会承载客户端秘密和令牌，仅可用于可信私有网络，不能替代公开 HTTPS。
+
+必须在提供方登记固定回调 `https://bridge.example.com/api/auth/oidc/callback`，客户端认证方式为 `client_secret_post`。登录入口 `GET /api/auth/oidc/login`，可用 `return_to=/?authorize=<id>` 保留现有设备绑定确认流程，仅接受本地限定入口；发现状态 `GET /api/auth/oidc/config`；请求 scope 为 `openid profile`，显示名使用可选的 `name`。提供方 issuer 必须精确匹配 discovery。非回环端点必须使用 HTTPS；生产公开地址必须配置 HTTPS。仅提供部分配置时拒绝启动。关闭委托但保留 OIDC 时仍可登录管理台、使用手工 Agent Key。
+
+首次登录按 `(issuer, sub)` 创建没有本地密码的普通账户，不匹配用户名或邮箱，不接管已有账户。启用平台委托后，每个外部身份和客户端拥有一个持久“平台连接”，初始设备范围为空；用户在 Agent 连接中编辑设备与能力后平台才有设备权限。该连接无 Agent Key、不支持密钥轮换；撤销后再次登录也不恢复授权。用户可在已撤销连接中显式点击“重新授权”（`POST /api/client-grants/:id/reconnect`），创建一个设备范围为空的新平台连接，再重新选择设备和能力。旧授权与会话保持撤销，重复点击旧记录不能重建授权，其他用户和手工 Key 连接不能使用此入口。
+
+显式启用委托时，`POST /mcp` 接受同一 issuer 签发的 RS256 JWT：`sub` 为登录时的稳定主体、`aud` 精确为 `${ABRIDGE_PUBLIC_ORIGIN}/mcp`、`client_id` 为配置的 OIDC client ID、`purpose` 为 `abridge-delegation`，必须包含 `iat`、`exp`，最长 60 秒。公钥来自提供方 discovery 的 JWKS，浏览器 ID Token 不具备这些访问声明，不可用于 MCP。委托只解析已经登录建立的身份；不能通过 MCP 自动开户。个人设备列表通过 MCP `devices_list` 读取，无需为 HTTP 管理 API增加 Bearer 登录方式。
+
+浏览器会话仍由 aBridge 持有，有效期 12 小时。退出/停用提供方账户不会立即注销已有 aBridge Cookie；平台停用用户后应停止签发委托，已签发令牌最多保留 60 秒。aBridge 本地撤权即时应用于后续操作与已有控制会话，不能回滚已发生副作用。身份提供方不可用时新登录和委托验证可能失败，本地账号与 Agent Key 继续工作。密钥轮换须保留旧验证公钥至少到已签发令牌过期，JWKS 缓存也需要考虑。
+
+数据库开发 schema 为 3。历史开发数据库不能直接打开；请备份并在隔离副本中明确转换或重新初始化，禁止用现有服务的数据目录试运行。更换 issuer 或 sub 会建立新身份，必须事先安排设备归属恢复，不能靠显示名自动合并。

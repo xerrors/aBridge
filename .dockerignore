@@ -1,0 +1,9 @@
+.git
+.local
+node_modules
+dist
+runtime
+*.db*
+*.pem
+*.key
+.env*

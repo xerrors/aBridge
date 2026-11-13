@@ -21,6 +21,7 @@ import {
   adminCreateUserSchema,
   type AdminOverview,
 } from "@abridge/protocol";
+import { Identity, validateIdentityConfig, type IdentityConfig } from "./identity.js";
 import { AdminAuth, ADMIN_SESSION_SECONDS, loadAdminToken } from "./admin.js";
 import { Store, acquireInstanceLock } from "./store.js";
 import { DeviceAuthorizations } from "./device-authorization.js";
@@ -39,6 +40,7 @@ export interface ServerConfig {
   publicOrigin?: string;
   adminToken?: string;
   resetAdminToken?: boolean;
+  identity?: IdentityConfig;
 }
 const browserOrigin = /^chrome-extension:\/\/[a-p]{32}$/;
 const loopback = (host: string) => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host);
@@ -67,7 +69,7 @@ const cookie = (request: FastifyRequest, name = "abridge_session"): string =>
     ?.slice(name.length + 1) ?? "";
 const publicGrant = (grant: Grant) => {
   const { token_digest: _, owner_id: __, ...visible } = grant;
-  return visible;
+  return { ...visible, authentication: grant.token_digest === null ? "platform" : "key" };
 };
 
 /** Composition root: domain state is created once and never owned by HTTP request handlers. */
@@ -96,6 +98,8 @@ export async function createServer(config: ServerConfig) {
       );
     }
   }
+  // 配置在打开持久状态前校验，错误不占用数据库锁。
+  validateIdentityConfig(config.identity ?? {}, publicOrigin?.origin);
   const release = acquireInstanceLock(config.dbPath);
   let store: Store;
   let admin: AdminAuth;
@@ -112,6 +116,7 @@ export async function createServer(config: ServerConfig) {
     release();
     throw error;
   }
+  const identity = new Identity(config.identity ?? {}, publicOrigin?.origin, store);
   const authorizations = new DeviceAuthorizations(store);
   const control = new ControlService(store),
     app = Fastify({ bodyLimit: 2 * 1024 * 1024, logger: false, trustProxy: false });
@@ -297,6 +302,28 @@ export async function createServer(config: ServerConfig) {
     );
     return { totals, users };
   });
+  app.get("/api/auth/oidc/config", async () => ({ enabled: identity.enabled }));
+  app.get("/api/auth/oidc/login", async (request, reply) => {
+    rateLimit(request, "oidc-login", 20);
+    const query = z
+      .object({ return_to: z.string().max(2048).default("/") })
+      .strict()
+      .parse(request.query);
+    const result = await identity.start(query.return_to);
+    reply.header(
+      "set-cookie",
+      `abridge_oidc=${result.binding}; HttpOnly; SameSite=Lax; Path=/api/auth/oidc; Max-Age=300${sameOrigin(request).startsWith("https:") ? "; Secure" : ""}`,
+    );
+    return reply.redirect(result.url);
+  });
+  app.get("/api/auth/oidc/callback", async (request, reply) => {
+    const result = await identity.finish(
+      new URL(request.url, sameOrigin(request)),
+      cookie(request, "abridge_oidc"),
+    );
+    setCookie(reply, request, result.token);
+    return reply.redirect(result.returnTo);
+  });
   app.post("/api/login", async (request, reply) => {
     rateLimit(request);
     const body = accountSchema.parse(request.body),
@@ -356,7 +383,9 @@ export async function createServer(config: ServerConfig) {
     return { id: device.id, key };
   });
   app.get("/api/client-grants", async (request) => ({
-    grants: store.grants(account(request).id).map(publicGrant),
+    grants: store
+      .grants(account(request).id)
+      .map((grant) => ({ ...publicGrant(grant), can_reconnect: store.canReconnectPlatformGrant(grant) })),
   }));
   function ownedGrant(request: FastifyRequest): Grant {
     const user = account(request),
@@ -380,6 +409,11 @@ export async function createServer(config: ServerConfig) {
     const grant = ownedGrant(request),
       body = connectionBody(request.body);
     return publicGrant(await control.updateGrant(grant, body.name, body.policy, body.expires_at));
+  });
+  app.post("/api/client-grants/:id/reconnect", async (request) => {
+    const grant = ownedGrant(request);
+    z.object({}).strict().parse(request.body);
+    return publicGrant(store.reconnectPlatformGrant(grant));
   });
   app.post("/api/client-grants/:id/rotate", async (request) => {
     const result = await control.rotateGrant(ownedGrant(request));
@@ -450,7 +484,8 @@ export async function createServer(config: ServerConfig) {
     );
   });
   app.all("/mcp", async (request, reply) => {
-    const grant = store.authenticateAgent(bearer(request));
+    const token = bearer(request);
+    const grant = store.authenticateAgent(token) ?? (await identity.authenticate(token));
     if (!grant) throw new BridgeError("unauthorized", "A valid Agent Bearer key is required", 401);
     const mcp = createMcpServer(control, grant),
       transport = new NodeStreamableHTTPServerTransport({

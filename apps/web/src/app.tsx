@@ -162,6 +162,13 @@ function ManagementApp() {
               edit={(grant) => setDialog({ kind: "edit-grant", grant })}
               preview={(grant) => setDialog({ kind: "preview-grant", grant })}
               rotate={(grant) => setDialog({ kind: "rotate-grant", grant })}
+              reconnect={(grant) =>
+                setDialog({
+                  kind: "confirm",
+                  title: "重新授权（设备权限将清空）",
+                  path: `/api/client-grants/${grant.id}/reconnect`,
+                })
+              }
               revoke={(grant) =>
                 setDialog({
                   kind: "confirm",

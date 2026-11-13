@@ -25,7 +25,7 @@ export interface Grant {
   name: string;
   policy: ConnectionPolicy;
   expires_at: number | null;
-  token_digest: string;
+  token_digest: string | null;
   revoked_at: number | null;
   created_at: number;
   last_used: number | null;
