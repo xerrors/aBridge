@@ -22,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var item: NSStatusItem!
     private var window: NSWindow!
     private let urlField = NSTextField(string: "http://127.0.0.1:8765")
+    private let deviceNameField = NSTextField(string: "")
+    private let deviceNameMessage = StatusTextField(labelWithString: "")
+    private var saveNameButton: NSButton!
+    private var deviceNameDirty = false
+    private var savingDeviceName = false
+    private var renderedDeviceId = ""
     private let statusLabel = StatusTextField(labelWithString: "尚未连接")
     private var environmentLabels: [String: NSTextField] = [:]
     private var capabilityButtons: [String: NSSwitch] = [:]
@@ -197,6 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         authorizationOpenButton?.isHidden = authorizationProcess == nil
         authorizationOpenButton?.isEnabled = authorizationURL != nil && !authorizationCommitting
         urlField.isEditable = !authorizationCommitting
+        deviceNameField.isEditable = bound && !savingDeviceName && !authorizationCommitting
+        saveNameButton?.isEnabled = online && deviceNameDirty && !savingDeviceName && !authorizationCommitting
         let requested = current["requested_capabilities"] as? [String: Bool] ?? [:]
         for (key, entry) in menuCapabilities {
             entry.state = requested[key] == true ? .on : .off
@@ -282,6 +290,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         addressRow.alignment = .centerY
         addressRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
         addFullWidth(addressRow, to: connection)
+        let nameLabel = textLabel("设备名称")
+        nameLabel.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        deviceNameField.placeholderString = "这台 Mac 的名称"
+        deviceNameField.font = .systemFont(ofSize: 13)
+        deviceNameField.bezelStyle = .roundedBezel
+        deviceNameField.delegate = self
+        deviceNameField.setAccessibilityLabel("设备名称")
+        deviceNameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        saveNameButton = actionButton("保存名称", action: #selector(saveDeviceName))
+        let nameRow = NSStackView(views: [nameLabel, deviceNameField, saveNameButton])
+        nameRow.distribution = .fill
+        nameRow.spacing = 12
+        nameRow.alignment = .centerY
+        nameRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 28).isActive = true
+        addFullWidth(nameRow, to: connection)
+        deviceNameMessage.font = .systemFont(ofSize: 12)
+        deviceNameMessage.textColor = .secondaryLabelColor
+        deviceNameMessage.lineBreakMode = .byTruncatingTail
+        deviceNameMessage.isHidden = true
+        addFullWidth(deviceNameMessage, to: connection)
         authorizationLabel.font = .systemFont(ofSize: 12)
         authorizationLabel.textColor = .secondaryLabelColor
         authorizationLabel.lineBreakMode = .byTruncatingTail
@@ -545,6 +573,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        if notification.object as? NSTextField === deviceNameField {
+            deviceNameDirty = true
+            deviceNameMessage.isHidden = true
+            renderMenu()
+            resizeSettingsWindow()
+            return
+        }
         guard notification.object as? NSTextField === urlField else { return }
         if authorizationProcess != nil && !sameServer(urlField.stringValue, authorizationServer) {
             cancelAuthorization()
@@ -711,6 +746,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc private func stop() { control(["command": "stop"]) }
+
+    @objc private func saveDeviceName() {
+        guard !savingDeviceName else { return }
+        let name = deviceNameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, (name as NSString).length <= 120 else {
+            deviceNameMessage.stringValue = "设备名称需为 1–120 个字符"
+            deviceNameMessage.isHidden = false
+            resizeSettingsWindow()
+            return
+        }
+        savingDeviceName = true
+        deviceNameMessage.isHidden = true
+        renderMenu()
+        runClient(["control", "rename", "--name", name]) { [weak self] result in
+            guard let self else { return }
+            self.savingDeviceName = false
+            if result["ok"] as? Bool == true {
+                self.deviceNameDirty = false
+                self.render(result)
+                self.deviceNameMessage.stringValue = "名称已保存"
+                self.deviceNameMessage.textColor = .secondaryLabelColor
+            } else {
+                self.deviceNameMessage.stringValue = result["error"] as? String ?? "名称保存失败，请重试"
+                self.deviceNameMessage.textColor = .systemRed
+                self.renderMenu()
+            }
+            self.deviceNameMessage.isHidden = false
+            self.resizeSettingsWindow()
+        }
+    }
 
     @objc private func capabilityChanged(_ sender: NSSwitch) {
         guard let capability = sender.identifier?.rawValue else { return }
@@ -959,6 +1024,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func render(_ status: [String: Any]) {
         current = status
+        let deviceId = status["device_id"] as? String ?? ""
+        if !deviceId.isEmpty && deviceId != renderedDeviceId {
+            renderedDeviceId = deviceId
+            deviceNameDirty = false
+            deviceNameMessage.isHidden = true
+        }
+        if !deviceNameDirty && !savingDeviceName {
+            deviceNameField.stringValue = status["device_name"] as? String ?? ""
+        }
         let paused = status["paused"] as? Bool == true
         let connection = status["connection"] as? String ?? "offline"
         let active = status["active_operations"] as? Int ?? 0

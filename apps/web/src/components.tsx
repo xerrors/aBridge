@@ -1,6 +1,6 @@
 import type { ComponentChildren, TargetedSubmitEvent } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { CAPABILITIES, type Capability } from "@abridge/protocol";
+import { type Capability } from "@abridge/protocol";
 
 export const capabilityLabels: Record<Capability, string> = {
   screen: "屏幕",
@@ -26,24 +26,6 @@ export function Brand() {
     <div class="brand">
       <img class="brand-symbol" src="/static/brand.svg" alt="" />
       <img class="brand-wordmark" src="/static/wordmark.svg" alt="aBridge" />
-    </div>
-  );
-}
-export function Scope({
-  selected = ["screen", "input"],
-  allowed = CAPABILITIES,
-}: {
-  selected?: readonly Capability[];
-  allowed?: readonly Capability[];
-}) {
-  return (
-    <div class="checks">
-      {allowed.map((cap) => (
-        <label class="check" key={cap}>
-          <input type="checkbox" name="capabilities" value={cap} defaultChecked={selected.includes(cap)} />
-          {capabilityLabels[cap]}
-        </label>
-      ))}
     </div>
   );
 }

@@ -8,6 +8,8 @@ import {
   deviceDispatchEnvelopeSchema,
   browserHelloSchema,
   deviceWelcomeSchema,
+  deviceRenameSchema,
+  deviceRenameResultSchema,
   HEARTBEAT_SECONDS,
   OPERATION_JOURNAL_LIMIT,
   OPERATION_START_GRACE_SECONDS,
@@ -39,6 +41,8 @@ let leaseSeconds = CONNECTION_LEASE_SECONDS;
 let sequence = 0;
 let generation = 0;
 let configuration: Promise<unknown> = Promise.resolve();
+let renaming = false;
+let nameRevision = 0;
 let authorization:
   { controller: AbortController; server: string; label: string; expiresAt?: number } | undefined;
 let authorizationError: string | undefined;
@@ -56,6 +60,7 @@ const incomingSchema = z
     connection_epoch: z.number().int().optional(),
     session_id: z.string().optional(),
     operation_ids: z.array(z.string()).optional(),
+    device_name: deviceRenameSchema.shape.name.optional(),
   })
   .passthrough();
 const storedLocalSchema = z.object({
@@ -95,6 +100,67 @@ const notify = async () => {
     await chrome.runtime.sendMessage({ type: "status_changed" });
   } catch {}
 };
+function receiveName(name: string | undefined, connection: WebSocket) {
+  if (name === undefined || renaming) return;
+  const revision = nameRevision;
+  configuration = configuration
+    .catch(() => {})
+    .then(async () => {
+      if (connection !== socket || revision !== nameRevision || name === profile.label) return;
+      const next = { ...profile, label: name };
+      await chrome.storage.local.set({ device: next });
+      profile = next;
+      notify();
+    })
+    .catch(() => {}); // Retry the authoritative name on the next heartbeat if storage is unavailable.
+}
+async function renameDevice(name: string) {
+  await ready;
+  await configuration.catch(() => {});
+  if (renaming) throw fail("rename_pending", "名称正在保存，请稍候");
+  if (!profile.key || profile.revoked || !profile.server || !profile.device_id)
+    throw fail("not_registered", "请先绑定当前浏览器");
+  if (!authenticated || socket?.readyState !== WebSocket.OPEN)
+    throw fail("offline", "请连接 Server 后修改名称");
+  const key = profile.key,
+    server = profile.server,
+    deviceId = profile.device_id;
+  renaming = true;
+  nameRevision++;
+  try {
+    // Keep the network wait outside the control queue: pause and stop stay responsive.
+    const response = await fetch(server + "/api/device", {
+      method: "PATCH",
+      credentials: "omit",
+      redirect: "error",
+      signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(deviceRenameSchema.parse({ name })),
+    });
+    const value: unknown = await response.json();
+    if (!response.ok) {
+      const error = z.object({ error: z.object({ message: z.string() }) }).safeParse(value);
+      throw fail("rename_failed", error.success ? error.data.error.message : "名称保存失败，请重试");
+    }
+    const result = deviceRenameResultSchema.parse(value);
+    if (result.id !== deviceId) throw fail("device_mismatch", "Server 返回的设备不匹配");
+    configuration = configuration
+      .catch(() => {})
+      .then(async () => {
+        if (profile.key !== key || profile.server !== server || profile.revoked)
+          throw fail("device_changed", "设备绑定已更换，请重新检查名称");
+        const next = { ...profile, label: result.name };
+        await chrome.storage.local.set({ device: next });
+        profile = next;
+        notify();
+      });
+    await configuration;
+    return { ok: true };
+  } finally {
+    nameRevision++;
+    renaming = false;
+  }
+}
 export function serverURL(value: string) {
   let url;
   try {
@@ -390,6 +456,7 @@ async function connect(): Promise<void> {
             return;
           }
           authenticated = true;
+          receiveName(message.device_name, connection);
           epoch = message.connection_epoch;
           sequence = 0;
           lastAck = Date.now();
@@ -427,6 +494,7 @@ async function connect(): Promise<void> {
         if (message.type === "heartbeat_ack" && message.connection_epoch === epoch) {
           lastAck = Date.now();
           recordConnection({ last_ack_at: lastAck });
+          receiveName(message.device_name, connection);
         } else if (message.type === "dispatch") {
           const operation = deviceDispatchEnvelopeSchema.safeParse(raw);
           if (operation.success) void dispatch(connection, operation.data);
@@ -509,6 +577,13 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, respond) => {
     return false;
   }
   const message = parsed.data;
+  if (message.type === "rename") {
+    void renameDevice(message.name).then(respond, (caught: unknown) => {
+      const error = errorDetails(caught);
+      respond({ ok: false, error: { code: error.code || "rename_failed", message: error.message } });
+    });
+    return true;
+  }
   configuration = configuration
     .catch(() => {})
     .then(async () => {

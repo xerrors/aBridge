@@ -145,7 +145,8 @@ export function ActivityPage({
               <thead>
                 <tr>
                   <th>操作</th>
-                  <th>设备 / Agent</th>
+                  {!deviceId && <th>设备</th>}
+                  <th>Agent</th>
                   <th>结果</th>
                   <th>时间</th>
                 </tr>
@@ -158,16 +159,16 @@ export function ActivityPage({
                       <td>
                         <code>{operation.tool}</code>
                       </td>
-                      <td>
-                        {device && device.status !== "revoked" ? (
-                          <a href={`#devices/${encodeURIComponent(device.id)}`}>{device.name}</a>
-                        ) : (
-                          (device?.name ?? "已解绑设备")
-                        )}
-                        <div class="small muted">
-                          {data.grants.find((grant) => grant.id === operation.grant_id)?.name ?? "Agent"}
-                        </div>
-                      </td>
+                      {!deviceId && (
+                        <td>
+                          {device && device.status !== "revoked" ? (
+                            <a href={`#devices/${encodeURIComponent(device.id)}`}>{device.name}</a>
+                          ) : (
+                            (device?.name ?? "已解绑设备")
+                          )}
+                        </td>
+                      )}
+                      <td>{data.grants.find((grant) => grant.id === operation.grant_id)?.name ?? "Agent"}</td>
                       <td class={`state ${operation.status}`}>
                         {stateLabels[operation.status] ?? operation.status}
                       </td>

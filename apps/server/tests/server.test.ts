@@ -128,6 +128,71 @@ test("HTTP bootstrap, exact origin scopes, account auth, and same-data-dir proce
   }
 });
 
+test("device names are editable by their account or device key while capabilities stay client-controlled", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.store.createUser("name-owner", "synthetic-owner-password");
+    const foreign = await f.store.createUser("other-owner", "synthetic-owner-password");
+    const computer = f.store.createDevice(owner.id, "Mac", ["screen", "input", "files", "shell"]);
+    const browser = f.store.createDevice(owner.id, "Browser", ["browser"], "browser");
+    const other = f.store.createDevice(foreign.id, "Other Mac", ["files"]);
+    assert.match(computer.device.id, /^[A-Za-z0-9_-]{12}$/);
+    assert.match(browser.device.id, /^[A-Za-z0-9_-]{12}$/);
+    assert.notEqual(computer.device.id, browser.device.id);
+    const session = await f.store.login("name-owner", "synthetic-owner-password");
+    const call = (url: string, payload: unknown, headers: Record<string, string>) =>
+      f.app.inject({
+        method: "PATCH",
+        url,
+        headers: { "content-type": "application/json", ...headers },
+        payload: JSON.stringify(payload),
+      });
+    const headers = { cookie: `abridge_session=${session!.token}` };
+    assert.equal((await call(`/api/devices/${other.device.id}`, { name: "Other" }, headers)).statusCode, 404);
+    for (const body of [
+      { name: "Mac", capabilities: ["files"] },
+      { name: "Mac", kind: "browser" },
+    ])
+      assert.equal((await call(`/api/devices/${computer.device.id}`, body, headers)).statusCode, 422);
+    const { socket, welcome } = await connect(f, computer.key);
+    try {
+      assert.equal(welcome.device_name, "Mac");
+      const renamed = await call(`/api/devices/${computer.device.id}`, { name: "  Work Mac  " }, headers);
+      assert.equal(renamed.statusCode, 200);
+      assert.equal(renamed.json().name, "Work Mac");
+      const ack = once(socket, "message");
+      socket.send(JSON.stringify({ type: "heartbeat", connection_epoch: welcome.connection_epoch }));
+      assert.equal(JSON.parse(String((await ack)[0])).device_name, "Work Mac");
+    } finally {
+      socket.close();
+    }
+    const selfHeaders = {
+      authorization: `Bearer ${browser.key}`,
+      origin: `chrome-extension://${"a".repeat(32)}`,
+    };
+    const renamed = await call("/api/device", { name: "Work Browser" }, selfHeaders);
+    assert.equal(renamed.statusCode, 200);
+    assert.deepEqual(renamed.json(), { id: browser.device.id, name: "Work Browser" });
+    assert.equal(
+      (await call("/api/device", { name: "No", id: other.device.id }, selfHeaders)).statusCode,
+      422,
+    );
+    assert.equal((await call("/api/device", { name: "No" }, headers)).statusCode, 401);
+    assert.equal(
+      (await call("/api/device", { name: "No" }, { ...selfHeaders, origin: "https://evil.fixture" }))
+        .statusCode,
+      403,
+    );
+    assert.equal((await call("/api/device", { name: " " }, selfHeaders)).statusCode, 422);
+    f.store.revokeDevice(browser.device.id);
+    assert.equal((await call("/api/device", { name: "No" }, selfHeaders)).statusCode, 401);
+    assert.deepEqual(f.store.device(computer.device.id)!.capabilities, computer.device.capabilities);
+    assert.equal(f.store.authenticateDevice(computer.key)!.id, computer.device.id);
+  } finally {
+    await f.dispose();
+  }
+});
+
 test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yielding, files and image blocks", async () => {
   const f = await fixture();
   try {

@@ -11,8 +11,8 @@ import {
   capabilitySchema,
   connectionPolicySchema,
   deviceKindSchema,
-  deviceCapabilities,
   deviceHelloSchema,
+  deviceRenameSchema,
   browserHelloSchema,
   deviceAuthorizationRequestSchema,
   deviceAuthorizationDecisionSchema,
@@ -129,6 +129,7 @@ export async function createServer(config: ServerConfig) {
     const extensionAuthorization =
       (pathname === "/api/device-authorizations" && request.method === "POST") ||
       (pathname === "/api/device-authorizations/token" && request.method === "POST") ||
+      (pathname === "/api/device" && request.method === "PATCH") ||
       (/^\/api\/device-authorizations\/[^/]+$/.test(pathname) && request.method === "DELETE");
     if (pathname === "/ws/browser" || (extensionAuthorization && browserOrigin.test(origin))) {
       if (!browserOrigin.test(origin))
@@ -321,19 +322,17 @@ export async function createServer(config: ServerConfig) {
   });
   app.patch("/api/devices/:id", async (request) => {
     const device = owned(request),
-      body = deviceSchema.parse(request.body);
+      body = deviceRenameSchema.parse(request.body);
     if (device.revoked_at !== null) throw new BridgeError("revoked", "Device was revoked", 409);
-    if (body.kind !== device.kind)
-      throw new BridgeError("device_kind_mismatch", "Device kind cannot change", 422);
-    if (body.capabilities.some((cap) => !deviceCapabilities(device.kind).includes(cap)))
-      throw new BridgeError("invalid_capabilities", "Capabilities do not match device kind", 422);
-    store.updateDevice(device.id, body.name, body.capabilities);
-    await control.disableCapabilities(
-      device.id,
-      device.capabilities.filter((cap) => !body.capabilities.includes(cap)),
-    );
-    store.audit(device.owner_id, device.id, null, null, "device_update", "changed");
+    store.renameDevice(device.id, body.name);
     return control.deviceView(store.device(device.id)!);
+  });
+  app.patch("/api/device", async (request) => {
+    const device = store.authenticateDevice(bearer(request));
+    if (!device) throw new BridgeError("unauthorized", "A valid device key is required", 401);
+    const body = deviceRenameSchema.parse(request.body);
+    store.renameDevice(device.id, body.name);
+    return { id: device.id, name: body.name };
   });
   app.post("/api/devices/:id/stop", async (request) => {
     const device = owned(request);

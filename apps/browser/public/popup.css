@@ -163,6 +163,19 @@ button:not(:disabled):active {
   margin: 0 0 18px;
   font-size: 12px;
 }
+.device-rename-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 7px;
+}
+.device-rename-row input {
+  min-width: 0;
+  margin-top: 0;
+}
+.device-rename-row button {
+  flex: none;
+}
 .device-information dt {
   color: var(--muted);
   font-size: 11px;

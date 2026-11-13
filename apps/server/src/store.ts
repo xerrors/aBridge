@@ -172,8 +172,11 @@ export class Store {
   ): { device: Device; key: string } {
     if (!capabilities.length || capabilities.some((cap) => !deviceCapabilities(kind).includes(cap)))
       throw new BridgeError("invalid_capabilities", "Capabilities do not match device kind", 422);
-    const id = identifier("dev"),
-      key = secretKey("device");
+    let id: string;
+    do {
+      id = randomBytes(9).toString("base64url");
+    } while (this.device(id));
+    const key = secretKey("device");
     this.transaction(() => {
       this.run(
         "INSERT INTO devices VALUES(?,?,?,?,?,1,0,NULL,?,NULL,?)",
@@ -189,8 +192,11 @@ export class Store {
     });
     return { device: this.device(id)!, key };
   }
-  updateDevice(id: string, name: string, capabilities: Capability[]): void {
-    this.run("UPDATE devices SET name=?,capabilities=? WHERE id=?", name, JSON.stringify(capabilities), id);
+  renameDevice(id: string, name: string): void {
+    this.transaction(() => {
+      this.run("UPDATE devices SET name=? WHERE id=?", name, id);
+      this.audit(this.device(id)!.owner_id, id, null, null, "device_rename", "changed");
+    });
   }
   rotateDevice(id: string): string {
     const key = secretKey("device");

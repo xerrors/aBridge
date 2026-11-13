@@ -464,42 +464,10 @@ dialog h2 {
   gap: 10px;
   margin-top: 26px;
 }
-.checks {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin: 10px 0 18px;
-}
-.check {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  font-size: 13px;
-}
-.check input {
-  accent-color: var(--blue);
-  width: 16px;
-  height: 16px;
-  margin: 0;
-}
 .scope-label {
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 9px;
-}
-.device-checks {
-  display: grid;
-  gap: 7px;
-  max-height: 190px;
-  overflow: auto;
-  margin-bottom: 20px;
-}
-.device-checks .check {
-  border: 0;
-  background: #f4f7fb;
 }
 .consent {
   font-size: 12px;
@@ -625,9 +593,6 @@ dialog h2 {
   .record-list {
     min-width: 630px;
   }
-  .checks {
-    gap: 8px;
-  }
   .dialog-actions button {
     flex: 1;
   }
@@ -655,6 +620,18 @@ dialog h2 {
 .field select {
   display: block;
   margin-top: 7px;
+  appearance: none;
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='m4.5 6.5 3.5 3.5 3.5-3.5' stroke='%2369768a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  background-size: 16px;
+}
+@media (forced-colors: active) {
+  .field select {
+    appearance: auto;
+    background-image: none;
+  }
 }
 .permission-count {
   color: var(--muted);
@@ -1121,36 +1098,93 @@ dialog h2 {
   text-decoration: none;
   font-size: 13px;
 }
-.device-heading h1 {
+.device-overview {
+  padding-bottom: 28px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+}
+.device-heading,
+.device-title {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.device-heading {
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.device-title {
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.device-title h1 {
+  margin: 0;
+  font-size: 26px;
   overflow-wrap: anywhere;
 }
-.device-heading + .caps {
-  margin: -6px 0 24px;
-}
-.detail-tabs {
-  display: flex;
-  gap: 24px;
-  border-bottom: 1px solid var(--line);
-  margin-bottom: 26px;
-}
-.detail-tabs button {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  padding: 10px 0;
+.device-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
-.detail-tabs button[aria-current="page"] {
+.device-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px 48px;
+  margin: 0 0 24px;
+}
+.device-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.device-facts dd {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.device-facts code {
+  font-size: 12px;
+}
+.device-capability-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.device-capability-heading h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.device-capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.device-capability-list li {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+  font-size: 13px;
+}
+.capability-ready {
   color: var(--blue);
-  border-bottom-color: var(--blue);
+  font-size: 12px;
 }
-.device-settings {
-  padding: 28px;
-  max-width: 640px;
-}
-.device-settings h2 {
-  margin-bottom: 24px;
+.device-capability-list .muted {
+  font-size: 12px;
 }
 .activity-filters {
   display: flex;
@@ -1188,8 +1222,12 @@ dialog h2 {
   .activity-filters .field {
     min-width: min(100%, 220px);
   }
-  .device-settings {
-    padding: 20px;
+  .device-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .device-facts {
+    gap: 16px 24px;
   }
   .record-pagination {
     padding: 14px;

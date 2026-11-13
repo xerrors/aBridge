@@ -1,12 +1,15 @@
 import { useState } from "preact/hooks";
-import { DESKTOP_CAPABILITIES, type Capability } from "@abridge/protocol";
+import { type Capability } from "@abridge/protocol";
 import type { Device, Grant } from "./api.js";
 import type { ManagementData } from "./session.js";
-import { capabilityLabels, Field, Form, Scope, stateLabels } from "./components.js";
+import { capabilityLabels, Field, Form, Modal, stateLabels } from "./components.js";
 import { ActivityPage } from "./activity.js";
 export { ActivityPage } from "./activity.js";
 export type RunAction = (action: () => Promise<void>) => void;
 export type Mutate = (path: string, body?: unknown, method?: string) => Promise<void>;
+function platformName(value: string): string {
+  return { darwin: "macOS", win32: "Windows", "Browser extension": "Chromium" }[value] ?? (value || "—");
+}
 function DeviceStatus({ device }: { device: Device }) {
   return (
     <div class="device-meta">
@@ -17,7 +20,7 @@ function DeviceStatus({ device }: { device: Device }) {
       {device.platform && (
         <>
           <span>/</span>
-          {device.platform}
+          {platformName(device.platform)}
         </>
       )}
     </div>
@@ -108,7 +111,8 @@ export function DevicePage({
   run: RunAction;
   notify: (message: string) => void;
 }) {
-  const [section, setSection] = useState<"activity" | "settings">("activity");
+  const [renaming, setRenaming] = useState(false);
+  const platform = device ? platformName(device.platform) : "—";
   return (
     <>
       <a class="device-back" href="#devices">
@@ -120,71 +124,96 @@ export function DevicePage({
         </section>
       ) : (
         <>
-          <div class="page-title device-heading">
-            <div>
-              <h1>{device.name}</h1>
-              <DeviceStatus device={device} />
+          <section class="device-overview" aria-label="设备信息">
+            <div class="device-heading">
+              <div class="device-title">
+                <h1>{device.name}</h1>
+                <span class="device-state">
+                  <span class={`dot ${device.paused ? "paused" : device.status}`} />
+                  {device.paused ? "已暂停" : (stateLabels[device.status] ?? device.status)}
+                </span>
+              </div>
+              <div class="actions">
+                <button onClick={() => setRenaming(true)}>编辑名称</button>
+                <button
+                  onClick={() =>
+                    run(async () => {
+                      await mutate(`/api/devices/${device.id}/stop`);
+                      notify("已停止设备操作");
+                    })
+                  }
+                >
+                  停止操作
+                </button>
+                <details class="connection-menu">
+                  <summary aria-label="更多设备操作">更多</summary>
+                  <div>
+                    <button class="danger" onClick={() => revoke(device)}>
+                      解除绑定
+                    </button>
+                  </div>
+                </details>
+              </div>
             </div>
-            <button
-              onClick={() =>
-                run(async () => {
-                  await mutate(`/api/devices/${device.id}/stop`);
-                  notify("已停止设备操作");
-                })
-              }
-            >
-              停止
-            </button>
-          </div>
-          <DeviceCapabilities device={device} />
-          <nav class="detail-tabs" aria-label="设备详情">
-            <button
-              aria-current={section === "activity" ? "page" : undefined}
-              onClick={() => setSection("activity")}
-            >
-              执行记录
-            </button>
-            <button
-              aria-current={section === "settings" ? "page" : undefined}
-              onClick={() => setSection("settings")}
-            >
-              设备设置
-            </button>
-          </nav>
-          {section === "activity" ? (
-            <ActivityPage key={device.id} data={data} deviceId={device.id} refresh={refresh} run={run} />
-          ) : (
-            <section class="surface device-settings" aria-label="设备设置">
-              <h2>设备设置</h2>
+            <dl class="device-facts">
+              <div>
+                <dt>设备类型</dt>
+                <dd>{device.kind === "browser" ? "浏览器" : "电脑"}</dd>
+              </div>
+              <div>
+                <dt>平台</dt>
+                <dd>{platform}</dd>
+              </div>
+              <div>
+                <dt>设备 ID</dt>
+                <dd>
+                  <code>{device.id}</code>
+                </dd>
+              </div>
+            </dl>
+            <div class="device-local-capabilities">
+              <div class="device-capability-heading">
+                <h2>本机能力</h2>
+                <span class="small muted">由客户端管理</span>
+              </div>
+              <ul class="device-capability-list" aria-label="客户端能力状态">
+                {device.capabilities.map((cap) => (
+                  <li key={cap}>
+                    <span>{capabilityLabels[cap]}</span>
+                    <span class={device.available?.[cap] ? "capability-ready" : "muted"}>
+                      {device.status !== "online"
+                        ? "离线"
+                        : device.paused
+                          ? "已暂停"
+                          : device.available?.[cap]
+                            ? "可用"
+                            : "未就绪"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+          <ActivityPage key={device.id} data={data} deviceId={device.id} refresh={refresh} run={run} />
+          {renaming && (
+            <Modal title="编辑设备名称" close={() => setRenaming(false)}>
               <Form
                 onSubmit={async (form) => {
-                  await mutate(
-                    `/api/devices/${device.id}`,
-                    { name: form.get("name"), kind: device.kind, capabilities: form.getAll("capabilities") },
-                    "PATCH",
-                  );
-                  notify("已保存");
+                  await mutate(`/api/devices/${device.id}`, { name: form.get("name") }, "PATCH");
+                  setRenaming(false);
+                  notify("设备名称已更新");
                 }}
               >
                 <Field name="name" label="设备名称" value={device.name} />
-                <div class="scope-label">允许的能力</div>
-                <Scope
-                  selected={device.capabilities}
-                  allowed={device.kind === "browser" ? ["browser"] : DESKTOP_CAPABILITIES}
-                />
               </Form>
-              <div class="manage-foot">
-                <button class="danger" onClick={() => revoke(device)}>
-                  解除绑定
-                </button>
-              </div>
-            </section>
+            </Modal>
           )}
         </>
       )}
     </>
   );
 }
+
 function connectionCapabilities(grant: Grant, device: Device): Capability[] {
   const policy = grant.policy;
   const configured =

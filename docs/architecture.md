@@ -49,6 +49,8 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 实例管理员通过独立的 Admin Token 或管理员 Cookie 创建普通用户、查看全局用户及设备统计；第一个用户和后续用户统一由 `/api/admin/users` 创建。管理员不自动拥有普通账户身份，也不能用管理员凭据调用设备或 MCP 接口。Token 默认在数据库旁私有保存，支持 `ABRIDGE_ADMIN_TOKEN` 覆盖；浏览器用 Token 兑换 30 天签名 Cookie，会话与普通用户登录相互独立、跨重启保留，Token 重置使全部旧管理员会话失效。
 
+设备名称可在管理台、Mac App 和浏览器扩展中修改，服务端在连接欢迎消息及心跳确认中同步最新名称。管理台的设备设置只允许改名，设备本机能力由客户端管理并只读展示；首次绑定时确认的能力范围和 Agent 连接策略继续限制访问。新设备 ID 使用 12 位随机 Base64URL 字符，生成时检查重复；已有设备 ID 保持不变，ID 不作为认证凭据。
+
 普通管理账户负责维护自己的设备与 Agent 连接。Device Key 标识设备，Agent Key 标识调用 MCP 的连接，二者不可互换。连接具有稳定 ID、名称、设备策略和可选的到期时间；修改策略不更换 Key，轮换 Key 不改变策略。设备类型限制能力上限：`computer` 为 `screen`、`input`、`shell`、`files`，`browser` 仅为 `browser`。
 
 首次绑定采用浏览器确认与一次性授权码（S256 PKCE）。App 或扩展向 Server 发起五分钟有效的授权请求，用户在管理台登录并明确确认账户、设备与申请能力；仅成功兑换时创建设备并签发 Device Key。App 使用随机端口的本机回环回调，扩展使用自身 ID 的 Chromium 授权回调。客户端自动保存凭据并绑定 Server 地址，用户无需手动复制 Key；管理账户会话不传给客户端。

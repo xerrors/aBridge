@@ -89,6 +89,10 @@ Origin 必须是纯 `scheme://host[:port]`，没有路径、查询、fragment �
 
 Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不能互换。电脑与浏览器是独立设备，扩展只提供 `browser`；桌面 App 提供屏幕、键鼠、Shell 与文件。任务按设备 ID 建立会话，完成后关闭会话；暂停只能由本机操作者恢复。
 
+## 设备信息
+
+管理账户通过 `PATCH /api/devices/:id` 修改自己的设备名称，请求只接受 `{ "name": "设备名称" }`。客户端通过 `PATCH /api/device` 和自身 Device Key 修改当前设备名称；不能指定其他设备。名称在欢迎消息和心跳中同步。设备本机能力由客户端管理，管理台只读展示；Agent 连接的访问策略仍在管理台维护。新建设备 ID 为 12 位随机字符，既有 ID 不变。
+
 ## 数据与进程
 
 每个数据库仅运行一个 Server 实例。设备连接和结果缓存在内存中，不支持多 worker 或横向扩展。Node 内置 `node:sqlite` 的 `DatabaseSync` 是同步接口，在最低支持版本 Node 22.13.0 中仍为实验 API，但无需实验启动参数；运行时升级时须重新核对 API 状态。

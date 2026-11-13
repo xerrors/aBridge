@@ -75,6 +75,7 @@ function harness(local = {}, session = {}, settings = {}) {
             device_id: "browser-device",
             capabilities: ["browser"],
             owner_name: "fixture",
+            device_name: settings.deviceName,
             connection_epoch: sockets.length,
             heartbeat_interval: 10,
             lease_seconds: settings.leaseSeconds ?? 30,
@@ -929,4 +930,90 @@ test("browser consent waits outside control queue and a cancelled late approval 
     delete globalThis.chrome;
     delete globalThis.WebSocket;
   }
+});
+
+test("browser names synchronize from Server and rename without blocking pause or exposing its key", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const local = {
+    device: { server: "https://abridge.example", key: "key", device_id: "browser-device", label: "Old name" },
+  };
+  const h = harness(local, {}, { deviceName: "Server name" });
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(async () => {
+    release();
+    await h.popup({ type: "unbind" });
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  });
+  await import("../src/worker.ts?rename-sync");
+  await delay(10);
+  assert.equal((await h.popup({ type: "status" })).label, "Server name");
+  let entered;
+  const requested = new Promise((resolve) => {
+    entered = resolve;
+  });
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "https://abridge.example/api/device");
+    assert.equal(options.method, "PATCH");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.headers.Authorization, "Bearer key");
+    assert.deepEqual(JSON.parse(options.body), { name: "Renamed browser" });
+    entered();
+    await pending;
+    return Response.json({ id: "browser-device", name: "Renamed browser" });
+  };
+  const renamed = h.popup({ type: "rename", name: " Renamed browser " });
+  await requested;
+  assert.equal(
+    (await h.popup({ type: "status" })).label,
+    "Server name",
+    "Do not publish an unconfirmed draft",
+  );
+  assert.equal((await h.popup({ type: "pause" })).ok, true, "Rename HTTP wait must not block local pause");
+  h.sockets[0].receive({ type: "heartbeat_ack", connection_epoch: 1, device_name: "Stale pre-save name" });
+  release();
+  assert.equal((await renamed).ok, true);
+  const saved = await h.popup({ type: "status" });
+  assert.equal(saved.label, "Renamed browser");
+  assert.equal(saved.paused, true);
+  assert.equal(JSON.stringify(saved).includes('"key"'), false);
+  assert.equal(local.device.label, "Renamed browser");
+  h.sockets[0].receive({ type: "heartbeat_ack", connection_epoch: 1, device_name: "Renamed in console" });
+  assert.equal((await h.popup({ type: "status" })).label, "Renamed in console");
+  assert.equal(local.device.label, "Renamed in console");
+});
+
+test("failed or invalid browser renames preserve the saved device name", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const local = {
+    device: {
+      server: "https://abridge.example",
+      key: "key",
+      device_id: "browser-device",
+      label: "Keep name",
+    },
+  };
+  const h = harness(local, {});
+  t.after(async () => {
+    await h.popup({ type: "unbind" });
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    delete globalThis.WebSocket;
+  });
+  await import("../src/worker.ts?rename-refusal");
+  await delay(10);
+  globalThis.fetch = async () => Response.json({ error: { message: "Server unavailable" } }, { status: 503 });
+  assert.equal((await h.popup({ type: "rename", name: "Draft" })).ok, false);
+  assert.equal((await h.popup({ type: "status" })).label, "Keep name");
+  assert.equal(local.device.label, "Keep name");
+  globalThis.fetch = async () => Response.json({ id: "other-device", name: "Wrong device" });
+  assert.equal((await h.popup({ type: "rename", name: "Draft" })).ok, false);
+  assert.equal((await h.popup({ type: "rename", name: " " })).ok, false);
+  assert.equal((await h.popup({ type: "rename", name: "x".repeat(121) })).ok, false);
+  assert.equal((await h.popup({ type: "status" })).label, "Keep name");
 });

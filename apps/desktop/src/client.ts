@@ -11,6 +11,8 @@ import {
   requiredCapabilities,
   operationFrameSchema,
   deviceWelcomeSchema,
+  deviceRenameSchema,
+  deviceRenameResultSchema,
   HEARTBEAT_SECONDS,
   OPERATION_START_SECONDS,
   OPERATION_START_GRACE_SECONDS,
@@ -61,6 +63,7 @@ export class DeviceClient {
   private controlServer?: LocalControlServer;
   private epoch = 0;
   private deviceId = "";
+  private deviceName = "";
   private owner = "";
   private sequence = 0;
   private lastAck = 0;
@@ -299,6 +302,7 @@ export class DeviceClient {
       const welcome = parsedWelcome.data;
       this.epoch = welcome.connection_epoch;
       this.deviceId = welcome.device_id;
+      this.deviceName = welcome.device_name ?? "";
       this.owner = welcome.owner_name;
       this.sequence = 0;
       this.closedSessions.clear();
@@ -341,6 +345,8 @@ export class DeviceClient {
     if (frame.connection_epoch !== this.epoch) return;
     if (frame.type === "heartbeat_ack") {
       this.lastAck = this.now();
+      const name = deviceRenameSchema.safeParse({ name: frame.device_name });
+      if (name.success) this.deviceName = name.data.name;
       return;
     }
     if (frame.type === "dispatch") {
@@ -601,6 +607,29 @@ export class DeviceClient {
         if (request.capability === "screen" || request.capability === "input")
           await this.executor.computer.stop();
       }
+    } else if (command === "rename") {
+      const parsed = deviceRenameSchema.safeParse({ name: request.name });
+      if (!parsed.success) throw new DesktopError("invalid_name", "设备名称需为 1–120 个字符");
+      if (this.status !== "online" || !this.key || !this.deviceId || this.options.config.revoked)
+        throw new DesktopError("device_offline", "请连接 Server 后再修改设备名称");
+      let response: Response;
+      try {
+        response = await fetch(this.options.config.url.replace(/\/$/, "") + "/api/device", {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${this.key}`, "Content-Type": "application/json" },
+          credentials: "omit",
+          redirect: "error",
+          signal: AbortSignal.timeout(10000),
+          body: JSON.stringify(parsed.data),
+        });
+      } catch {
+        throw new DesktopError("rename_failed", "无法保存设备名称，请检查连接后重试");
+      }
+      if (!response.ok) throw new DesktopError("rename_failed", "设备名称保存失败，请重新连接后重试");
+      const result = deviceRenameResultSchema.safeParse(await response.json());
+      if (!result.success || result.data.id !== this.deviceId)
+        throw new DesktopError("invalid_response", "Server 返回了不匹配的设备名称");
+      this.deviceName = result.data.name;
     } else if (command === "unbind") {
       this.options.config.paused = true;
       this.options.config.revoked = true;
@@ -645,6 +674,7 @@ export class DeviceClient {
       url: this.options.config.url,
       error: this.error,
       device_id: this.deviceId,
+      device_name: this.deviceName,
       owner_name: this.owner,
       updated_at: Date.now() / 1000,
       ...(await this.executor.diagnostics(false)),

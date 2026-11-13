@@ -604,6 +604,7 @@ export class ControlService {
             type: "welcome",
             protocol: PROTOCOL_VERSION,
             device_id: device.id,
+            device_name: device.name,
             owner_name: this.store.user(device.owner_id)?.username ?? "",
             connection_epoch: ticket.epoch,
             capabilities: device.capabilities,
@@ -685,6 +686,7 @@ export class ControlService {
         );
       await this.safeSend(ticket, {
         type: "heartbeat_ack",
+        device_name: device.name,
         connection_epoch: ticket.epoch,
         lease_seconds: 30,
       });

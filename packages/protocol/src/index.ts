@@ -3,6 +3,8 @@ import { z } from "zod";
 import packageInfo from "../../../package.json" with { type: "json" };
 
 export const VERSION = packageInfo.version;
+export const deviceRenameSchema = z.object({ name: z.string().trim().min(1).max(120) }).strict();
+export const deviceRenameResultSchema = deviceRenameSchema.extend({ id: z.string().min(1) }).strict();
 export const adminSessionSchema = z.object({ admin: z.literal(true) }).strict();
 export const adminCreateUserSchema = z
   .object({ username: z.string().trim().min(1).max(80), password: z.string().min(12).max(1024) })
@@ -307,6 +309,7 @@ export const deviceWelcomeSchema = z
     type: z.literal("welcome"),
     protocol: z.literal(PROTOCOL_VERSION),
     device_id: z.string().min(1),
+    device_name: deviceRenameSchema.shape.name.optional(),
     connection_epoch: z.number().int().positive(),
     capabilities: z.array(capabilitySchema),
     owner_name: z.string(),

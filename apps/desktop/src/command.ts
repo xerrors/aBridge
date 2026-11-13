@@ -28,6 +28,7 @@ export async function desktopMain(args = process.argv.slice(2)): Promise<void> {
       "if-desktop-active": { type: "boolean" },
       capability: { type: "string" },
       enabled: { type: "string" },
+      name: { type: "string" },
     },
   });
   if (values.help) {
@@ -78,6 +79,7 @@ export async function desktopMain(args = process.argv.slice(2)): Promise<void> {
       ...(values["if-desktop-active"] ? { if_desktop_active: true } : {}),
       ...(values.capability ? { capability: values.capability } : {}),
       ...(values.enabled ? { enabled: values.enabled === "true" } : {}),
+      ...(values.name !== undefined ? { name: values.name } : {}),
     });
     console.log(JSON.stringify({ ok: true, ...result }));
     return;

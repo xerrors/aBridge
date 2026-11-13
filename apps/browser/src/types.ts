@@ -1,5 +1,6 @@
 /// <reference types="chrome" />
 import { z } from "zod";
+import { deviceRenameSchema } from "@abridge/protocol";
 /** Values cross the extension's storage, UI message, and CDP boundaries. */
 export interface BridgeError extends Error {
   code?: string;
@@ -56,6 +57,7 @@ export type UiMessage =
   | { type: "status" }
   | { type: ControlType }
   | { type: "authorize_cancel" }
+  | { type: "rename"; name: string }
   | {
       type: "authorize";
       server: string;
@@ -74,6 +76,7 @@ export function element<T extends HTMLElement>(id: string, constructor: { new (.
 export const uiMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("status") }),
   z.object({ type: z.literal("authorize_cancel") }),
+  deviceRenameSchema.extend({ type: z.literal("rename") }).strict(),
   z.object({ type: z.enum(["pause", "resume", "stop", "unbind"]) }),
   z.object({
     type: z.literal("authorize"),

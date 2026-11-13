@@ -7,6 +7,7 @@ const input = (id: string) => element(id, HTMLInputElement);
 let state: BrowserStatus | undefined;
 let settingsOpen = false;
 let pending = false;
+let nameDirty = false;
 function showError(value: unknown) {
   $("error").textContent = errorDetails(value).message;
   $("error").hidden = false;
@@ -30,6 +31,13 @@ function renderControls() {
   button("submit").disabled = pending || !state || !!state.authorizing;
   button("unbind").disabled = pending || !registered;
   button("cancel-authorization").disabled = pending;
+  input("device-label").disabled = pending || !registered;
+  button("rename-save").disabled =
+    pending ||
+    !registered ||
+    !state?.connected ||
+    !input("device-label").value.trim() ||
+    input("device-label").value.trim() === state.label;
   input("server").disabled = pending || !state || !!state.authorizing;
   input("label").disabled = pending || !state || !!state.authorizing;
 }
@@ -45,7 +53,9 @@ function renderSettings() {
   $("register").hidden = registered;
 }
 async function refresh() {
-  state = await request({ type: "status" });
+  const next = await request({ type: "status" });
+  if (next.device_id !== state?.device_id) nameDirty = false;
+  state = next;
   const status = describeState(state);
   $("connection").className = `connection-summary ${status.kind}`;
   $("status-label").textContent = state.authorizing ? "等待浏览器授权" : status.title;
@@ -60,7 +70,7 @@ async function refresh() {
   button("submit").textContent = state.authorizing ? "等待浏览器授权…" : "在浏览器授权";
   button("cancel-authorization").hidden = !state.authorizing;
   $("authorization-status").hidden = !state.authorizing;
-  $("saved-label").textContent = state.label || "当前浏览器";
+  if (!nameDirty) input("device-label").value = state.label || "";
   $("saved-server").textContent = state.server || "尚未配置";
   // Preserve an unfinished form across status notifications; restore a pending flow on reopen.
   if (state.server && !input("server").value) input("server").value = state.server;
@@ -102,6 +112,26 @@ button("unbind").addEventListener("click", () => {
 });
 button("cancel-authorization").addEventListener("click", () => {
   void control("authorize_cancel");
+});
+input("device-label").addEventListener("input", () => {
+  nameDirty = true;
+  renderControls();
+});
+$("rename").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (pending || !state?.connected) return;
+  pending = true;
+  renderControls();
+  try {
+    await request({ type: "rename", name: input("device-label").value.trim() });
+    nameDirty = false;
+    await refresh();
+  } catch (error) {
+    showError(error);
+  } finally {
+    pending = false;
+    renderControls();
+  }
 });
 $("register").addEventListener("submit", async (event) => {
   event.preventDefault();
