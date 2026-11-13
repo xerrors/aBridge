@@ -165,7 +165,7 @@ function ManagementApp() {
               reconnect={(grant) =>
                 setDialog({
                   kind: "confirm",
-                  title: "重新授权（设备权限将清空）",
+                  title: `重新授权 ${grant.name} 访问全部设备（含新设备）`,
                   path: `/api/client-grants/${grant.id}/reconnect`,
                 })
               }

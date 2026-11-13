@@ -69,6 +69,7 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
       issuer: process.env.ABRIDGE_OIDC_ISSUER_URL,
       backchannelOrigin: process.env.ABRIDGE_OIDC_BACKCHANNEL_ORIGIN,
       clientId: process.env.ABRIDGE_OIDC_CLIENT_ID,
+      clientName: process.env.ABRIDGE_OIDC_CLIENT_NAME,
       clientSecret: process.env.ABRIDGE_OIDC_CLIENT_SECRET,
       delegationEnabled: process.env.ABRIDGE_DELEGATION_ENABLED === "true",
     },

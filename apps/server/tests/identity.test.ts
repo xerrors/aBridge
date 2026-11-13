@@ -93,6 +93,7 @@ async function fixture(
   const config = {
     issuer,
     clientId: "abridge",
+    clientName: "Yuxi",
     clientSecret: "fixture-secret",
     delegationEnabled: options.delegationEnabled ?? true,
     ...(options.backchannel ? { backchannelOrigin } : {}),
@@ -160,7 +161,7 @@ async function fixture(
   };
 }
 
-test("OIDC login isolates stable identities, persists mapping and creates no password or device access", async () => {
+test("OIDC login isolates stable identities, persists mapping and defaults platform access to all owned devices", async () => {
   const f = await fixture();
   try {
     const local = await f.server.store.createUser("same display name", "fixture-password-123");
@@ -186,6 +187,12 @@ test("OIDC login isolates stable identities, persists mapping and creates no pas
     const grant = await f.identity.authenticate(await f.token());
     assert.ok(grant);
     assert.equal(grant.token_digest, null);
+    assert.equal(grant.name, "Yuxi 平台连接");
+    assert.deepEqual(grant.policy, {
+      mode: "all",
+      capabilities: ["screen", "input", "shell", "files", "browser"],
+      overrides: [],
+    });
     assert.deepEqual(f.server.control.devices(grant), []);
     const replay = await f.server.app.inject({
       url: a.callback.pathname + a.callback.search,
@@ -284,7 +291,10 @@ test("delegation enforces claims and current persisted grant policy, revocation 
       f.server.control.devices(grant).map((d) => d.id),
       [device.id],
     );
-    assert.deepEqual(f.server.control.devices(other), []);
+    assert.deepEqual(
+      f.server.control.devices(other).map((d) => d.id),
+      [foreign.id],
+    );
     await f.server.control.attachConnection(
       deviceKey,
       "computer",
@@ -296,6 +306,12 @@ test("delegation enforces claims and current persisted grant policy, revocation 
     assert.notEqual(f.server.store.session(session.id)?.status, "active");
     await assert.rejects(f.server.control.execute(grant, session.id, "file_read", { path: "/fixture" }));
     assert.deepEqual(f.server.control.devices(grant), []);
+    await f.login();
+    assert.deepEqual(
+      (await f.identity.authenticate(await f.token()))?.policy,
+      { mode: "selected", devices: [] },
+      "repeat login preserves a customized empty scope",
+    );
     const response = await fetch(f.serverUrl + "/mcp", {
       method: "POST",
       headers: {
@@ -461,13 +477,16 @@ test("real device authorization survives OIDC login and redeems under the mapped
     assert.equal(redeemed.status, 200);
     const device = (await redeemed.json()) as { device_id: string };
     assert.equal(f.server.store.device(device.device_id)?.owner_id, user.id);
-    assert.deepEqual(f.server.control.devices((await f.identity.authenticate(await f.token()))!), []);
+    assert.deepEqual(
+      f.server.control.devices((await f.identity.authenticate(await f.token()))!).map((d) => d.id),
+      [device.device_id],
+    );
   } finally {
     await f.close();
   }
 });
 
-test("explicit platform reauthorization creates empty new grant without reviving old sessions", async () => {
+test("explicit platform reauthorization creates all-device grant without reviving old sessions", async () => {
   const f = await fixture();
   try {
     const login = await f.login();
@@ -520,6 +539,12 @@ test("explicit platform reauthorization creates empty new grant without reviving
       403,
     );
     assert.equal(await f.identity.authenticate(await f.token()), undefined);
+    await f.login();
+    assert.equal(
+      await f.identity.authenticate(await f.token()),
+      undefined,
+      "login does not recreate a revoked platform grant",
+    );
     const listing = await f.server.app.inject({ url: "/api/client-grants", headers: { cookie } });
     assert.equal(
       listing
@@ -536,7 +561,26 @@ test("explicit platform reauthorization creates empty new grant without reviving
     assert.equal(response.statusCode, 200);
     const replacement = response.json<{ id: string; policy: unknown }>();
     assert.notEqual(replacement.id, grant.id);
-    assert.deepEqual(replacement.policy, { mode: "selected", devices: [] });
+    assert.deepEqual(replacement.policy, {
+      mode: "all",
+      capabilities: ["screen", "input", "shell", "files", "browser"],
+      overrides: [],
+    });
+    const restored = (await f.identity.authenticate(await f.token()))!;
+    assert.deepEqual(
+      f.server.control.devices(restored).map((d) => d.id),
+      [device.id],
+    );
+    const later = f.server.store.createDevice(
+      restored.owner_id,
+      "Later browser",
+      ["browser"],
+      "browser",
+    ).device;
+    assert.deepEqual(
+      new Set(f.server.control.devices(restored).map((d) => d.id)),
+      new Set([device.id, later.id]),
+    );
     assert.equal((await f.identity.authenticate(await f.token()))?.id, replacement.id);
     assert.notEqual(f.server.store.session(session.id)?.status, "active");
     assert.ok(f.server.store.grant(grant.id)?.revoked_at);
