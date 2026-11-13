@@ -13,7 +13,7 @@ if (listing.status !== 0) throw new Error("Cannot inspect Server tarball");
 const entries = listing.stdout.trim().split("\n");
 for (const name of entries) {
   if (
-    !/^package\/(cli\.js|package\.json|npm-shrinkwrap\.json|README\.md|THIRD_PARTY_NOTICES\.md|web\/)/.test(
+    !/^package\/(cli\.js|package\.json|npm-shrinkwrap\.json|README\.md|LICENSE|THIRD_PARTY_NOTICES\.md|web\/)/.test(
       name,
     )
   )
@@ -30,7 +30,7 @@ const lock = JSON.parse(await readFile(join(root, ".local/release/server/npm-shr
 };
 if (Object.keys(lock.packages).some((name) => /cua-driver|@ubjs|typescript|esbuild/.test(name)))
   throw new Error("Server dependency lock contains desktop or build dependencies");
-const browser = files.find((n) => n.endsWith(".zip"));
+const browser = files.find((n) => /^abridge-browser-[0-9].*\.zip$/.test(n));
 if (!browser) throw new Error("Browser ZIP missing");
 for (const name of Object.keys(unzipSync(await readFile(join(dist, browser))))) {
   if (name.includes("..") || /\.local|node_modules|tests\/|\.ts$|\.map$/.test(name))

@@ -6,5 +6,6 @@
     "@abridge/protocol": "*",
     "preact": "11.2.0",
     "zod": "4.6.7"
-  }
+  },
+  "license": "Apache-2.0"
 }

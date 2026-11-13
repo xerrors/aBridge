@@ -199,6 +199,7 @@ export async function installDesktop(
     );
     await writeFile(join(staging, "dependencies.json"), JSON.stringify(dependencies, null, 2) + "\n");
     await cp(join(root, "docs/third-party-notices.md"), join(staging, "THIRD_PARTY_NOTICES.md"));
+    await cp(join(root, "LICENSE"), join(staging, "LICENSE"));
     await privateTree(staging);
     const smoke = await smokeDesktopRuntime(staging);
     if (await exists(runtime)) {

@@ -11,11 +11,11 @@
 | 悬停                   | `#0058C2` |
 | 浅蓝背景               | `#EDF4FF` |
 
-品牌、按钮及在线状态不使用绿色。状态栏使用单色模板图，随 macOS 明暗主题呈现。字标为矢量路径，不依赖接收端安装字体。
+品牌、按钮及在线状态不使用绿色。状态栏使用单色模板图，随 macOS 明暗主题呈现。字标使用 Helvetica Bold，包含标准双层 `a`，导出为矢量路径，不依赖接收端安装字体。
 
 ## 资源单源
 
-`docs/assets/brand/bridge.svg` 与 `docs/assets/brand/wordmark.svg` 是品牌矢量源。修改后保持派生资源一致：
+`docs/assets/brand/bridge.svg` 是桥标矢量源；字标由 `tools/brand-wordmark.swift` 的 Helvetica-Bold 定义生成 `docs/assets/brand/wordmark.svg`。统一导出以下派生资源：
 
 | 使用位置                   | 资源目录                      |
 | -------------------------- | ----------------------------- |
@@ -23,7 +23,7 @@
 | 浏览器扩展图标             | `apps/browser/public/icons/`  |
 | 管理台 SVG                 | `apps/web/public/`            |
 
-在 macOS 使用 `npm run icons` 从矢量源导出；导出需要 librsvg 的 `rsvg-convert` 与系统 `iconutil`。正常产品构建直接使用已导出的资源生成分发产物。状态栏图标采用单色 template 图，字标使用矢量路径，避免依赖接收端安装字体。
+在 macOS 使用 `npm run icons` 从矢量源导出；导出需要 Xcode Command Line Tools、librsvg 的 `rsvg-convert` 与系统 `iconutil`。正常产品构建直接使用已导出的资源生成分发产物。状态栏图标采用单色 template 图，字标使用矢量路径，避免依赖接收端安装字体。
 
 ## 界面
 

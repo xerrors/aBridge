@@ -2,13 +2,17 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile, chmod } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { spawnSync } from "node:child_process";
+import { parseArgs } from "node:util";
 import { zipSync } from "fflate";
+const { values } = parseArgs({ options: { public: { type: "boolean" } } });
+const publish = values.public ?? false;
 const root = resolve(import.meta.dirname, ".."),
   dist = join(root, "dist/releases"),
   stage = join(root, ".local/release/server");
 const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as {
   version: string;
   engines: Record<string, string>;
+  license?: string;
 };
 const server = JSON.parse(await readFile(join(root, "apps/server/package.json"), "utf8")) as {
   dependencies: Record<string, string>;
@@ -16,7 +20,13 @@ const server = JSON.parse(await readFile(join(root, "apps/server/package.json"),
 const dependencies = Object.fromEntries(
   Object.entries(server.dependencies).filter(([name]) => !name.startsWith("@abridge/")),
 );
+const packageName = publish ? (process.env.NPM_PACKAGE_NAME ?? "@xerrors/abridge") : "@abridge/server";
+if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName))
+  throw Error("Invalid public npm package name");
+if (publish && !metadata.license)
+  throw Error("Choose the project license in root package.json before publishing");
 await mkdir(dist, { recursive: true });
+for (const file of await readdir(dist)) if (file.endsWith(".tgz")) await rm(join(dist, file));
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage, { recursive: true });
 await cp(join(root, "dist/server/cli.js"), join(stage, "cli.js"));
@@ -24,19 +34,22 @@ await chmod(join(stage, "cli.js"), 0o755);
 await cp(join(root, "dist/server/web"), join(stage, "web"), { recursive: true });
 await cp(join(root, "apps/server/README.md"), join(stage, "README.md"));
 await cp(join(root, "docs/third-party-notices.md"), join(stage, "THIRD_PARTY_NOTICES.md"));
+await cp(join(root, "LICENSE"), join(stage, "LICENSE"));
 await writeFile(
   join(stage, "package.json"),
   JSON.stringify(
     {
-      name: "@abridge/server",
+      name: packageName,
       version: metadata.version,
-      private: true,
+      private: !publish,
       type: "module",
       description: "aBridge MCP and device gateway",
       engines: metadata.engines,
       bin: { abridge: "cli.js" },
-      files: ["cli.js", "web", "THIRD_PARTY_NOTICES.md", "README.md", "npm-shrinkwrap.json"],
-      license: "UNLICENSED",
+      files: ["cli.js", "web", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "npm-shrinkwrap.json"],
+      license: metadata.license ?? "UNLICENSED",
+      repository: { type: "git", url: "git+https://github.com/xerrors/aBridge.git" },
+      ...(publish ? { publishConfig: { access: "public" } } : {}),
       dependencies,
     },
     null,
@@ -70,6 +83,7 @@ async function collect(directory: string): Promise<void> {
   }
 }
 await collect(join(root, "dist/browser"));
+archive["LICENSE"] = await readFile(join(root, "LICENSE"));
 await writeFile(
   join(dist, `abridge-browser-${metadata.version}.zip`),
   zipSync(archive, { level: 9, mtime: new Date("2020-01-01T00:00:00Z") }),

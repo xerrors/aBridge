@@ -47,6 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             runtime = settings
         }
+        if runtime["runtime_mode"] == "bundled", let resources = Bundle.main.resourceURL {
+            runtime["node_path"] = resources.appendingPathComponent("runtime/node").path
+            runtime["cli_path"] = resources.appendingPathComponent("runtime/cli.js").path
+            runtime["state_dir"] = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/aBridge").path
+        }
         guard let state = runtime["state_dir"], state.hasPrefix("/") else {
             NSLog("aBridge runtime metadata requires an absolute state_dir")
             NSApp.terminate(nil)
@@ -213,7 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             root.addArrangedSubview(heading)
         } else {
             let heading = NSTextField(labelWithString: "aBridge")
-            heading.font = .systemFont(ofSize: 23, weight: .semibold)
+            heading.font = NSFont(name: "Helvetica-Bold", size: 23) ?? .boldSystemFont(ofSize: 23)
             heading.textColor = NSColor(srgbRed: 0, green: 0.4, blue: 0.867, alpha: 1)
             root.addArrangedSubview(heading)
         }

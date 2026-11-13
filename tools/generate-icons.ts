@@ -18,6 +18,15 @@ const work = await mkdtemp(join(tmpdir(), "abridge-icons-"));
 const render = (input: string, output: string, width: number) =>
   execFileSync("rsvg-convert", ["-w", String(width), input, "-o", output]);
 try {
+  const exporter = join(work, "brand-wordmark");
+  execFileSync("swiftc", [
+    "-target",
+    `${process.arch === "arm64" ? "arm64" : "x86_64"}-apple-macosx14.0`,
+    join(root, "tools/brand-wordmark.swift"),
+    "-o",
+    exporter,
+  ]);
+  await writeFile(join(root, "docs/assets/brand/wordmark.svg"), execFileSync(exporter));
   const square = join(work, "square.svg"),
     template = join(work, "template.svg");
   const squareText = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><g transform="translate(0 10)">${mark}</g></svg>`;

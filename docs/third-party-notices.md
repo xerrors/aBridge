@@ -24,8 +24,7 @@ Sources: [Fastify](https://github.com/fastify/fastify),
 Installed npm dependencies retain their own LICENSE and NOTICE files. The
 following original MIT notices are also included for code bundled into browser
 assets and for the desktop SDK. The copied Node.js license is retained alongside
-the private runtime as `Node-LICENSE`. These notices do not assign a license to
-aBridge itself.
+the private runtime as `Node-LICENSE`. aBridge itself is licensed under Apache-2.0; see the root LICENSE.
 
 ## Cua Driver
 

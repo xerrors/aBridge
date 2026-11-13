@@ -2,7 +2,7 @@
 
 MCP 与设备连接网关，包含预构建的管理台。需要 Node.js 26.7.0–26.x 与 npm；运行时不需要编译 TypeScript 或启动前端开发服务器。
 
-这是本地分发候选，`@abridge/server` 尚未公开发布到 npm。使用实际生成的 tarball 路径运行：
+公开 npm 包名为 `@xerrors/abridge`。发布完成后可使用 `npx @xerrors/abridge --web`；本地分发候选使用实际生成的 tarball 路径运行：
 
 ```sh
 npm exec --package /absolute/path/to/server.tgz -- abridge --web
@@ -77,4 +77,4 @@ Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不能互换
 
 Server 重启后，客户端需要重新连接并创建任务会话，未知动作不自动重放。数据库只保存身份、授权和操作元信息；命令输出、文件正文与截图不写入数据库，临时返回内容仍可能敏感。
 
-备份使用 SQLite 备份接口，或先停止服务后保留数据库及 WAL。开发数据库需匹配当前 schema，不提供历史数据迁移。包的第三方组件说明位于随包的 `THIRD_PARTY_NOTICES.md`；这些组件许可不代替 aBridge 自身的分发授权。
+备份使用 SQLite 备份接口，或先停止服务后保留数据库及 WAL。开发数据库需匹配当前 schema，不提供历史数据迁移。包的第三方组件说明位于随包的 `THIRD_PARTY_NOTICES.md`；aBridge 自身使用 Apache-2.0 许可证。

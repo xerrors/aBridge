@@ -20,7 +20,8 @@
     "desktop:install": "node --import tsx tools/install-desktop.ts",
     "icons": "node --import tsx tools/generate-icons.ts",
     "hooks": "git config --local core.hooksPath .github/hooks",
-    "architecture:check": "node --import tsx tools/check-architecture.ts"
+    "architecture:check": "node --import tsx tools/check-architecture.ts",
+    "package:macos": "node --import tsx tools/package-macos.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
@@ -44,5 +45,6 @@
     "printWidth": 110,
     "proseWrap": "preserve",
     "tabWidth": 2
-  }
+  },
+  "license": "Apache-2.0"
 }

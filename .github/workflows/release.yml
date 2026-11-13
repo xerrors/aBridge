@@ -1,0 +1,136 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Validate and build / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate release identity
+        run: node --import tsx tools/check-release.ts
+      - run: npm run check
+      - name: Build public Server distribution
+        env:
+          NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || '@xerrors/abridge' }}
+        run: node --import tsx tools/package-release.ts --public
+      - run: npm run package:check
+      - name: Build portable unsigned macOS candidate
+        if: runner.os == 'macOS'
+        run: npm run package:macos
+      - name: Sign and notarize macOS release
+        if: runner.os == 'macOS' && vars.APPLE_SIGNING_ENABLED == 'true'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: bash tools/sign-macos-release.sh
+      - name: Explain unsigned status
+        if: runner.os == 'macOS' && vars.APPLE_SIGNING_ENABLED != 'true'
+        run: echo 'macOS candidate is unsigned (ad hoc), not notarized. Developer ID configuration is pending.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: runner.os == 'Linux'
+        with:
+          name: release-Linux
+          path: |
+            dist/releases/*.tgz
+            dist/releases/abridge-browser-*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: runner.os == 'macOS'
+        with:
+          name: release-macOS
+          path: |
+            dist/releases/aBridge-*.zip
+            dist/releases/macos-*-verification.json
+          if-no-files-found: error
+          retention-days: 14
+  npm:
+    needs: build
+    if: vars.NPM_PUBLISH_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || '@xerrors/abridge' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: release-Linux
+          path: dist/releases
+      - name: Verify the checked package identity
+        run: |
+          node --input-type=module <<'JSVERIFY'
+          import {execFileSync} from 'node:child_process';
+          import {readdirSync} from 'node:fs';
+          const files=readdirSync('dist/releases').filter(n=>n.endsWith('.tgz'));
+          if(files.length!==1)throw Error('Expected one validated Server tarball');
+          const pkg=JSON.parse(execFileSync('tar',['-xOf','dist/releases/'+files[0],'package/package.json'],{encoding:'utf8'}));
+          if(pkg.private||pkg.name!==process.env.NPM_PACKAGE_NAME||'v'+pkg.version!==process.env.GITHUB_REF_NAME)throw Error('Publish identity mismatch');
+          JSVERIFY
+      - name: Publish with npm trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --version
+          distribution=latest
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then distribution=next; fi
+          npm publish dist/releases/*.tgz --access public --provenance --tag "$distribution"
+  github-release:
+    needs: [build, npm]
+    if: always() && needs.build.result == 'success' && (needs.npm.result == 'success' || needs.npm.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then extra+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "aBridge $GITHUB_REF_NAME" --generate-notes "${extra[@]}"
+      - name: Explain npm status
+        if: needs.npm.result == 'skipped'
+        run: echo 'npm publication skipped. Configure the package trusted publisher and set NPM_PUBLISH_ENABLED=true.' >> "$GITHUB_STEP_SUMMARY"

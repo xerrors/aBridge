@@ -7,6 +7,7 @@ import { constants } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { run } from "./lib/process.js";
+import { signBundledRuntime } from "./lib/sign-runtime.js";
 export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 const ICONS = [
   "AppIcon.icns",
@@ -23,6 +24,7 @@ export type NativeBuildOptions = {
   stateDir?: string;
   force?: boolean;
   signingIdentity: string;
+  bundledRuntime?: string;
 };
 export function parseNativeBuildOptions(args: string[]): NativeBuildOptions {
   const parsed = parseArgs({
@@ -106,16 +108,19 @@ export async function nativeBuildInputs(
     NSScreenCaptureUsageDescription: "aBridge 仅在你启用截图后向已授权的 Agent 提供屏幕画面。",
     NSAccessibilityUsageDescription: "aBridge 仅在你启用桌面输入后执行已授权 Agent 的鼠标和键盘操作。",
   };
-  const runtime = {
-      node_path: resolve(options.node),
-      cli_path: resolve(options.cli),
-      state_dir: resolve(options.stateDir ?? join(homedir(), "Library/Application Support/aBridge")),
-    },
+  const runtime: Record<string, string> = options.bundledRuntime
+      ? { runtime_mode: "bundled" }
+      : {
+          node_path: resolve(options.node),
+          cli_path: resolve(options.cli),
+          state_dir: resolve(options.stateDir ?? join(homedir(), "Library/Application Support/aBridge")),
+        },
     target = "arm64-apple-macosx14.0";
   const files = [
     "apps/desktop/native/aBridge.swift",
     "apps/desktop/native/setup.html",
     "docs/third-party-notices.md",
+    "LICENSE",
     "tools/build-native.ts",
     "tools/lib/process.ts",
     ...ICONS.map((name) => "apps/desktop/native/assets/" + name),
@@ -148,6 +153,8 @@ export async function buildNative(
   await access(options.node, constants.X_OK);
   await access(options.cli, constants.R_OK);
   if (!options.signingIdentity) throw Error("A signing identity is required");
+  if (options.bundledRuntime && !options.force)
+    throw Error("Bundled runtime builds require force to include current runtime bytes");
   const app = resolve(options.output);
   if (!app.endsWith(".app")) throw Error("--output must end in .app");
   if (await existing(app)) {
@@ -200,11 +207,17 @@ export async function buildNative(
     await writeFile(join(resources, "runtime.json"), JSON.stringify(inputs.runtime, null, 2) + "\n");
     await cp(join(root, "apps/desktop/native/setup.html"), join(resources, "setup.html"));
     await cp(join(root, "docs/third-party-notices.md"), join(resources, "third-party-notices.txt"));
+    await cp(join(root, "LICENSE"), join(resources, "LICENSE"));
     await writeFile(
       join(resources, "native-build.json"),
       JSON.stringify({ fingerprint: inputs.fingerprint }, null, 2) + "\n",
     );
+    if (options.bundledRuntime) {
+      await cp(options.bundledRuntime, join(resources, "runtime"), { recursive: true });
+      await signBundledRuntime(join(resources, "runtime"), options.signingIdentity);
+    }
     await run("/usr/bin/codesign", [
+      ...(options.signingIdentity === "-" ? [] : ["--options", "runtime", "--timestamp"]),
       "--force",
       "--sign",
       options.signingIdentity,

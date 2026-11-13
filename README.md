@@ -1,4 +1,6 @@
-<p align="center"><img src="docs/assets/brand/bridge.svg" width="84" alt=""><br><img src="docs/assets/brand/wordmark.svg" width="260" alt="aBridge"></p>
+<img src="docs/assets/overview.png" width="100%" alt="aBridge connects agents to macOS and browsers through MCP; Windows and Android are planned." />
+
+<p align="left"><img src="docs/assets/brand/bridge.svg" height="48" alt="">&nbsp;&nbsp;<img src="docs/assets/brand/wordmark.svg" height="48" alt="aBridge"></p>
 
 通过 MCP，让 Agent 使用你授权的电脑和浏览器。
 
@@ -85,3 +87,5 @@ npm run check
 - [设计与资产](docs/design.md)
 - [安全边界](.github/SECURITY.md)
 - [变更记录](docs/changelog.md) · [第三方许可](docs/third-party-notices.md)
+
+项目使用 [Apache-2.0](LICENSE)。tag 发布、npm Trusted Publisher 和 macOS 构建见[发布说明](docs/releasing.md)。

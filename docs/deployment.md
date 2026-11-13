@@ -144,3 +144,7 @@ npm run build
 备份使用 SQLite 备份接口，或先停止服务再保留数据库及 WAL；不要只复制运行中的主数据库。凭据、日志和备份须限制访问。开发数据库必须匹配当前 schema，结构冲突直接调整开发数据，不提供兼容迁移脚本。
 
 更新前结束活动任务，保留需要的状态与备份。源码、候选分发包、实际安装和真实业务验证是不同范围，交付时分别说明。
+
+## 发布与便携 App
+
+tag 驱动的 npm、Chrome ZIP 和 macOS 分发流程见[发布说明](releasing.md)。`npm run package:macos` 生成内置 Node 的便携 App ZIP；未配置 Developer ID 时文件名明确标注 unsigned，不能将其视为已公证版本。
