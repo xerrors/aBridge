@@ -1,113 +1,62 @@
 name: CI
-
 on:
   push:
   pull_request:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  UV_VERSION: "0.13.5"
-
 jobs:
-  python:
-    name: Python ${{ matrix.python }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  check:
+    name: Node / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: ${{ env.UV_VERSION }}
-          python-version: ${{ matrix.python }}
-          enable-cache: true
-      - run: make sync
-      - run: make lint test web-check
-      - name: Build and smoke-test distributions
-        if: matrix.python == '3.12'
-        run: make build
-      - name: Check source archive boundaries
-        if: matrix.python == '3.12'
-        run: |
-          uv run --no-sync python - <<'PY'
-          from pathlib import Path, PurePosixPath
-          import tarfile
-
-          archive = next(Path("dist").glob("*.tar.gz"))
-          excluded = {".git", ".local", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", "runtime"}
-          with tarfile.open(archive) as source:
-              for member in source.getmembers():
-                  parts = PurePosixPath(member.name).parts[1:]
-                  assert not any(part in excluded or part.startswith("._") for part in parts), member.name
-                  assert not parts or parts[-1] not in {".env", ".DS_Store"}, member.name
-          PY
-      - name: Retain Python distributions
-        if: matrix.python == '3.12'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: python-distributions
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-  macos:
-    name: Native Mac build
-    runs-on: macos-latest
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          version: ${{ env.UV_VERSION }}
-          python-version: "3.12"
-          enable-cache: true
-      - run: make sync
-      - name: Install the locked Mac driver
-        run: uv sync --locked --extra dev --extra macos
-      - name: Check the real embedded SDK without desktop interaction
-        run: uv run --no-sync pytest -q tests/sdk/test_cua_native_contract.py tests/sdk/test_cua_records.py tests/sdk/test_uniffi_async_callbacks.py tests/client/test_macos_access.py
-      - name: Build, verify signature, and check unchanged-build reuse
-        run: |
-          uv run --no-sync python - <<'PY'
-          import hashlib
-          import os
-          from pathlib import Path
-          import plistlib
-          import re
-          import subprocess
-          import sys
-
-          bundle = Path(os.environ["RUNNER_TEMP"]) / "aBridge.app"
-          command = [
-              sys.executable, "native/build.py", "--output", str(bundle),
-              "--python", sys.executable, "--project", str(Path.cwd()),
-          ]
-          subprocess.run(command, check=True)
-          executable = bundle / "Contents/MacOS/aBridge"
-          before = (hashlib.sha256(executable.read_bytes()).hexdigest(), executable.stat().st_mtime_ns)
-          subprocess.run(command, check=True)
-          after = (hashlib.sha256(executable.read_bytes()).hexdigest(), executable.stat().st_mtime_ns)
-          assert before == after, "Unchanged native inputs must preserve the installed executable"
-          subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], check=True)
-          info = plistlib.loads((bundle / "Contents/Info.plist").read_bytes())
-          assert info["LSMinimumSystemVersion"] == "14.0"
-          build_info = subprocess.check_output(["xcrun", "vtool", "-show-build", str(executable)], text=True)
-          targets = re.findall(r"^\s*minos\s+([0-9.]+)\s*$", build_info, re.MULTILINE)
-          assert targets and all(target.split(".")[:2] == ["14", "0"] for target in targets), build_info
-          PY
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - name: Typecheck Swift shell
+        if: runner.os == 'macOS'
+        run: swiftc -typecheck apps/desktop/native/aBridge.swift -framework AppKit -framework ApplicationServices
+      - name: Retain local package candidates
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-candidates
+          path: |
+            dist/releases/*.tgz
+            dist/releases/*.zip
+          if-no-files-found: error
+          retention-days: 7
+  commits:
+    name: Commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Validate pull request commits
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run commitlint -- --from "$BASE_SHA" --to "$HEAD_SHA" --verbose

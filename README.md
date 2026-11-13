@@ -1,88 +1,87 @@
-# aBridge
+<p align="center"><img src="docs/assets/brand/bridge.svg" width="84" alt=""><br><img src="docs/assets/brand/wordmark.svg" width="260" alt="aBridge"></p>
 
-> **换机或继续开发：先读 [交接文档](docs/handoff.md)。** 最新 Shell 授权拒绝与非浏览器执行稳定性报告仍未关闭；历史受控验收不代表当前全部能力稳定。
+通过 MCP，让 Agent 使用你授权的电脑和浏览器。
 
-通过 MCP 连接你自己的电脑。独立 Python 服务管理账户、设备和 Agent 授权，macOS 菜单栏客户端负责本机执行、依赖与权限检查、暂停和停止。
+| 客户端                  | 能力                       | 运行环境                   |
+| ----------------------- | -------------------------- | -------------------------- |
+| **aBridge App**         | 屏幕、键鼠、Shell、文件    | Apple Silicon，macOS 14+   |
+| **aBridge for Browser** | 网页观察、导航、点击和填充 | Chromium 扩展，Chrome 116+ |
 
+两种客户端独立注册为设备并连接 Server。浏览器扩展复用当前 Profile 的网站登录态，不依赖 App。Server、桌面运行时、扩展和管理台统一使用 TypeScript，macOS 界面由 Swift 提供。
 
-## 开发运行
+当前为 **0.3 开发候选版本**。本仓库尚未发布可直接安装的公共 npm 包、公证 App 或扩展商店版本；源码和本地分发包的运行方式见下文。
 
-需要 Python 3.12–3.14 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+## 启动 Server
+
+需要 Node.js 26.7.0–26.x 与 npm。在仓库根目录运行：
 
 ```sh
-uv sync --frozen --extra dev
-uv run --frozen abridge user create admin
-uv run --frozen abridge serve
+npm ci
+npm run build
+npm start -- --web
 ```
 
-服务配置使用 `ABRIDGE_HOST`、`ABRIDGE_PORT` 和 `ABRIDGE_DB`，默认分别为 `127.0.0.1`、`8765` 和 `~/.local/share/abridge/server.db`。服务端不需要 `macos` extra，也不会加载 Cua 原生库。
+CLI 默认启动 Server，`--web` 打开已构建的管理台，不启动前端开发服务器。空数据库首次启动时，仅回环访问可以用一次性配置链接创建管理账户。之后使用管理账户登录，在管理台维护设备和 Agent 授权。
 
-打开 `http://127.0.0.1:8765`。登录后添加设备，再为调用方创建独立 Agent 授权。管理账户、设备 Key 和 Agent Key 各有用途，不能互换。
+默认监听 `127.0.0.1:8765`。状态目录、数据库、反向代理与无图形环境的配置见 [安装与维护](docs/deployment.md)。Server 使用 Node 内置 SQLite；其 API 当前仍为 Release Candidate，具体约束见 [架构](docs/architecture.md)。
 
-## macOS 客户端
+## 安装客户端
 
-当前内部客户端支持 Apple Silicon、macOS 14+，需要 uv 和 Swift 工具链；运行时支持 Python 3.12–3.14，首次安装创建 Python 3.12 环境。浏览器能力另需已安装的 Google Chrome。
+### 浏览器扩展
+
+先执行 `npm run build`，在 `chrome://extensions` 开启开发者模式，加载输出的 `dist/browser/`。源目录中的 TypeScript 需要构建后使用。
+
+点击扩展图标，在设置中填写 Server 地址、管理账户和浏览器名称，完成一次绑定。每个 Profile 中的扩展安装实例是独立设备；在管理台把它加入 Agent 授权并选择 `browser` 能力。
+
+工具栏面板提供状态、暂停/恢复、停止和设置。浏览器退出时设备离线，重新打开后自动重连；扩展不能自行启动已退出的浏览器。设备授权持久保存，网站登录仍受站点会话规则限制。详见 [浏览器客户端](docs/browser-profile-design.md)。
+
+### macOS App
+
+构建安装需要受支持的 Node.js、npm 和 Xcode Command Line Tools：
 
 ```sh
-python3 deploy/install_client.py
+npm run build
+npm run desktop:install
 open "$HOME/Applications/aBridge.app"
 ```
 
-安装器复制独立运行时，并按锁文件安装 `macos` extra 中的内部 `cua-driver==0.46.1+abridge.1`。它基于固定上游源码，修复中文 Chrome 授权弹窗重复计入候选窗口的问题；补丁、来源与哈希见 [SDK 产物](vendor/cua-driver/README.md)。aBridge 在设备 Python 进程内创建 SDK，不安装原 Cua CLI、CuaDriver.app 或另一套 daemon，不依赖 Ego、Node、本地模型、Rust 或捆绑浏览器引擎。
+安装器把 Node、已构建 CLI 和桌面依赖复制到当前用户的独立运行目录。Swift App 启动该 Node CLI；Cua 官方 Node SDK 仅在桌面进程中按需加载，Server 不需要原生驱动。运行时不依赖源码目录。
 
-在客户端填写服务地址与设备 Key，显式选择能力并连接。界面分别显示 Python、驱动版本与加载状态、系统权限、Chrome 安装与专用窗口连接状态；“重新检查”刷新报告，“安装 / 修复”在本机按哈希锁恢复依赖，“安装说明”提供缺失项指引。已有配置可用“重试连接”复用本机私有凭据文件，运行不读取 Keychain。
-
-设备 Key 保存在应用支持目录的 `credentials/device.json`，状态与凭据目录权限为700，文件为600，仅限当前所有者；写入使用原子替换并绑定服务地址。旧绑定缺文件时需重新绑定或由操作者正规轮换后保存，不自动读取旧 Keychain。重新绑定与依赖修复均保留本机暂停状态。
-
-原生输入不变时安装器跳过重建；`--runtime-only` 只更新 Python。当前为 ad hoc 签名，原生更新后需按实际 App 身份核对屏幕录制和辅助功能权限。[安装与维护](docs/deployment.md)
+在管理台添加电脑设备，将 Device Key 填入 App，启用所需能力。屏幕与键鼠操作还需为实际安装的 App 授予 macOS 屏幕录制和辅助功能权限。系统权限、截图和输入效果须在该 App 环境中验证，不能用构建或替身测试代替。详见 [安装与维护](docs/deployment.md)。
 
 ## MCP 接入
+
+在管理台创建 Agent Key，选择它可访问的设备、能力和期限。将以下信息填入支持 Streamable HTTP 的 MCP 客户端：
 
 ```json
 {
   "url": "http://127.0.0.1:8765/mcp",
-  "headers": {"Authorization": "Bearer <AGENT_KEY>"}
+  "headers": { "Authorization": "Bearer <AGENT_KEY>" }
 }
 ```
 
-调用顺序为 `devices_list` → `session_open` → 工具操作 → `session_close`。有效能力取设备授权、Agent 授权、本机开关、驱动与系统就绪状态的交集。`browser` 是独立能力，旧配置和旧 Grant 不会自动加入它。Yuxi 使用个人 Bearer 连接，见 [Yuxi 接入](docs/yuxi-integration.md)。
+按 `devices_list` → `session_open` → 工具操作 → `session_close` 使用。Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不可互换。设备类型、授权、本机开关、系统权限和连接状态共同决定有效能力。
 
-当前有 17 项 MCP 工具：
+| 范围       | 工具                                                                                     |
+| ---------- | ---------------------------------------------------------------------------------------- |
+| 设备与会话 | `devices_list`、`device_get`、`session_open`、`session_close`                            |
+| 桌面       | `computer_open`、`computer_apps`、`computer_windows`、`computer_observe`、`computer_act` |
+| 浏览器     | `browser_open`、`browser_observe`、`browser_act`                                         |
+| Shell      | `command_execute`、`command_status`、`command_cancel`                                    |
+| 文件       | `files_list`、`file_read`、`file_write`                                                  |
 
-| 用途 | 工具 |
-| --- | --- |
-| 设备与会话 | `devices_list`、`device_get`、`session_open`、`session_close` |
-| 桌面与窗口 | `computer_apps`、`computer_windows`、`computer_observe`、`computer_act` |
-| 浏览器 DOM | `browser_open`、`browser_observe`、`browser_act` |
-| Shell | `command_execute`、`command_status`、`command_cancel` |
-| UTF-8 文件 | `files_list`、`file_read`、`file_write` |
+导航和动作返回下一步可使用的观察；短命令直接返回输出，长命令才需继续等待。接口时效、分页和失败语义见 [架构与执行契约](docs/architecture.md)。
 
-窗口操作先选 PID 和 window_id，再观察 AX 元素并使用返回的 `element_ref`。省略目标的桌面观察保留截图像素操作入口，并检查前台窗口变化。观察有效期为 10 秒；动作后重新观察，过期或跨会话引用会被拒绝。
-
-浏览器默认等待本机选择并批准现有 Chrome 窗口，再“接入当前页”以复用登录态；隔离临时 profile 仅在本机显式选择时使用，不自动回退。现有模式只绑定批准窗口的唯一活动标签，后续不跟随用户切换标签；`browser_open` 会导航这个批准页。远程会话结束会清理自己的引用，本机连接可依次复用，最长 8 小时、空闲 30 分钟后需重新接入；暂停和停止会结束连接，不关闭个人 Chrome 或原页。模型不能选择任意 Profile、PID 或路径，Cookie 留在浏览器内。选择方法见 [安装与维护](docs/deployment.md)。
-
-额外的小窗坐标点击实测由 SDK 解析为 AX 背景命中；物理 CGEvent 路由尚未业务实测，不将坐标请求本身当作硬件输入证明。
-
-DOM 点击首次即使用明确的合成事件；网页可能拒绝。填表通过驱动的 `insert_text` 路由替换字段。动作后核对业务状态；`executed` 仅表示执行器回执，结果未知时不能换操作 ID 盲重试。本轮手工测试只用普通自有窗口及明确 PID/window_id，不采集整屏。
-
-## 验证与构建
+## 开发
 
 ```sh
-make check
-make build
+npm run check
 ```
 
-`make check` 包含依赖同步、Python lint、格式、测试、前端语法检查及构建冒烟检查。开发检查需要 Node.js，产品运行不依赖 Node。CI 另验证发行包边界、macOS 原生编译与重复构建，并仅用真实 SDK 做不接触桌面的生命周期检查。
+开发、提交和验证要求见 [贡献指南](.github/CONTRIBUTING.md)。
 
-- [开发约定](CONTRIBUTING.md)
-- [架构与模块职责](docs/architecture.md)
+- [架构与执行契约](docs/architecture.md)
+- [安装与维护](docs/deployment.md)
 - [设计与资产](docs/design.md)
-- [验证范围](docs/verification.md)
-- [后续工作](docs/roadmap.md)
-- [安全与已知边界](SECURITY.md)
-- [变更记录](CHANGELOG.md)
-- [第三方许可](THIRD_PARTY_NOTICES.md)
-
-服务限定单进程、单 worker。Shell 与文件遵守当前系统用户权限，不构成沙盒。跨机器通信使用 HTTPS/WSS 或 SSH 隧道。
-
-项目按内部使用交付，尚未指定开源许可证。CI 负责检查和构建，不自动发布或部署到用户机器。
+- [安全边界](.github/SECURITY.md)
+- [变更记录](docs/changelog.md) · [第三方许可](docs/third-party-notices.md)

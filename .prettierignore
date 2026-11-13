@@ -1,0 +1,9 @@
+.local/
+node_modules/
+dist/
+build/
+docs/assets/**/*.svg
+docs/assets/**/*.png
+apps/desktop/native/assets/
+apps/browser/public/icons/
+package-lock.json

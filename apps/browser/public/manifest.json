@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "aBridge for Browser",
+  "description": "将当前浏览器 Profile 作为独立设备连接 aBridge Server，复用登录态执行任务。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsc30AOZ9SCtCjvSopXDtrA39ww2QOtcjgG/fAf+DJbKUDG8wP79vLx+TlfMXOKO5gP1vOfYilm8m+evfq6s9LROU9vvVIoI7B3hlYKFP+WerN+UHgejtm8+wLV1c8bVX5/sDU/YtRcb+lz32meP5VGKdJ8H28wGc073O4iuGYqKX3H2SvD5ysbUBCmBFFNbKhlEGTrRb0+XcDLwSAXLbqZml7p3yaaX2glBfRN06jd5blO1x9TKOrIkWh6XBagrDlk08wDJ6vag8tNrzWTTOC3nnCnHZIxKMcc+9gR14kjbsQ8YUZcGwAVzz9HtQeh6Hi9t7VSI7QkevFeaCL1mUJQIDAQAB",
+  "permissions": ["alarms", "debugger", "storage", "tabs"],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_title": "aBridge for Browser",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "minimum_chrome_version": "116",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https: wss: http://localhost:* http://127.0.0.1:* http://[::1]:* ws://localhost:* ws://127.0.0.1:* ws://[::1]:*"
+  },
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

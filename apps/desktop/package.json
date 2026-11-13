@@ -1,0 +1,14 @@
+{
+  "name": "@abridge/desktop",
+  "private": true,
+  "type": "module",
+  "optionalDependencies": {
+    "@trycua/cua-driver": "0.47.8"
+  },
+  "dependencies": {
+    "@abridge/protocol": "*",
+    "@abridge/shared": "*",
+    "ws": "8.23.0",
+    "zod": "4.6.7"
+  }
+}

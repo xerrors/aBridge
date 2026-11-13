@@ -1,0 +1,48 @@
+{
+  "name": "@abridge/development",
+  "private": true,
+  "engines": {
+    "node": ">=26.7.0 <27"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "commitlint": "commitlint --config tools/config/commitlint.json",
+    "build": "node --import tsx tools/build.ts",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
+    "test": "node --import tsx tools/test.ts",
+    "package": "node --import tsx tools/package-release.ts",
+    "package:check": "node --import tsx tools/check-package.ts",
+    "check": "npm run format:check && npm run architecture:check && npm run typecheck && npm test && npm run package && npm run package:check",
+    "start": "node dist/server/cli.js",
+    "desktop:build": "node --import tsx tools/build-native.ts",
+    "desktop:install": "node --import tsx tools/install-desktop.ts",
+    "icons": "node --import tsx tools/generate-icons.ts",
+    "hooks": "git config --local core.hooksPath .github/hooks",
+    "architecture:check": "node --import tsx tools/check-architecture.ts"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "@types/chrome": "0.3.7",
+    "@types/node": "26.6.6",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
+    "fflate": "0.8.3",
+    "prettier": "3.10.1",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  },
+  "version": "0.3.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "prettier": {
+    "printWidth": 110,
+    "proseWrap": "preserve",
+    "tabWidth": 2
+  }
+}

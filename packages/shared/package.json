@@ -1,0 +1,8 @@
+{
+  "name": "@abridge/shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./paths": "./src/paths.ts"
+  }
+}

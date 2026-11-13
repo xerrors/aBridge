@@ -1,102 +1,107 @@
-# 架构与模块职责
+# 架构与执行契约
 
-0.2.0 由一个 Python 服务和一个 macOS 菜单栏客户端组成。服务提供管理 API、MCP 与设备 WebSocket；客户端主动出站连接，不开放本机入站执行端口。
+## 组成与职责
+
+aBridge 使用统一 TypeScript 代码实现 Server、桌面运行时、浏览器扩展与管理台，Swift 只负责 macOS 壳与系统权限 UI。Server 和两种客户端分别部署：App 提供桌面、Shell 和文件，扩展提供浏览器，两者不互为运行前提。
 
 ```text
-Yuxi / MCP 客户端 ─ Agent Key ─ /mcp ─┐
-管理台 ─ 管理登录会话 ─ /api ─────────┤ aBridge 服务
-                                     │ SQLite + 在线设备路由
-                                     └─ 设备 WebSocket ─ Mac App
-                                                        └─ Python 设备进程
-                                                           ├ Cua SDK 内嵌运行时
-                                                           │  ├ 屏幕 / 窗口 AX
-                                                           │  └ 临时或本机批准的现有 Chrome 页面
-                                                           ├ Shell
-                                                           └ UTF-8 文件
+MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
+管理台（预构建 Preact） ─ /api ────────┤ Fastify Server
+                                       │ SQLite + 内存连接/结果缓存
+                                       ├─ /ws/device ─ Node 桌面客户端
+                                       │                ├ 官方 Cua SDK：screen / input
+                                       │                ├ Shell
+                                       │                └ UTF-8 文件
+                                       └─ /ws/browser ─ TypeScript 浏览器扩展
+                                                        └ Profile 自有任务标签
 ```
 
-## 服务端
+可运行产品位于 `apps/`；`packages/` 只包含共享代码。各应用拥有自己的依赖声明、源码与测试，根目录的 npm scripts 协调构建。跨应用共享代码通过 workspace 的具名 exports 引用，生产构建将内部包内联，分发不要求消费者执行 TypeScript 或安装 workspace。
 
-| 模块 | 职责 |
-| --- | --- |
-| `server.py` | HTTP 入口、管理会话、设备认证和连接生命周期 |
-| `mcp_gateway.py` | 官方 MCP SDK 的 17 项工具声明、Agent 认证和图片编码 |
-| `runtime.py` | 权限交集、会话租约、路由、去重、取消和结果状态 |
-| `storage.py` | SQLite 身份、授权、会话与操作元信息 |
-| `protocol.py` | 服务与设备共用的能力、工具映射及观察有效期 |
-| `static/` | 无前端构建依赖的管理台与品牌矢量资产 |
+| 模块                                | 职责                                  |
+| ----------------------------------- | ------------------------------------- |
+| `apps/server/src/cli.ts`            | Server 唯一命令入口                   |
+| `apps/server/src/server.ts`         | HTTP、管理认证、MCP 与 WebSocket 组合 |
+| `apps/server/src/control.ts`        | 连接、会话和操作状态的唯一所有者      |
+| `apps/server/src/store.ts`          | SQLite schema、事务与操作元信息       |
+| `apps/server/src/mcp.ts`            | 工具与原生内容编码                    |
+| `apps/server/src/transport.ts`      | 有界 WebSocket 发送与关闭             |
+| `apps/desktop/src/cli.ts`           | Desktop 唯一命令入口                  |
+| `apps/desktop/src/runtime.ts`       | 配置绑定、离线状态与进程生命周期      |
+| `apps/desktop/src/local-control.ts` | 本机 Socket、JSON framing 与资源清理  |
+| `apps/desktop/src/client.ts`        | 设备连接、执行调度与授权状态          |
+| `apps/desktop/src/computer.ts`      | 观察引用及桌面动作契约                |
+| `apps/desktop/src/native.ts`        | 官方 SDK 按需同进程适配               |
+| `apps/desktop/src/executor.ts`      | 桌面、Shell 和文件执行                |
+| `apps/desktop/native/`              | Swift 壳、权限 UI 与原生资源          |
+| `apps/browser/`                     | 浏览器设备连接、任务页与 DOM 操作     |
+| `apps/web/`                         | Preact 管理台                         |
+| `packages/protocol/`                | 共享 schema、能力与协议常量           |
+| `packages/shared/`                  | Node 数据目录约定                     |
 
-管理登录、设备 Key 与 Agent Key 不可互换。主体与设备归属从认证和持久关系取得，不接受模型自报身份。每次执行重新检查所有者、设备、Grant、会话、能力和当前连接代次。
+共享线协议版本为 `abridge/1`。进程边界使用运行时 schema 校验，包内使用 strict TypeScript 和未使用声明检查；类型声明不替代不可信消息的解析。软件版本只从根 `package.json` 读取，扩展 manifest 和分发版本在构建时生成。
 
-控制会话的闲置租约为 300 秒；获准派发的工具请求和在途操作续租，最长不越过 Agent 授权期限。已过期会话不能续活；`session_expired` 只表示真正到期，已停止会话返回 `session_stopped`，本机仍暂停时明确返回 `device_paused`。设备连接的 30 秒心跳租约和操作的 30 秒开始期限与此分开，观察引用仍为 10 秒。
+Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状态按请求隔离，设备操作会话由 `ControlService` 管理，二者不是同一个生命周期。管理台是预构建 Preact 11 静态产物，正常运行不启动前端开发服务器。
 
-SQLite 和在线设备连接由同一服务进程持有，仅支持一个 worker。存储不交给并发线程复用；异步边界保持明确。服务重启将未完成操作标记为结果未知，没有动作重放队列。服务安装不选择 `macos` extra，导入服务模块也不加载 Cua 原生库。
+持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`。其调用同步占用事件循环；Node 26.7.0 文档将该 API 标为 **Stability 1.2 — Release Candidate**，不是稳定 API。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 官方文档](https://nodejs.org/download/release/v26.7.0/docs/api/sqlite.html)
 
-## 设备端
+## 身份与授权
 
-| 模块 | 职责 |
-| --- | --- |
-| `client.py` | 出站连接、心跳、本机控制、能力上报、持久去重和会话清理 |
-| `credentials.py` | 所有者私有文件中的设备凭据、原子写入、权限与服务地址校验 |
-| `macos_access.py` | 接收本机选定连接文件的书签，以公开 CoreFoundation API 持有和释放访问作用域 |
-| `executor.py` | 将工具路由到 Cua、当前用户级 Shell、UTF-8 文件；转换驱动异常 |
-| `cua_driver.py` | 固定 SDK 的同进程适配、目标与引用绑定、AX/DOM 操作及资源回收 |
-| `diagnostics.py` | 无客户端第三方依赖也可启动的只读运行环境报告 |
-| `native/aBridge.swift` | 菜单栏 UI、权限入口、接管监视、安装修复及子进程管理 |
-| `native/build.py` | 可复现构建输入、版本、签名校验和原生构建缓存 |
-| `deploy/` | 明确调用的源码安装与可选内网转发工具 |
+管理账户负责维护设备和 Agent 授权。Device Key 用于设备连接；Agent Key 用于 MCP 调用，二者不可互换。设备类型限制能力上限：`computer` 为 `screen`、`input`、`shell`、`files`，`browser` 仅为 `browser`。
 
-Cua 锁定为内部 `cua-driver==0.46.1+abridge.1`，基于固定上游源码修复中文 Chrome 授权弹窗的候选窗口过滤，补丁与产物信息保存在 `vendor/cua-driver/`。当前产物仅支持 Apple Silicon/macOS 14+。设备端通过公开 configured SDK 构造入口加载当前 Python 进程内的原生库，并检查 embedded 模式与空 socket；不安装原 CLI、CuaDriver.app、第二套 daemon、模型服务或浏览器引擎。SDK 的浏览器调用限制在固定工具与字段内，模型不能提交任意 JavaScript 或 CDP 方法。
+有效能力取设备授权、Agent 授权、会话请求、本机开关及实际就绪状态的交集。每次执行重新核对所有者、撤销与过期状态、会话、能力和当前连接代次。桌面输入会话在同一设备上独占，浏览器任务分别持有自建标签页。
 
-固定驱动在部分窗口截图、AX 窗口映射和键盘投递路径中使用私有 SkyLight/AX 符号；窗口截图也有系统 `screencapture` 命令的兼容路径。同进程 SDK 不等于只用公开 API 或绝不启动短时子进程。macOS 14 是当前产物的最低构建目标，不代表所有系统版本和截图分支均已真实验收；这些依赖及兼容性代价见技术栈章节。
+控制会话的闲置租约为 300 秒，获准请求和在途操作续租，但不越过 Agent 授权期限。设备连接心跳期限为 30 秒，操作开始期限也是独立的 30 秒。已结束的会话不能续活。
 
-原生 SDK 与异步授权回调使用同一 asyncio 事件循环。构造前通过 UniFFI 官方公开 setter 绑定循环；固定 wheel 仅在生成绑定模块导出该函数，适配边界明确保留这一依赖。活运行时禁止跨循环复用，关闭后新运行时重新绑定。授权会话身份使用当前 driver 的公开 `runtime_scope_prefix()` 与本机准备会话名精确合成，不信任请求自报前缀或后缀匹配。
+| 错误                          | 含义与恢复                       |
+| ----------------------------- | -------------------------------- |
+| `session_expired`             | 真正闲置到期；新建会话           |
+| `session_stopped`             | 会话已停止；新建会话             |
+| `session_connection_lost`     | 设备连接中断；恢复在线后新建会话 |
+| `session_connection_replaced` | 当前连接被替换；新建会话         |
+| `session_server_restarted`    | Server 重启；新建会话            |
+| `device_paused`               | 本机暂停；由操作者在客户端恢复   |
 
-Swift App 直接启动 Python 子进程，App 负责系统权限 UI。内嵌 SDK 不另外发起授权弹窗。权限归属与实际可操作性须以已安装 App 身份验证；从终端运行相同 Python 的结果只说明终端责任链。
+重新连接后必须取得新观察，不能盲目重放结果未知的动作。
 
-设备运行凭据只读 `state_dir/credentials/device.json`，内容为服务地址与设备 Key。状态目录和凭据目录要求当前所有者700、普通文件600；写入先收紧目录再原子替换，读取拒绝符号链接、错误所有者、不安全权限和不匹配的服务地址。公开 save/load/delete 接口供本机安装与合法迁移使用，不输出秘密。缺文件明确要求重新绑定或由操作者轮换后保存，不回退 Keychain；配置、启动和解绑均不依赖原生凭据助手。解绑删除本机文件，在线时同时请求服务撤销，未确认时如实提示管理台确认。
+## 桌面操作
 
-## 能力与依赖
+`computer_apps` 默认返回运行中的应用，`query` 可查找未启动的已安装应用。`computer_open(bundle_id=...)` 核对应用身份后启动或激活一次，返回目标窗口观察，需要 `input` 与 `screen`。应用已启动但观察失败时保留启动结果，不自动再次启动。
 
-能力为 `screen`、`input`、`browser`、`shell`、`files`。有效能力取设备 Grant、Agent Grant、本机开关和实际就绪条件的交集；浏览器为独立授权，旧配置与旧 Grant 不自动扩权。前台桌面输入会话保持独占。
+`computer_windows` 按应用 PID 列出窗口。带 `pid` 与 `window_id` 的 `computer_observe` 选择该窗口；省略目标时复用会话已选窗口，无目标返回 `target_required`。只有显式 `desktop=true` 才获取整屏图像，并且不能与窗口目标同时指定。空窗口列表不能单独证明权限或 Space 问题。
 
-本机报告分别保留 Python 版本与依赖、SDK 安装版本与加载状态、系统权限、Chrome 安装版本及活跃专用窗口数量。`permissions.checked=false` 表示尚未检查，不能解释为用户拒绝授权。Chrome 已安装表示可检查连接条件，活跃会话才表示已绑定专用窗口。
+观察包含有界控件/文本列表、`observation_id` 和可选原生图片，支持 `query` 聚焦。桌面引用最长有效 120 秒，动作后失效。AX 动作固定使用观察中的元素引用；像素动作还需要该观察的截图与坐标，并核对前台目标。目标变化或证据不足时拒绝，不转投其他窗口。
 
-依赖安装与修复仅由本机 UI 或明确调用的安装器执行，MCP 不提供安装或扩大授权的接口。暂停持久保存；重连和依赖修复不会自动解除暂停。
+`computer_act` 默认附带 `result.observation`，可直接继续操作；`observe_after=false` 仅执行动作。复合观察需要同时具备 `input` 与 `screen`。动作已执行而后观察失败时分别返回动作结果与 `observation_error`，只补观察，不重放动作。
 
-`desktop_active_until` 只由当前在途 `input` 操作计算，读取应用、窗口、AX 或截图不设置标记；完成、异常、取消及关闭后及时清除，并行输入按仍在途的操作计算。Native 不监视普通鼠标移动，仅在本机鼠标按下或按键且存在输入活动时请求条件暂停；设备进程在真正暂停前再次检查在途操作，忽略过时请求。手动暂停始终生效。真正暂停时将 `pause_reason={source: manual|desktop_input, at: Unix时间}` 保存到配置和状态，恢复时清除；旧暂停没有原因记录时保持未知，不能从结果反推具体事件。
+## 浏览器操作
 
-本机菜单和设置窗口均提供明确的“恢复访问”。恢复动作仅在浏览器已启用、使用现有 Profile 且批准目标仍有效时接续本机准备连接；目标缺失时只恢复其他已授权能力，要求重新选择 Chrome 窗口。远程请求不能恢复暂停或触发前台准备。关闭远程会话本身不会设置本机暂停。
+每个扩展安装实例注册为独立设备；Profile 由会话的 `device_id` 确定。`browser_open(url=...)` 仅导航自有任务标签，并固定附带新页面观察，不公开关闭观察的选项。`browser_act` 支持明确的 `click`/`fill`，默认附带动作后的新观察。`browser_observe` 用于刷新、聚焦查询或检查仍在加载的同一任务页。
 
-## 观察与动作
+导航加载超时保留任务页，返回 `navigation_state=loading`。导航等待与后观察（含 debugger 初始化）共享 15 秒内部预算；后观察遇导航竞态，最多只读重试两次，额外预算不超过 2 秒。不重新打开标签，也不重放点击或填充。该内部预算不等于标签创建、导航提交或 DOM 动作的总执行期限。
 
-`computer_apps`、`computer_windows` 用于选择 PID 与 window_id。带这两个目标的 `computer_observe` 返回窗口 AX 树、元素引用和可选截图；`computer_act` 始终对该窗口操作，前台变化不会让动作转投另一窗口。上游不支持的背景动作会拒绝，不自动抢前台。
+浏览器观察文本 JSON 总预算约 7000 字符，不含独立图片；正文优先且上限 4000 字符，再分配交互元素和链接。`query` 聚焦已加载页面中的文本。截断不表示内容不存在，未显示字段也不能用于推断站点全部能力。
 
-窗口列表请求包含 SDK 可报告的离屏窗口。空列表同时报告请求 PID、进程是否存在及 `empty_reason`，不据此猜测 Space 或权限问题；`process_running` 仅说明 PID 存在，不证明应用身份。目标应从新鲜列表取得，不沿用旧 PID/window_id。现有 Chrome 的诊断和本机准备还会核对批准窗口是否仍由该进程实例报告，缺失时为 `window_unavailable`、`selection_ready=false`，结束旧 owner，不自动选择别的窗口。
+浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。点击使用显式合成 DOM 事件，填充替换字段并触发 `input`/`change`；站点可能拒绝。远程接口不接受任意 JavaScript、原始 CDP 或 Cookie 导出。详细生命周期见 [浏览器客户端](browser-profile-design.md)。
 
-省略目标的 `computer_observe` 返回主屏视觉观察，不提供 AX 树。像素动作使用返回截图的坐标与 capture 信息；适配层在截图前后及动作前核对前台 PID、窗口 ID 和标题。变化返回 `focus_changed`，缺少可靠窗口证据返回 `focus_unavailable`。这层检查由 aBridge 明确实现，不能仅凭 SDK 的 capture_id 推定。
+## Shell、文件与结果
 
-浏览器默认 `existing_profile` 待本机选择，缺少选择时不自动创建隔离浏览器；`isolated` 仅为显式可选模式。本机 `browser-targets` 只读列出 Chrome 窗口，再以 PID/window_id、进程实例指纹和明确批准保存到配置。调用 SDK prepare 前即核对批准与新鲜身份，auth-host 再核对 SDK 的精确资源和摘要；模型无法提交目标、Profile 路径或批准值。现有模式只绑定该窗口唯一明确的活动标签，随后固定它，不因用户换标签而漂移。SDK 不提供本路径的新建/关闭任务 tab 接口；操作者应先准备专用窗口，`browser_open` 导航的是批准页。
+`command_execute` 默认等待最多 15 秒，提前完成立即返回输出和退出码；等满则返回同一 `operation_id` 的当前状态，命令继续运行。`timeout` 独立限制实际执行时间，范围为 1–120 秒。`command_status` 默认也最多等 15 秒，显式 `wait_seconds=0` 立即读取。等待结束或 HTTP 调用方断开不会取消或重新派发命令。取消等待确认，尚未确认时返回 `cancel_requested`。
 
-`browser_observe` 返回 DOM 语义元素，可选截图默认关闭。`browser_act` 点击首次即走 `dom_event` 合成事件，填充走 `insert_text` 并替换字段；站点可能拒绝，需要后续观察验证。Cookie 仅由 Chrome 用于登录态，不向模型导出。现有 Profile 连接默认后台，不能安全后台连接时拒绝，不静默激活其他窗口。
+Shell 完整 JSON 默认返回预算 `output_limit_chars=6000`，可设为 1024–12000。`output_truncated` 表示还有保留文本，使用原操作 ID 与 `next_output_offsets` 继续读取；偏移按解码字符计算。`capture_truncated` 表示执行捕获时已丢失内容，分页无法恢复。运行中的滚动窗口可报告 `output_unavailable_before`，最终结果可能仍保留相应前缀。分页只读缓存。
 
-现有 Profile 另需本机明确执行 `browser-prepare`。这一步可请求前台连接并由操作者允许 Chrome 提示，创建一个有界的本机 owner SDK 上下文。它以公开 trusted-session 句柄请求最长 8 小时、空闲 30 分钟的授权；到期后结束，不以心跳或读取页面保活。MCP 不能创建或重新准备这个连接，未准备时浏览器不作为可用能力上报。
+文件工具仅处理 UTF-8 文本与目录列表，遵循当前用户的系统文件权限。读写正文上限为 1 MiB；写入已存在文件需要显式 `overwrite=true`。Shell 与文件能力不提供隔离沙箱。
 
-若系统拒绝读取 Chrome 连接元信息，本机 UI 允许操作者用系统文件选择器仅选 `DevToolsActivePort`。Native 持久保存只读安全作用域书签，并生成所有者600的隐式传递书签；Python 启动和本机准备连接前读取传递书签，通过公开 CoreFoundation 无 UI 解析，再显式持有作用域。成功替换后才释放旧作用域，退出时在 SDK 关闭后释放当前作用域；无效、过期或拒绝状态只影响浏览器，不使 Shell/AX 退出。书签状态不能代替真实受保护文件访问和 DOM 业务验收。
+操作按稳定 `operation_id` 去重，同 ID 改参数会被拒绝。设备保存执行意图和终态，恢复后不自动重放。Server 仅短期缓存返回内容；SQLite 不保存命令、输入、文件正文或截图。服务重启后未完成操作标为结果未知。
 
-所有观察按 aBridge 会话绑定，10 秒失效；动作消费观察，跨会话或旧引用拒绝。桌面和隔离浏览器分别使用自己的 SDK 会话。现有 Profile 的远程会话独占借用本机 owner 上下文，仍单独保存观察、引用和操作；关闭或正常断线释放远程状态，健康的本机连接可供下一个会话使用。取消或失去回执的在途浏览器写操作会使连接失效并清理，要求本机重新准备，不让未知动作污染后续会话。
+图片通过原生 MCP `ImageContent` 返回，不在 JSON 中重复嵌入 base64。原始图片上限为 4 MiB，设备 WebSocket 消息上限为 8 MiB。`executed` 仅表示执行回执，业务结果还需检查退出码、文件内容或后续观察。取消和关闭不能回滚已发生的副作用。
 
-暂停、停止、解绑、客户端退出、关闭浏览器能力、变更目标或进程实例失效会结束本机 owner 上下文；租约过期和连接断开均先清理远程任务与引用。隔离模式回收自建 Chrome 与临时 profile；现有模式保留个人 Chrome 和原有标签。更换本机目标只关闭涉及浏览器的会话，不终止独立 Shell 或桌面会话。
+## 运行环境与打包
 
-## 执行与结果
+运行环境为 Node.js 26.7.0–26.x。Server 分发不携带桌面原生 SDK；桌面运行时按需动态加载官方 `@trycua/cua-driver@0.47.8`，通过显式构造入口并核对 embedded 模式与空 socket 路径，避免意外转为独立 daemon。当前 Swift App 目标为 Apple Silicon/macOS 14+。
 
-操作以稳定 `operation_id` 去重，同 ID 改参数拒绝。设备持久记录执行意图和终态，恢复后不自动重放。aBridge 服务只短暂保留结果内容，SQLite 不保存命令、输入、文件正文或截图。
+App 安装器复制固定 Node、构建后的 CLI 和所需依赖到当前用户的稳定私有目录，Swift 壳只引用该目录的 Node 与 CLI 路径，不指向 npm 临时执行缓存。Node 负责设备连接和执行，Swift 负责权限 UI 与接管监视。原生代码或签名变化可能影响系统权限，构建和协议测试不能证明实际已安装 App 的截图或输入可用。
 
-图片通过原生 MCP ImageContent 返回，JSON 元信息不再包含一份重复 base64；接收截图不需要 Shell 或文件权限。浏览器不可用不代表可以自动改为整屏截图。原始图片上限为 4 MiB，设备 WebSocket 消息上限为 8 MiB。`executed` 表示执行器回执，不代替业务验证。SDK 调用结果不确定时返回 `outcome_unknown`；取消不能回滚已产生的副作用，也不承诺撤回已经发出的系统输入。
+桌面接管保护只覆盖在途输入，读取和普通鼠标移动不触发暂停。手动暂停持久保存，远程请求不能解除。依赖及许可见 [第三方说明](third-party-notices.md)。
 
-## 验证与演进
-
-
-小窗坐标请求实际由 SDK 走 AX hit-test 背景路由，不能作为物理 CGEvent 或来源 PID 过滤的业务证据；后者仍未实测。上述受控用例不代表所有应用、网站和日常路径。具体证据与限制见 [验证范围](verification.md)。
-
-当前技术栈的分层剖析见 [原设计文档中的技术栈章节](prototype/design-review.html#tech-stack)，后续事项见 [工作计划](roadmap.md)，设计与资产入口见 [设计说明](design.md)。原型中的候选架构和演示界面不等于已实现系统。
+安装、更新与维护见 [部署说明](deployment.md)，开发和验证要求见 [贡献指南](../.github/CONTRIBUTING.md)，安全限制见 [SECURITY.md](../.github/SECURITY.md)。

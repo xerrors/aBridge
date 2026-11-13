@@ -1,0 +1,9 @@
+{
+  "name": "@abridge/browser",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@abridge/protocol": "*",
+    "zod": "4.6.7"
+  }
+}

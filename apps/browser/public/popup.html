@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>aBridge for Browser</title>
+    <link rel="stylesheet" href="ui.css" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header class="popup-header">
+        <div class="brand">
+          <img class="brand-symbol" src="icons/brand.svg" alt="" />
+          <div>
+            <img class="brand-wordmark" src="icons/wordmark.svg" alt="aBridge" /><span class="brand-caption"
+              >for Browser</span
+            >
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="refresh" class="icon-button" aria-label="刷新连接状态" title="刷新连接状态">
+            <svg viewBox="0 0 24 24">
+              <path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" />
+            </svg></button
+          ><button id="settings" class="icon-button" aria-label="打开设置" title="设置">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="m9 3-.6 2.5-2.2 1.3-2.4-.7-2 3.5 1.8 1.8v2.6l-1.8 1.8 2 3.5 2.4-.7 2.2 1.3L9 22h4l.6-2.5 2.2-1.3 2.4.7 2-3.5-1.8-1.8V11l1.8-1.8-2-3.5-2.4.7-2.2-1.3L13 3Z"
+              />
+              <circle cx="11" cy="12.5" r="3" />
+            </svg>
+          </button>
+        </div>
+      </header>
+      <section id="connection" class="connection-summary loading" aria-live="polite">
+        <div class="status-chip"><span class="status-dot"></span><span id="status-label">正在检查</span></div>
+        <h1 id="device-name">当前浏览器</h1>
+        <p id="error" class="error-message" role="alert" hidden></p>
+      </section>
+      <section id="ready-controls" class="popup-controls" hidden>
+        <div class="control-row">
+          <button id="pause" class="primary">暂停访问</button
+          ><button id="stop" class="secondary">停止任务</button>
+        </div>
+      </section>
+      <section id="setup" class="popup-controls" hidden>
+        <button id="connect" class="primary full-width">连接当前浏览器</button>
+      </section>
+
+      <details id="diagnostics" class="popup-diagnostics">
+        <summary>连接诊断</summary>
+        <dl id="connection-details" class="diagnostic-list"></dl>
+      </details>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>
