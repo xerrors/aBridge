@@ -1,7 +1,7 @@
 import { render } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api, objectResultSchema } from "./api.js";
-import { Authentication } from "./authentication.js";
+import { Authentication, ExternalLogin } from "./authentication.js";
 import { Brand, Field, Form, Modal } from "./components.js";
 import { ManagementModal, type ManagementDialog } from "./dialogs.js";
 import { ActivityPage, DevicePage, DevicesPage, GrantsPage, type Mutate, type RunAction } from "./pages.js";
@@ -184,6 +184,7 @@ function ManagementApp() {
       </div>
       {loginDialog && adminReady && (
         <Modal title="登录账户" close={() => setLoginDialog(false)}>
+          <ExternalLogin />
           <Form
             label="登录"
             onSubmit={async (form) => {
