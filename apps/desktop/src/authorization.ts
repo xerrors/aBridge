@@ -1,7 +1,7 @@
 /** Browser consent and PKCE stay in the device runtime; credentials never enter the browser redirect. */
 import { createServer } from "node:http";
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { hostname } from "node:os";
+import { defaultDeviceName } from "./device-name.js";
 import { z } from "zod";
 import {
   DESKTOP_CAPABILITIES,
@@ -139,7 +139,7 @@ export async function authorizeDevice(url: string, options: AuthorizationOptions
     redirectUri = `http://127.0.0.1:${address.port}${DESKTOP_AUTH_CALLBACK_PATH}`;
     const body = deviceAuthorizationRequestSchema.parse({
       kind: "computer",
-      name: hostname().slice(0, 80) || "Mac",
+      name: await defaultDeviceName(),
       capabilities: [...DESKTOP_CAPABILITIES],
       redirect_uri: redirectUri,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),

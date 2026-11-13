@@ -1,6 +1,6 @@
 # aBridge for Browser Privacy Policy
 
-Last updated: November 13, 2026
+Last updated: November 14, 2026
 
 aBridge for Browser connects the browser Profile where you install it to an aBridge Server that you choose. It lets Agents that you authorize observe and operate task pages in that browser.
 
@@ -26,6 +26,7 @@ The supplied Server implementation keeps device, grant, session, operation and a
 - `tabs`: create, navigate and close extension-owned task tabs and associate them with the correct control session.
 - `storage`: retain the device binding, local controls and receipt metadata.
 - `identity`: open the Server's authorization page and receive the extension's authorization callback.
+- Optional `identity.email`: requested only when you click “使用 Profile 账户”. Once granted, the extension can read the current Profile's account email to suggest a device name; it does not request a Google OAuth token. You can edit the suggested name before binding. The final device name, including the email if you keep it, is sent to the Server you choose when registering the device.
 - `alarms`: attempt reconnection when the browser is running.
 - Optional host access: contact the Server origin you enter during registration. The extension asks for that origin when you bind it.
 

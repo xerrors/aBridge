@@ -96,9 +96,13 @@
               placeholder="https://abridge.example.com"
               autocomplete="url"
           /></label>
-          <label
-            >浏览器名称<input id="label" maxlength="80" required placeholder="例如：Chrome · 工作账号"
-          /></label>
+          <div>
+            <div class="profile-name-heading">
+              <label for="label">浏览器名称</label>
+              <button id="profile-account" class="secondary" type="button">使用 Profile 账户</button>
+            </div>
+            <input id="label" maxlength="80" required placeholder="例如：Chrome · 工作账号" />
+          </div>
           <p id="authorization-status" class="hint" role="status" hidden>
             请在打开的浏览器窗口中确认授权。关闭此面板不影响授权。
           </p>

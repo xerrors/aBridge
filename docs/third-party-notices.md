@@ -9,6 +9,7 @@ retains the official SDK packages and the license for its copied Node.js runtime
 | ------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
 | Fastify and its official static/WebSocket plugins | HTTP and device connections                               | MIT                                                                     |
 | Model Context Protocol TypeScript SDK v2          | MCP server and Node transport                             | Apache-2.0, with retained MIT transition notices in the package LICENSE |
+| openid-client / oauth4webapi / jose               | OIDC login, token verification and JWKS                   | MIT                                                                     |
 | Preact                                            | Bundled management console                                | MIT                                                                     |
 | ws                                                | Device WebSocket connections                              | MIT                                                                     |
 | Zod                                               | Runtime contract validation, including the browser bundle | MIT                                                                     |

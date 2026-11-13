@@ -1,5 +1,6 @@
 import { element, errorDetails, type BrowserStatus, type ControlType } from "./types.js";
 import { request, describeState, renderDiagnostics } from "./browser-ui.js";
+import { fallbackProfileName, profileDeviceName, registrationDeviceName } from "./profile-name.js";
 const $ = (id: string) => element(id, HTMLElement);
 const button = (id: string) => element(id, HTMLButtonElement);
 const input = (id: string) => element(id, HTMLInputElement);
@@ -8,6 +9,17 @@ let state: BrowserStatus | undefined;
 let settingsOpen = false;
 let pending = false;
 let nameDirty = false;
+let registrationNameDirty = false;
+let profileName = fallbackProfileName;
+let profilePending = false;
+function renderRegistrationName() {
+  input("label").value = registrationDeviceName(
+    input("label").value,
+    registrationNameDirty,
+    state?.label,
+    profileName,
+  );
+}
 function showError(value: unknown) {
   $("error").textContent = errorDetails(value).message;
   $("error").hidden = false;
@@ -40,6 +52,8 @@ function renderControls() {
     input("device-label").value.trim() === state.label;
   input("server").disabled = pending || !state || !!state.authorizing;
   input("label").disabled = pending || !state || !!state.authorizing;
+  button("profile-account").disabled =
+    pending || profilePending || !state || registered || !!state.authorizing || registrationNameDirty;
 }
 function renderSettings() {
   const registered = !!state?.configured && !state.revoked;
@@ -73,8 +87,8 @@ async function refresh() {
   if (!nameDirty) input("device-label").value = state.label || "";
   $("saved-server").textContent = state.server || "尚未配置";
   // Preserve an unfinished form across status notifications; restore a pending flow on reopen.
-  if (state.server && !input("server").value) input("server").value = state.server;
-  if (state.label && !input("label").value) input("label").value = state.label;
+  if (!input("server").value) input("server").value = state.server || "http://127.0.0.1:8765";
+  renderRegistrationName();
   renderSettings();
   renderControls();
   renderDiagnostics($("connection-details"), state);
@@ -117,6 +131,36 @@ input("device-label").addEventListener("input", () => {
   nameDirty = true;
   renderControls();
 });
+input("label").addEventListener("input", () => {
+  registrationNameDirty = true;
+  renderControls();
+});
+button("profile-account").addEventListener("click", async () => {
+  if (
+    pending ||
+    profilePending ||
+    !state ||
+    (state.configured && !state.revoked) ||
+    state.authorizing ||
+    registrationNameDirty
+  )
+    return;
+  profilePending = true;
+  renderControls();
+  try {
+    // Keep the optional permission request directly in the user gesture.
+    const allowed = await chrome.permissions.request({ permissions: ["identity.email"] });
+    if (!allowed) throw new Error("未允许读取 Profile 账户，可继续手动命名");
+    profileName = await profileDeviceName(chrome);
+    renderRegistrationName();
+    if (profileName === fallbackProfileName) throw new Error("当前 Profile 未提供账户邮箱，可继续手动命名");
+  } catch (error) {
+    showError(error);
+  } finally {
+    profilePending = false;
+    renderControls();
+  }
+});
 $("rename").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (pending || !state?.connected) return;
@@ -156,4 +200,10 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   if (message && typeof message === "object" && "type" in message && message.type === "status_changed")
     void refresh().catch(report);
 });
-void refresh().catch(report);
+void refresh()
+  .then(async () => {
+    if ((state?.configured && !state.revoked) || state?.label) return;
+    profileName = await profileDeviceName(chrome);
+    renderRegistrationName();
+  })
+  .catch(report);

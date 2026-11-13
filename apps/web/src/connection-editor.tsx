@@ -106,7 +106,6 @@ export function ConnectionEditor({
           const entries = Object.entries(choices)
             .filter(([deviceId]) => permitted.has(deviceId))
             .map(([device_id, capabilities]) => ({ device_id, capabilities }));
-          if (mode === "selected" && !entries.length) throw new Error("请选择至少一台设备");
           if (mode === "selected" && entries.some((entry) => entry.capabilities.length === 0))
             throw new Error("请为所选设备选择至少一项能力");
           if (mode === "all" && !defaults.length) throw new Error("请选择至少一项默认能力");

@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var item: NSStatusItem!
     private var window: NSWindow!
     private let urlField = NSTextField(string: "http://127.0.0.1:8765")
-    private let deviceNameField = NSTextField(string: "")
+    private let deviceNameField = NSTextField(string: String((Host.current().localizedName ?? ProcessInfo.processInfo.hostName).prefix(80)))
     private let deviceNameMessage = StatusTextField(labelWithString: "")
     private var saveNameButton: NSButton!
     private var deviceNameDirty = false
@@ -1031,7 +1031,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             deviceNameMessage.isHidden = true
         }
         if !deviceNameDirty && !savingDeviceName {
-            deviceNameField.stringValue = status["device_name"] as? String ?? ""
+            let assignedName = status["device_name"] as? String ?? ""
+            deviceNameField.stringValue = assignedName.isEmpty
+                ? String((Host.current().localizedName ?? ProcessInfo.processInfo.hostName).prefix(80))
+                : assignedName
         }
         let paused = status["paused"] as? Bool == true
         let connection = status["connection"] as? String ?? "offline"

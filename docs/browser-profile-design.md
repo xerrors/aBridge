@@ -10,6 +10,8 @@ Agent 通过 `devices_list` 选择设备 ID，再创建仅含 `browser` 的会�
 
 先运行 `npm run build`，再通过开发者模式加载 `dist/browser/` 中已构建的扩展。源 TypeScript 目录不能直接加载。点击扩展图标，在弹窗中填写 Server 地址和设备名称，通过 `chrome.identity.launchWebAuthFlow` 打开管理台授权页；用户在浏览器中登录并确认后，扩展用一次性授权码和 PKCE 兑换 Device Key，只保存设备凭据。绑定时授权访问所填 Server 地址；远程连接使用 HTTPS/WSS，本机开发允许回环 HTTP/WS。
 
+首次绑定的名称默认为 `Chrome · Profile`，可直接修改。已获 `identity.email` 可选权限时，通过 `chrome.identity.getProfileUserInfo({ accountStatus: "ANY" })` 读取当前 Profile 的账户邮箱，建议名称为 `Chrome · 邮箱`；未获权限时，只有点击“使用 Profile 账户”才请求读取权限，不自动弹出授权或打开网页登录。浏览器 API 不提供 Profile 的本地昵称，也不保证未登录、隐身或其他 Chromium 浏览器能返回邮箱；无邮箱或读取失败时保留通用默认名。账户信息只用于未编辑的首次绑定表单，不覆盖手动修改、已保存设备名称或等待中的授权名称；最终设备名称仍随绑定请求发送给 Server。
+
 扩展直接连接 `/ws/browser`，在首条认证消息传递设备凭据，不将凭据放入 URL。Agent Key 只用于 MCP 调用，不能作为设备凭据。使用“指定设备”的 Agent 连接时，在管理台为该浏览器开启 `browser`；选择“全部设备（含新设备）”且默认能力包含 `browser` 的连接自动覆盖新注册的浏览器。连接策略可编辑，无需重新配置 MCP Key。
 
 授权流程由后台 worker 持有，弹窗因授权窗口获得焦点而关闭不会取消授权；重新打开弹窗可查看等待状态或取消。授权窗口的等待独立于配置消息队列，不阻塞状态读取和本机控制。授权回调固定为当前扩展 ID 的 `https://<id>.chromiumapp.org/abridge-authorize`；取消、拒绝或过期不会写入绑定。浏览器或 worker 异常退出后重新发起授权，不自动批准旧请求。

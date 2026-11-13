@@ -238,6 +238,7 @@ export function GrantsPage({
   preview,
   rotate,
   revoke,
+  reconnect,
 }: {
   grants: Grant[];
   devices: Device[];
@@ -247,6 +248,7 @@ export function GrantsPage({
   preview: (grant: Grant) => void;
   rotate: (grant: Grant) => void;
   revoke: (grant: Grant) => void;
+  reconnect: (grant: Grant) => void;
 }) {
   const active = grants.filter((grant) => grant.revoked_at === null);
   const revoked = grants.filter((grant) => grant.revoked_at !== null);
@@ -292,8 +294,12 @@ export function GrantsPage({
                   <details class="connection-menu">
                     <summary aria-label={`${grant.name} 更多操作`}>更多</summary>
                     <div>
-                      <button onClick={() => configure(grant)}>接入配置</button>
-                      <button onClick={() => rotate(grant)}>轮换 Key</button>
+                      {grant.authentication === "key" && (
+                        <>
+                          <button onClick={() => configure(grant)}>接入配置</button>
+                          <button onClick={() => rotate(grant)}>轮换 Key</button>
+                        </>
+                      )}
                       <button class="danger" onClick={() => revoke(grant)}>
                         撤销连接
                       </button>
@@ -319,6 +325,7 @@ export function GrantsPage({
               <article class="revoked-row" key={grant.id}>
                 <span>{grant.name}</span>
                 <span class="small muted">已撤销</span>
+                {grant.can_reconnect && <button onClick={() => reconnect(grant)}>重新授权</button>}
               </article>
             ))}
           </div>
