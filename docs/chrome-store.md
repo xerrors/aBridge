@@ -4,6 +4,8 @@
 
 执行 `npm run build && npm run package && npm run package:check`，上传 `dist/releases/abridge-browser-<version>.zip`。ZIP 根目录包含生成版本的 manifest 与已构建 JavaScript；不要上传源码目录、Server tarball 或 App。
 
+商店 ZIP 的 manifest 故意不带 `key`；源码和 `dist/browser/` 中的加载开发版仍保留开发公钥及其身份，不能直接把该目录压缩上传商店。打包检查同时核对商店 manifest 无 `key` 且版本与根 `package.json` 相同。
+
 首次上传可先保存草稿。商店分配的 Item ID 与开发版当前 ID 不应假定相同；需要统一开发 ID 时，在草稿的 Package 页面查看商店公钥，再按 [Chrome 官方 key 流程](https://developer.chrome.com/docs/extensions/reference/manifest/key)回填开发 manifest。扩展公钥不是秘密；商店 ID 变化不保证保留另一扩展 ID 的本地绑定。
 
 ## 商店介绍草稿

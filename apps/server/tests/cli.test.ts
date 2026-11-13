@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import product from "../../../package.json" with { type: "json" };
 const serverCli = resolve("dist/server/cli.js"),
   desktopCli = resolve("dist/desktop/cli.js");
 function launch(args: string[], cwd: string): { child: ChildProcess; ready: Promise<string> } {
@@ -57,7 +58,7 @@ test("version and desktop status are pure commands, no default database or nativ
       env: { ...process.env, HOME: dir },
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), "0.3.0");
+    assert.equal(result.stdout.trim(), product.version);
     assert.deepEqual(await readdir(dir), []);
     const status = spawnSync(process.execPath, [desktopCli, "--state-dir", join(dir, "desktop"), "status"], {
       cwd: dir,
@@ -87,7 +88,7 @@ test("compiled CLI starts outside repository, serves bundled web and persists ac
       running = task.child;
       const url = await task.ready;
       const health = await fetch(url + "/health");
-      assert.equal(((await health.json()) as { version: string }).version, "0.3.0");
+      assert.equal(((await health.json()) as { version: string }).version, product.version);
       const page = await fetch(url + "/");
       assert.equal(page.status, 200);
       assert.match(await page.text(), /\/static\/app\.js/);

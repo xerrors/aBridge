@@ -83,6 +83,13 @@ async function collect(directory: string): Promise<void> {
   }
 }
 await collect(join(root, "dist/browser"));
+// The Web Store assigns its own signing identity; the unpacked development build keeps its key.
+const storeManifest = JSON.parse(new TextDecoder().decode(archive["manifest.json"])) as Record<
+  string,
+  unknown
+>;
+delete storeManifest.key;
+archive["manifest.json"] = new TextEncoder().encode(JSON.stringify(storeManifest, null, 2) + "\n");
 archive["LICENSE"] = await readFile(join(root, "LICENSE"));
 await writeFile(
   join(dist, `abridge-browser-${metadata.version}.zip`),

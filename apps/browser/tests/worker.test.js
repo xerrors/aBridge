@@ -26,6 +26,21 @@ const storage = (data) => ({
 });
 function harness(local = {}, session = {}, settings = {}) {
   if (local.device?.key) local.device.instance_id = "test-instance";
+  const resultWaiters = new Set();
+  const nextResult = (operationId) =>
+    new Promise((resolve, reject) => {
+      const waiter = (message) => {
+        if (message.type !== "result" || message.operation_id !== operationId) return;
+        clearTimeout(timeout);
+        resultWaiters.delete(waiter);
+        resolve(message);
+      };
+      const timeout = setTimeout(() => {
+        resultWaiters.delete(waiter);
+        reject(new Error(`No result for operation ${operationId}`));
+      }, 5000);
+      resultWaiters.add(waiter);
+    });
   const sockets = [],
     messages = [],
     removed = [],
@@ -51,6 +66,7 @@ function harness(local = {}, session = {}, settings = {}) {
     send(raw) {
       const message = JSON.parse(raw);
       messages.push(message);
+      for (const waiter of resultWaiters) waiter(message);
       if (message.type === "hello")
         queueMicrotask(() =>
           this.receive({
@@ -147,9 +163,34 @@ function harness(local = {}, session = {}, settings = {}) {
     arguments: { url: "https://example.com/" },
     ...extra,
   });
-  return { sockets, messages, removed, tabs, chrome, options, dispatch, alarms, tabsAtConnect, fromPage };
+  return {
+    sockets,
+    messages,
+    removed,
+    tabs,
+    chrome,
+    options,
+    dispatch,
+    alarms,
+    tabsAtConnect,
+    fromPage,
+    nextResult,
+  };
 }
-test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async () => {
+test("standalone extension registers once, authenticates directly, isolates browser tools, persists no-replay and pauses", async (t) => {
+  const originalDigest = crypto.subtle.digest;
+  let firstDigest = true;
+  crypto.subtle.digest = async function (...args) {
+    if (firstDigest) {
+      firstDigest = false;
+      // The OS crypto pool can complete after a fixed 10 ms sleep on busy CI runners.
+      await delay(30);
+    }
+    return originalDigest.apply(this, args);
+  };
+  t.after(() => {
+    crypto.subtle.digest = originalDigest;
+  });
   const local = {},
     session = { owned_task_tabs: [9] },
     h = harness(local, session);
@@ -199,24 +240,25 @@ test("standalone extension registers once, authenticates directly, isolates brow
   assert.equal(JSON.stringify(local).includes("secret"), false);
   assert.equal(h.messages[0].device_key, local.device.key);
   assert.deepEqual(h.messages[0].capabilities, { browser: true });
+  const firstResult = h.nextResult("open-first");
   h.sockets[0].receive(h.dispatch("open-first"));
-  await delay(10);
-  assert.equal(h.messages.at(-1).status, "executed");
-  assert.equal(h.messages.at(-1).result.tab_id, 2);
+  const first = await firstResult;
+  assert.equal(first.status, "executed");
+  assert.equal(first.result.tab_id, 2);
   assert.equal(local.operation_journal["open-first"].status, "executed");
+  const duplicateResult = h.nextResult("open-first");
   h.sockets[0].receive(h.dispatch("open-first", 2));
-  await delay(10);
-  assert.equal(h.messages.at(-1).result.deduplicated, true);
+  assert.equal((await duplicateResult).result.deduplicated, true);
   assert.equal(h.tabs.size, 2);
+  const conflictResult = h.nextResult("open-first");
   h.sockets[0].receive(h.dispatch("open-first", 3, { arguments: { url: "https://changed.example/" } }));
-  await delay(10);
-  assert.equal(h.messages.at(-1).error.code, "operation_conflict");
+  assert.equal((await conflictResult).error.code, "operation_conflict");
+  const unsupportedResult = h.nextResult("shell");
   h.sockets[0].receive(h.dispatch("shell", 4, { tool: "shell_exec" }));
-  await delay(10);
-  assert.equal(h.messages.at(-1).error.code, "unsupported_tool");
+  assert.equal((await unsupportedResult).error.code, "unsupported_tool");
+  const expiredResult = h.nextResult("expired");
   h.sockets[0].receive(h.dispatch("expired", 5, { expires_at: 0 }));
-  await delay(10);
-  assert.equal(h.messages.at(-1).error.code, "operation_expired");
+  assert.equal((await expiredResult).error.code, "operation_expired");
   h.sockets[0].close();
   await delay(2100);
   assert.equal(h.sockets.length, 2);
@@ -224,9 +266,9 @@ test("standalone extension registers once, authenticates directly, isolates brow
   assert.ok(h.removed.includes(2));
   assert.equal(requests, 1);
   assert.equal((await h.options({ type: "status" })).connected, true);
+  const closedResult = h.nextResult("after-close");
   h.sockets[1].receive(h.dispatch("after-close", 1));
-  await delay(10);
-  assert.equal(h.messages.at(-1).error.code, "session_closed");
+  assert.equal((await closedResult).error.code, "session_closed");
   await h.options({ type: "pause" });
   assert.equal(local.device.paused, true);
   assert.equal(h.messages.at(-1).paused, true);
