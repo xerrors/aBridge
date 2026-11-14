@@ -1188,15 +1188,9 @@ export class BrowserBridge {
           functionDeclaration: prepareInput.toString(),
           returnByValue: true,
         });
-        const currentPoint = refreshed.result?.value as { x: number; y: number } | undefined;
-        if (
-          refreshed.exceptionDetails ||
-          !currentPoint ||
-          !Number.isFinite(currentPoint.x) ||
-          !Number.isFinite(currentPoint.y)
-        )
+        point = refreshed.result?.value as { x: number; y: number } | undefined;
+        if (refreshed.exceptionDetails || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
           throw fail("action_failed", "渲染后目标不可用");
-        point = currentPoint;
       }
       const assertCurrentDocument = async () => {
         const currentTab = await this.valid(session);
