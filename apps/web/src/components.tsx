@@ -12,6 +12,7 @@ export const capabilityLabels: Record<Capability, string> = {
 export const stateLabels: Record<string, string> = {
   online: "在线",
   offline: "离线",
+  unknown: "状态未知",
   revoked: "已解绑",
   accepted: "已接受",
   dispatched: "执行中",

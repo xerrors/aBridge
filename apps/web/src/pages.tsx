@@ -181,13 +181,15 @@ export function DevicePage({
                   <li key={cap}>
                     <span>{capabilityLabels[cap]}</span>
                     <span class={device.available?.[cap] ? "capability-ready" : "muted"}>
-                      {device.status !== "online"
-                        ? "离线"
-                        : device.paused
-                          ? "已暂停"
-                          : device.available?.[cap]
-                            ? "可用"
-                            : "未就绪"}
+                      {device.status === "unknown"
+                        ? "状态未知"
+                        : device.status !== "online"
+                          ? "离线"
+                          : device.paused
+                            ? "已暂停"
+                            : device.available?.[cap]
+                              ? "可用"
+                              : "未就绪"}
                     </span>
                   </li>
                 ))}
