@@ -240,7 +240,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_exec",
-    "Run an async JavaScript body in this session's persistent browser runtime. Use explicit state for cross-call values and page methods for browser I/O; return a JSON value. No Node APIs. Keep stable operation_id to recover without replay. Calls yield after wait_seconds; inspect command_status for the same operation. Session close clears state. See browser runtime documentation for supported page methods.",
+    "Run an async JavaScript function body; use await and return a JSON value. Available: page.goto(url), page.observe(options), page.locator(css).click()/fill(text)/press(key)/select(values)/hover()/scroll(deltaY,deltaX), page.read({selector,mode: text or tables,snapshot_id,offset,limit}), page.wait({selector,text,state,timeout_ms}), page.evaluate(functionOrExpression,arg), and page.frameLocator(css) for a single same-origin iframe. IMPORTANT: window/document exist ONLY inside page.evaluate, e.g. return await page.evaluate(() => document.title). This code runs in isolated QuickJS, not in the page or Node. Only JSON state persists across calls; local variables/functions do not. Await every browser call. Stable operation_id recovers without replay. After yielding use command_status for that same operation; command_cancel stops it. Failed code may have completed steps: inspect the page and steps_completed before continuing, never replay the whole batch blindly. Session close clears state.",
     { ...base, ...browserExecSchema.shape, wait_seconds: wait },
     async (a) => {
       const { session_id, operation_id, wait_seconds, ...args } = a;
