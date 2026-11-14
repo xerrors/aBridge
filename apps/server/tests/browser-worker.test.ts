@@ -69,9 +69,9 @@ test(
       assert.ok(body.result);
       return body.result;
     }
-    async function tool<T>(name: string, args: JsonObject) {
+    async function tool<T>(name: string, args: JsonObject, expectedError = false) {
       const response = await rpc("tools/call", { name, arguments: args });
-      assert.notEqual(response.isError, true, JSON.stringify(response));
+      assert.equal(response.isError === true, expectedError, JSON.stringify(response));
       const content = response.content as Content[];
       const text = content.find((item) => item.type === "text")?.text;
       assert.ok(text);
@@ -163,7 +163,11 @@ test(
       effectsAfterFill,
       "A retried operation ID must not repeat a page effect",
     );
-    const stale = await tool<OperationResult>("browser_act", { ...fillArgs, operation_id: "wire-stale-ref" });
+    const stale = await tool<OperationResult>(
+      "browser_act",
+      { ...fillArgs, operation_id: "wire-stale-ref" },
+      true,
+    );
     assert.equal(stale.value.status, "refused");
     assert.equal(stale.value.error?.code, "stale_observation");
     assert.equal(sideEffects().length, effectsAfterFill);
