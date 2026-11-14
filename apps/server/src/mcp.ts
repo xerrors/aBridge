@@ -261,7 +261,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
       cwd: path.optional(),
       env: z
         .record(
-          z.string().regex(/^[^=\0]+$/),
+          z.string().regex(/^[^=\u0000]+$/),
           z.string().refine((v) => !v.includes("\0")),
         )
         .optional(),

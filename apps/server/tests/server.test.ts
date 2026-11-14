@@ -244,15 +244,57 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
     });
-    assert.equal(((await list.json()) as { result: { tools: unknown[] } }).result.tools.length, 21);
+    const listed = (await list.json()) as {
+      result: { tools: { name: string; inputSchema: unknown }[] };
+    };
+    assert.equal(listed.result.tools.length, 21);
+    let patterns = 0;
+    const checkPatterns = (value: unknown, location: string): void => {
+      if (!value || typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (key === "pattern") {
+          assert.equal(typeof child, "string", `${location}.pattern must be a string`);
+          assert.doesNotThrow(() => new RegExp(child as string, "u"), `${location}.pattern`);
+          patterns++;
+        } else if (key === "patternProperties" && child && typeof child === "object") {
+          for (const pattern of Object.keys(child)) {
+            assert.doesNotThrow(() => new RegExp(pattern, "u"), `${location}.patternProperties`);
+            patterns++;
+          }
+        }
+        checkPatterns(child, `${location}.${key}`);
+      }
+    };
+    for (const tool of listed.result.tools) checkPatterns(tool.inputSchema, tool.name);
+    assert.ok(patterns > 0, "The actual tools/list schemas must contain patterns to validate");
     const opened = await rpc(f.url, grant.key, "session_open", {
         device_id: device.device.id,
         capabilities: ["shell", "files", "screen"],
       }),
       session = opened.value.id;
+    for (const env of [{ "BAD=KEY": "value" }, { ["BAD\0KEY"]: "value" }, { VALID: "bad\0value" }]) {
+      const rejected = await fetch(f.url + "/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + grant.key,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: { name: "command_execute", arguments: { session_id: session, command: "echo hello", env } },
+        }),
+      });
+      assert.equal(rejected.status, 200);
+      assert.equal(((await rejected.json()) as { result: { isError?: boolean } }).result.isError, true);
+      assert.equal(dispatches, 0, "Invalid environment names/values must never reach the device");
+    }
     const command = await rpc(f.url, grant.key, "command_execute", {
       session_id: session,
       command: "echo hello",
+      env: { VALID_KEY: "valid value" },
       operation_id: "op_test",
     });
     assert.equal(command.value.status, "executed");
@@ -261,6 +303,7 @@ test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yiel
     await rpc(f.url, grant.key, "command_execute", {
       session_id: session,
       command: "echo hello",
+      env: { VALID_KEY: "valid value" },
       operation_id: "op_test",
     });
     assert.equal(dispatches, 1);

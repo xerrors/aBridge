@@ -1169,6 +1169,34 @@ export class BrowserBridge {
         point = prepared.result?.value as { x: number; y: number } | undefined;
         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
           throw fail("action_failed", "无法确定输入位置");
+        // Hidden task tabs can have fresh DOM geometry but a stale compositor
+        // hit-test surface. A discarded one-pixel capture prepares a frame
+        // without activating the tab or moving the user's system pointer.
+        await this.command(
+          session,
+          "Page.captureScreenshot",
+          {
+            format: "jpeg",
+            quality: 1,
+            clip: { x: 0, y: 0, width: 1, height: 1, scale: 1 },
+            captureBeyondViewport: false,
+          },
+          performance.now() + 2000,
+        );
+        const refreshed = await this.command(session, "Runtime.callFunctionOn", {
+          objectId: object.objectId,
+          functionDeclaration: prepareInput.toString(),
+          returnByValue: true,
+        });
+        const currentPoint = refreshed.result?.value as { x: number; y: number } | undefined;
+        if (
+          refreshed.exceptionDetails ||
+          !currentPoint ||
+          !Number.isFinite(currentPoint.x) ||
+          !Number.isFinite(currentPoint.y)
+        )
+          throw fail("action_failed", "渲染后目标不可用");
+        point = currentPoint;
       }
       const assertCurrentDocument = async () => {
         const currentTab = await this.valid(session);

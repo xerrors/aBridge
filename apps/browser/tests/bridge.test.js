@@ -205,7 +205,10 @@ test("privileged URLs and redirects reject, unknown writes close without retry",
   });
   assert.equal(result.error.code, "outcome_unknown");
   assert.deepEqual(f.removed, [2]);
-  assert.equal(f.calls.filter((c) => c[0] === "Runtime.callFunctionOn").length, 1);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mouseMoved").length,
+    1,
+  );
 });
 test("duplicate request IDs do not replay; detach and stop invalidate state", async () => {
   const f = fixture();
@@ -540,7 +543,10 @@ test("closed-loop open and actions return fresh observations and keep successful
   });
   assert.equal(result.result.executed, true);
   assert.equal(result.result.observation_error.code, "browser_error");
-  assert.equal(f.calls.filter((c) => c[0] === "Runtime.callFunctionOn").length, 2);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed").length,
+    2,
+  );
   assert.ok(f.tabs.has(2));
 });
 
@@ -685,7 +691,10 @@ test("post-action navigation wait reports loading without losing or repeating th
   assert.equal(acted.result.navigation_state, "loading");
   assert.equal(acted.result.observation_error.code, "navigation_pending");
   assert.equal(acted.result.observation, undefined);
-  assert.equal(f.calls.filter((c) => c[0] === "Runtime.callFunctionOn").length, 1);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed").length,
+    1,
+  );
   assert.equal(f.tabs.has(2), true);
   assert.deepEqual(f.removed, []);
   f.tabs.get(2).status = "complete";
@@ -1319,4 +1328,35 @@ test("native frame coordinates reject transformed frame ancestors", () => {
   };
   target.ownerDocument = { defaultView: win, elementFromPoint: () => target };
   assert.throws(() => prepareInput.call(target), /Transformed frames are unsupported/);
+});
+
+test("native input waits for compositor readiness and refuses failed or navigated paint without clicking", async () => {
+  for (const failure of [false, true, "navigation"]) {
+    const f = fixture();
+    await f.request("open", "s1", { url: "https://example.com/" });
+    const command = f.chrome.debugger.sendCommand;
+    let painted = false;
+    f.chrome.debugger.sendCommand = async (target, method, params) => {
+      if (method === "Page.captureScreenshot") {
+        assert.equal(params.clip.width, 1);
+        if (failure === true) throw Error("Compositor unavailable");
+        if (failure === "navigation") f.chrome.tabs.onUpdated.emit(2, { status: "loading" });
+        painted = true;
+      }
+      if (method.startsWith("Input.")) assert.equal(painted, true);
+      return command(target, method, params);
+    };
+    const observation = (await f.request("observe")).result;
+    const result = await f.request("act", "s1", {
+      observation_id: observation.observation_id,
+      action: { type: "click", element_ref: "e1" },
+      observe_after: false,
+    });
+    assert.equal(Boolean(result.error), Boolean(failure));
+    const presses = f.calls.filter(
+      (c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed",
+    );
+    assert.equal(presses.length, failure ? 0 : 1);
+    assert.equal(result.result?.image_base64, undefined);
+  }
 });

@@ -22,7 +22,7 @@ The supplied Server implementation keeps device, grant, session, operation and a
 
 ## Permissions
 
-- `debugger`: inspect task-page structure and capture requested screenshots using fixed extension code.
+- `debugger`: inspect task-page structure, prepare rendering for native input, and capture requested screenshots using fixed extension code.
 - `tabs`: create, navigate and close extension-owned task tabs and associate them with the correct control session.
 - `storage`: retain the device binding, local controls and receipt metadata.
 - `identity`: open the Server's authorization page and receive the extension's authorization callback.
