@@ -9,12 +9,16 @@ export async function browserTasks() {
 <input id="number" type="number" value="123"><input id="email" type="email" value="old@example.com">
 <select id="city"><option value="sh">Shanghai</option><option value="bj">Beijing</option></select>
 <button id="save">Save</button><button id="later">Load delayed</button><output id="status">Idle</output>
+<div id="like" title="点赞（Q）" style="width:100px;height:40px;cursor:pointer">1.7万</div>
 <table id="table"><tr><th>Item</th><th>Price</th></tr><tr><td>Apple</td><td>12</td></tr><tr><td>Pear</td><td>15</td></tr></table>
 <iframe id="csp-frame" src="/csp-frame"></iframe>
 <iframe id="frame" srcdoc="<input id=framed aria-label=Framed><script>window.trusted=false;document.getElementById('framed').oninput=e=>window.trusted=e.isTrusted</script>"></iframe>
 <div id="scroll"><div style="height:900px">Scroll area</div></div><div id="long">${"Long page content. ".repeat(1200)}</div>
 <script>
-window.events=[];window.rows=[];
+window.events=[];window.rows=[];window.hold=null;
+let pressedAt=0,pressedTrusted=false;
+document.getElementById('like').onmousedown=e=>{pressedAt=performance.now();pressedTrusted=e.isTrusted};
+document.getElementById('like').onmouseup=e=>{window.hold={ms:performance.now()-pressedAt,trusted:pressedTrusted&&e.isTrusted};};
 for(const id of ['name','qty'])document.getElementById(id).addEventListener('input',e=>events.push({type:'input',trusted:e.isTrusted}));
 document.getElementById('save').onclick=async e=>{
  const row={name:document.getElementById('name').value,qty:document.getElementById('qty').value,city:document.getElementById('city').value,trusted:e.isTrusted};

@@ -10,6 +10,7 @@ import {
 } from "@abridge/protocol";
 import { fail, errorDetails } from "./types.js";
 interface AXValue {
+  sources?: { attribute?: string; superseded?: boolean; value?: { value?: unknown } }[];
   value?: unknown;
 }
 interface AXNode {
@@ -17,6 +18,7 @@ interface AXNode {
   backendDOMNodeId?: number;
   role?: AXValue;
   name?: AXValue;
+  description?: AXValue;
   value?: AXValue;
   properties?: { name: string; value?: AXValue }[];
 }
@@ -44,6 +46,7 @@ interface ElementResult {
   element_ref: string;
   role: string;
   name: string;
+  description?: string;
   value?: string;
   url?: string;
   url_truncated?: boolean;
@@ -684,10 +687,26 @@ export class BrowserBridge {
       const properties = Object.fromEntries(
         (node.properties || []).map((item) => [item.name, item.value?.value]),
       );
-      if (!INTERACTIVE_ROLES.has(role) && properties.focusable !== true && !properties.editable) continue;
-      const name = String(node.name?.value || ""),
+      const explicitlyLabelled =
+        role === "generic" &&
+        (Boolean(node.description?.value) ||
+          node.name?.sources?.some(
+            (source) =>
+              !source.superseded &&
+              ["title", "aria-label", "aria-labelledby"].includes(source.attribute || "") &&
+              source.value?.value,
+          ));
+      if (
+        !INTERACTIVE_ROLES.has(role) &&
+        properties.focusable !== true &&
+        !properties.editable &&
+        !explicitlyLabelled
+      )
+        continue;
+      const description = String(node.description?.value || "");
+      const name = String(node.name?.value || description),
         value = properties.protected === true ? "" : String(node.value?.value || "");
-      if (needle && !`${name}\n${value}`.toLowerCase().includes(needle)) continue;
+      if (needle && !`${name}\n${description}\n${value}`.toLowerCase().includes(needle)) continue;
       matches++;
       if (candidates.length >= MAX_ELEMENTS) {
         truncated = true;
@@ -695,8 +714,9 @@ export class BrowserBridge {
       }
       const element_ref = `e${candidates.length + 1}`;
       const item: ElementResult = { element_ref, role, name: name.slice(0, 240) };
+      if (description && description !== name) item.description = description.slice(0, 240);
       if (value) item.value = value.slice(0, 240);
-      if (name.length > 240 || value.length > 240) truncated = true;
+      if (name.length > 240 || description.length > 240 || value.length > 240) truncated = true;
       for (const key of ["checked", "expanded", "selected", "disabled"] as const) {
         let state = properties[key];
         if (state === "true" || state === "false") state = state === "true";
@@ -1107,6 +1127,7 @@ export class BrowserBridge {
     const action = params.action as
       | {
           type?: string;
+          hold_ms?: number;
           element_ref?: string;
           text?: unknown;
           key?: string;
@@ -1128,6 +1149,12 @@ export class BrowserBridge {
       !observation.refs.has(action.element_ref || "")
     )
       throw fail("invalid_action", "需要当前观察中的精确元素和支持的动作");
+    if (
+      action.type === "click" &&
+      action.hold_ms !== undefined &&
+      (!Number.isInteger(action.hold_ms) || action.hold_ms < 0 || action.hold_ms > 10000)
+    )
+      throw fail("invalid_action", "hold_ms 必须是 0–10000 的整数毫秒");
     if (action.type === "fill" && (typeof action.text !== "string" || action.text.length > MAX_TEXT))
       throw fail("invalid_action", "填充文本无效或过长");
     if (action.type === "press" && (typeof action.key !== "string" || !action.key || action.key.length > 32))
@@ -1216,6 +1243,14 @@ export class BrowserBridge {
                 button: "left",
                 clickCount: 1,
               });
+              if (action.hold_ms) {
+                await this.waitAfterAction(
+                  session,
+                  action.hold_ms,
+                  performance.now() + action.hold_ms + 1000,
+                );
+                await assertCurrentDocument();
+              }
             } finally {
               await this.command(session, "Input.dispatchMouseEvent", {
                 type: "mouseReleased",

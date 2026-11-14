@@ -205,3 +205,34 @@ test("frame locators scope every action, wait and read to the selected iframe", 
   for (const entry of calls) assert.equal(entry.args.frame_selector, "#editor");
   runtime.closeAll();
 });
+
+test("explicit sleep preserves browser step counts and is cancellable", async () => {
+  const runtime = new BrowserRuntime();
+  const calls: string[] = [];
+  const call = async (method: string) => {
+    calls.push(method);
+    return { value: true };
+  };
+  const result = await runtime.run(
+    "sleep",
+    `await page.locator('#like').click({hold_ms:40}); await page.sleep(10); return await page.evaluate(() => true);`,
+    call,
+    signal(),
+  );
+  assert.equal(result.steps_completed, 2);
+  assert.deepEqual(calls, ["locate_act", "evaluate"]);
+  for (const value of ["-1", "10001", "1.5", '"10"']) {
+    await assert.rejects(runtime.run("invalid", `await page.sleep(${value});`, call, signal()), /sleep/);
+  }
+  const controller = new AbortController();
+  const pending = runtime.run(
+    "cancel-sleep",
+    'await page.sleep(10000); await page.locator("#never").click();',
+    call,
+    controller.signal,
+  );
+  setTimeout(() => controller.abort(), 30);
+  await assert.rejects(pending, /cancel/i);
+  assert.equal(calls.length, 2);
+  runtime.closeAll();
+});

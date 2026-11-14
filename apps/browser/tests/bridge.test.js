@@ -1360,3 +1360,88 @@ test("native input waits for compositor readiness and refuses failed or navigate
     assert.equal(result.result?.image_base64, undefined);
   }
 });
+
+test("native click holds before releasing and rejects invalid durations before input", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const observation = (await f.request("observe")).result;
+  for (const hold_ms of [-1, 10001, 1.5, "10"]) {
+    const result = await f.request("act", "s1", {
+      observation_id: observation.observation_id,
+      action: { type: "click", element_ref: "e1", hold_ms },
+      observe_after: false,
+    });
+    assert.equal(result.error?.code, "invalid_action");
+  }
+  assert.equal(
+    f.calls.some((c) => c[0] === "Input.dispatchMouseEvent"),
+    false,
+  );
+  const command = f.chrome.debugger.sendCommand;
+  let pressed, released;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Input.dispatchMouseEvent" && params.type === "mousePressed") pressed = performance.now();
+    if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased")
+      released = performance.now();
+    return command(target, method, params);
+  };
+  const result = await f.request("act", "s1", {
+    observation_id: observation.observation_id,
+    action: { type: "click", element_ref: "e1", hold_ms: 60 },
+    observe_after: false,
+  });
+  assert.equal(result.result?.executed, true);
+  assert.ok(released - pressed >= 50);
+});
+
+test("observations include explicitly labelled generic controls", async () => {
+  const f = fixture();
+  const command = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) =>
+    method === "Accessibility.getFullAXTree"
+      ? {
+          nodes: [
+            {
+              backendDOMNodeId: 101,
+              role: { value: "generic" },
+              name: { value: "" },
+              description: { value: "点赞（Q）" },
+            },
+          ],
+        }
+      : command(target, method, params);
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const result = await f.request("observe", "s1", { query: "点赞" });
+  assert.equal(result.result.elements.length, 1);
+  assert.equal(result.result.elements[0].name, "点赞（Q）");
+});
+
+test("closing during a held click cancels promptly without replaying input", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const observation = (await f.request("observe")).result;
+  const command = f.chrome.debugger.sendCommand;
+  let pressed;
+  const ready = new Promise((resolve) => {
+    pressed = resolve;
+  });
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    const result = await command(target, method, params);
+    if (method === "Input.dispatchMouseEvent" && params.type === "mousePressed") pressed();
+    return result;
+  };
+  const pending = f.request("act", "s1", {
+    observation_id: observation.observation_id,
+    action: { type: "click", element_ref: "e1", hold_ms: 10000 },
+    observe_after: false,
+  });
+  await ready;
+  await f.request("close");
+  const result = await pending;
+  assert.ok(result.error);
+  assert.deepEqual(f.removed, [2]);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed").length,
+    1,
+  );
+});

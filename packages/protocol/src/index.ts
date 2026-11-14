@@ -259,7 +259,13 @@ export const computerActionSchema = z.discriminatedUnion("type", [
   scrollSchema,
 ]);
 export const browserActionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("click"), element_ref: elementRefSchema }).strict(),
+  z
+    .object({
+      type: z.literal("click"),
+      element_ref: elementRefSchema,
+      hold_ms: z.number().int().min(0).max(10000).optional(),
+    })
+    .strict(),
   z.object({ type: z.literal("fill"), element_ref: elementRefSchema, text: z.string().max(60000) }).strict(),
   z.object({ type: z.literal("hover"), element_ref: elementRefSchema }).strict(),
   z

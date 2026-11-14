@@ -1,10 +1,11 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { getQuickJS, type QuickJSDeferredPromise } from "quickjs-emscripten";
 
 type BrowserCall = (method: string, args: Record<string, unknown>) => Promise<unknown>;
 type JsonObject = Record<string, unknown>;
 const MAX_BYTES = 1024 * 1024;
 const MAX_STEPS = 1000;
-const METHODS = new Set(["open", "observe", "read", "wait", "evaluate", "locate_act"]);
+const METHODS = new Set(["open", "observe", "read", "wait", "evaluate", "locate_act", "sleep"]);
 
 export class BrowserRuntimeError extends Error {
   constructor(
@@ -94,8 +95,16 @@ export class BrowserRuntime {
         if (stopped || controller.signal.aborted || fatal) return;
         try {
           if (steps >= MAX_STEPS) throw new Error("Browser execution exceeds 1000 steps");
-          const value = await call(request.method, request.args);
-          steps++;
+          let value: unknown;
+          if (request.method === "sleep") {
+            const ms = request.args.ms;
+            if (typeof ms !== "number" || !Number.isInteger(ms) || ms < 0 || ms > 10000)
+              throw new Error("page.sleep requires an integer from 0 to 10000 milliseconds");
+            await sleep(ms, undefined, { signal: controller.signal });
+          } else {
+            value = await call(request.method, request.args);
+            steps++;
+          }
           if (stopped || controller.signal.aborted) return;
           const json = JSON.stringify(value ?? null);
           if (Buffer.byteLength(json, "utf8") > MAX_BYTES) throw new Error("Browser result exceeds one MiB");
@@ -133,7 +142,7 @@ export class BrowserRuntime {
           const locator = selector => {
             const act = action => invoke('locate_act',scoped({selector,action}));
             return Object.freeze({
-              click: () => act({type:'click'}),
+              click: (options = {}) => act({...options,type:'click'}),
               fill: text => act({type:'fill',text}),
               press: key => act({type:'press',key}),
               select: values => act({type:'select',values:Array.isArray(values)?values:[values]}),
@@ -155,6 +164,7 @@ export class BrowserRuntime {
         };
         const page = Object.freeze({
           ...scope(undefined),
+          sleep: ms => invoke('sleep',{ms}),
           goto: url => invoke('open',{url}),
           observe: (options = {}) => invoke('observe',options),
           frameLocator: selector => scope(selector)
@@ -174,7 +184,6 @@ export class BrowserRuntime {
       cpuDeadline = Date.now() + 250;
       promiseHandle = vm.unwrapResult(vm.evalCode(source, "browser-exec.js"));
       for (;;) {
-        if (fatal) throw fatal;
         if (controller.signal.aborted)
           throw new BrowserRuntimeError(
             "operation_cancelled",
@@ -184,6 +193,7 @@ export class BrowserRuntime {
               output,
             },
           );
+        if (fatal) throw fatal;
         if (Date.now() > deadline) throw new Error("Browser execution exceeded 120 seconds");
         cpuDeadline = Date.now() + 250;
         const jobs = runtime.executePendingJobs(100);
@@ -241,6 +251,7 @@ export class BrowserRuntime {
       );
     } finally {
       stopped = true;
+      controller.abort();
       // Late browser replies only see stopped=true; no subsequent RPC or VM
       // access is allowed. The control layer cancels any already dispatched work.
       promiseHandle?.dispose();
