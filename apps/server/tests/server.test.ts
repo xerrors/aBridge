@@ -276,6 +276,7 @@ test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yiel
       wait_seconds: 0,
     });
     assert.equal(yielded.value.status, "dispatched");
+    assert.equal(yielded.isError, undefined);
     const frame = delayed[0]!;
     socket.send(
       JSON.stringify({
@@ -301,6 +302,69 @@ test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yiel
     });
     assert.equal(denied.value.error.code, "forbidden");
     await rpc(f.url, grant.key, "session_close", { session_id: session });
+    socket.close();
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("real MCP marks failed device receipts as tool errors without rejecting executed partial observations", async () => {
+  const f = await fixture();
+  try {
+    const user = await f.store.createUser("owner", "test-password-long"),
+      device = f.store.createDevice(user.id, "Mac", ["files", "screen", "input"]),
+      grant = f.store.createGrant(user.id, "agent", {
+        mode: "all",
+        capabilities: ["files", "screen", "input"],
+        overrides: [],
+      });
+    const observationError = { code: "observation_failed", message: "Action completed; refresh observation" };
+    const { socket } = await connect(f, device.key, "computer", (frame, socket) => {
+      const status = frame.tool === "computer_act" ? "executed" : (frame.arguments as JsonObject).path;
+      socket.send(
+        JSON.stringify({
+          type: "result",
+          connection_epoch: frame.connection_epoch,
+          operation_id: frame.operation_id,
+          status,
+          ...(status === "executed"
+            ? { result: { executed: true, observation_error: observationError } }
+            : status === "cancelled"
+              ? {}
+              : { error: { code: "fixture_" + status, message: "Synthetic device failure" } }),
+        }),
+      );
+    });
+    const opened = await rpc(f.url, grant.key, "session_open", {
+      device_id: device.device.id,
+      capabilities: ["files", "screen", "input"],
+    });
+    for (const status of ["failed", "refused", "outcome_unknown", "cancelled"]) {
+      const receipt = await rpc(f.url, grant.key, "file_read", {
+        session_id: opened.value.id,
+        operation_id: "op_error_" + status,
+        path: status,
+      });
+      const isError = status === "cancelled" ? undefined : true;
+      assert.equal(receipt.value.status, status);
+      assert.equal(receipt.value.operation_id, "op_error_" + status);
+      assert.equal(receipt.isError, isError);
+      if (isError) assert.equal(receipt.value.error.code, "fixture_" + status);
+      const retained = await rpc(f.url, grant.key, "command_status", {
+        operation_id: receipt.value.operation_id,
+        wait_seconds: 0,
+      });
+      assert.equal(retained.isError, isError);
+      assert.deepEqual(retained.value, receipt.value);
+    }
+    const action = await rpc(f.url, grant.key, "computer_act", {
+      session_id: opened.value.id,
+      observation_id: "obs_" + "a".repeat(32),
+      action: { type: "key", key: "Enter" },
+    });
+    assert.equal(action.value.status, "executed");
+    assert.equal(action.isError, undefined);
+    assert.deepEqual(action.value.result.observation_error, observationError);
     socket.close();
   } finally {
     await f.dispose();

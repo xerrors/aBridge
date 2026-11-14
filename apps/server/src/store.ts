@@ -5,6 +5,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { promisify } from "node:util";
 import {
   deviceCapabilities,
+  CAPABILITIES,
   type Capability,
   type DeviceKind,
   type ConnectionPolicy,
@@ -156,7 +157,7 @@ export class Store {
     return token;
   }
   /** 以签发方和稳定主体首次开户，绝不按显示名称合并。 */
-  externalUser(issuer: string, subject: string, label: string, clientId?: string): User {
+  externalUser(issuer: string, subject: string, label: string, clientId?: string, clientName?: string): User {
     return this.transaction(() => {
       const existing = this.one<{ user_id: string }>(
         "SELECT user_id FROM external_identities WHERE issuer=? AND subject=?",
@@ -182,8 +183,8 @@ export class Store {
           "INSERT INTO client_grants VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
           grantId,
           user.id,
-          clientId + " 平台连接",
-          JSON.stringify({ mode: "selected", devices: [] }),
+          (clientName ?? clientId) + " 平台连接",
+          JSON.stringify({ mode: "all", capabilities: [...CAPABILITIES], overrides: [] }),
           nowSeconds(),
         );
         this.run("INSERT INTO platform_grants VALUES(?,?,?,?)", issuer, subject, clientId, grantId);
@@ -209,7 +210,7 @@ export class Store {
     this.run("UPDATE client_grants SET last_used=? WHERE id=?", nowSeconds(), grant.id);
     return grant;
   }
-  /** 只有当前平台授权的撤销记录允许显式重新建立空权限连接。 */
+  /** 只有当前平台授权的撤销记录允许显式重新建立连接。 */
   canReconnectPlatformGrant(grant: Grant): boolean {
     return (
       grant.token_digest === null &&
@@ -217,7 +218,7 @@ export class Store {
       !!this.one("SELECT grant_id FROM platform_grants WHERE grant_id=?", grant.id)
     );
   }
-  /** 保留旧授权墓碑及会话，新连接必须重新选择设备能力。 */
+  /** 保留旧授权墓碑及会话，显式重新授权的新连接默认访问全部设备。 */
   reconnectPlatformGrant(grant: Grant): Grant {
     return this.transaction(() => {
       const current = this.grant(grant.id);
@@ -233,7 +234,7 @@ export class Store {
         id,
         current.owner_id,
         current.name,
-        JSON.stringify({ mode: "selected", devices: [] }),
+        JSON.stringify({ mode: "all", capabilities: [...CAPABILITIES], overrides: [] }),
         nowSeconds(),
       );
       this.run("UPDATE platform_grants SET grant_id=? WHERE grant_id=?", id, current.id);

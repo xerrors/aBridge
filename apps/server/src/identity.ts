@@ -6,6 +6,7 @@ import { BridgeError, type Grant } from "./types.js";
 export interface IdentityConfig {
   issuer?: string;
   clientId?: string;
+  clientName?: string;
   clientSecret?: string;
   delegationEnabled?: boolean;
   backchannelOrigin?: string;
@@ -70,9 +71,15 @@ const identityFetch = async (
 /** 在打开数据库前校验可选认证配置。 */
 export function validateIdentityConfig(config: IdentityConfig, origin: string | undefined): void {
   const enabled = !!config.issuer;
+  if (config.clientName !== undefined && (!config.clientName.trim() || config.clientName.length > 100))
+    throw new Error("OIDC client name must contain 1–100 characters");
   if (
     !enabled &&
-    (config.clientId || config.clientSecret || config.delegationEnabled || config.backchannelOrigin)
+    (config.clientId ||
+      config.clientName ||
+      config.clientSecret ||
+      config.delegationEnabled ||
+      config.backchannelOrigin)
   )
     throw new Error("OIDC issuer is required");
   if (config.backchannelOrigin) {
@@ -195,6 +202,7 @@ export class Identity {
       claims.sub,
       typeof claims.name === "string" ? claims.name : "外部用户",
       this.config.delegationEnabled ? this.config.clientId : undefined,
+      this.config.clientName?.trim(),
     );
     return { token: this.store.createLogin(user.id), returnTo: pending.returnTo };
   }

@@ -19,7 +19,7 @@ const tabs: readonly [Tab, string][] = [
 function ManagementApp() {
   const [notice, setNotice] = useState("");
   const notify = useCallback((message: string) => setNotice(message), []);
-  const { user, phase, data, refresh, authenticate, logout } = useUserSession(notify);
+  const { user, phase, data, identityRevision, refresh, authenticate, logout } = useUserSession(notify);
   const admin = useInstanceAdminSession(notify);
   const [hash, setHash] = useState(location.hash);
   useEffect(() => {
@@ -52,6 +52,10 @@ function ManagementApp() {
   const visibleTab =
     adminReady && (!userReady || tab === "admin") ? "admin" : tab === "admin" ? "devices" : tab;
   const [dialog, setDialog] = useState<ManagementDialog | null>(null);
+  useEffect(() => {
+    setDialog(null);
+    setLoginDialog(false);
+  }, [identityRevision]);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(""), 5000);
@@ -165,7 +169,7 @@ function ManagementApp() {
               reconnect={(grant) =>
                 setDialog({
                   kind: "confirm",
-                  title: "重新授权（设备权限将清空）",
+                  title: `重新授权 ${grant.name} 访问全部设备（含新设备）`,
                   path: `/api/client-grants/${grant.id}/reconnect`,
                 })
               }

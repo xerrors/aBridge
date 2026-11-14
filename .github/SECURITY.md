@@ -6,9 +6,9 @@ aBridge 以当前系统用户权限执行远程请求。Shell、文件和桌面�
 
 管理账户、Device Key 和 Agent Key 分别用于管理、设备连接和 MCP 调用。每次操作重新检查所有者、设备类型、当前授权、会话、能力和连接代次，返回保留结果前也检查其访问范围。
 
-实例管理员与普通管理账户独立。管理员 Token 只允许创建用户、读取全局用户及设备统计，不能代替账户、Device Key 或 Agent Key。所有用户由受保护的管理员 API 创建，不提供公开注册或 CLI 创建用户入口。
+实例管理员与普通管理账户独立。管理员 Token 只允许创建用户、读取全局用户及设备统计，不能代替账户、Device Key 或 Agent Key。本地账户由受保护的管理员 API 创建，不提供本地公开注册或 CLI 创建用户入口；启用 OIDC 后，外部账户首次通过验证时按 issuer 和 sub 建立独立本地身份。
 
-默认生成的 Token 保存在数据库旁的私有文件（权限 `600`），也可通过 `ABRIDGE_ADMIN_TOKEN` 覆盖。启动终端会按部署者要求输出带 Token 的管理链接，`--web` 可直接打开；该链接是管理员凭据。Token 位于 URL fragment，前端读取后立即清除，再通过同源 API 兑换独立的 `HttpOnly`、`SameSite=Strict` Cookie，HTTPS 下带 `Secure`。Cookie 有效期 30 天，使用管理员 Token 签名；退出管理员清除浏览器 Cookie，重置 Token 使全部旧签名失效。请求日志与错误不输出 Token，统计响应不返回密码、密钥或操作内容。
+默认生成的 Token 保存在数据库旁的私有文件（权限 `600`），也可通过 `ABRIDGE_ADMIN_TOKEN` 覆盖。启动终端只输出普通地址，`--web` 在本机浏览器打开带 Token 的管理链接；该链接是管理员凭据，不写入终端或请求日志。Token 位于 URL fragment，前端读取后立即清除，再通过同源 API 兑换独立的 `HttpOnly`、`SameSite=Strict` Cookie，HTTPS 下带 `Secure`。Cookie 有效期 30 天，使用管理员 Token 签名；退出管理员清除浏览器 Cookie，重置 Token 使全部旧签名失效。请求日志与错误不输出 Token，统计响应不返回密码、密钥或操作内容。
 
 Host 与 Origin 校验默认只接受回环地址；反向代理使用显式 `--public-origin`，需要额外访问范围时用 Host/Origin 白名单追加。管理 API 保持同源，额外 Origin 只用于 MCP；扩展的授权申请、兑换、取消接口与 WebSocket 使用独立的扩展 Origin 校验；批准接口仍要求同源管理账户会话，扩展回调 ID 必须与发起 Origin 一致。
 

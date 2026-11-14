@@ -69,7 +69,14 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
       { description: "aBridge: " + description, inputSchema: z.object(shape).strict() },
       async (args) => {
         try {
-          return contentResponse(await run(args));
+          const value = await run(args),
+            response = contentResponse(value);
+          if (
+            object(value) &&
+            (value.status === "failed" || value.status === "refused" || value.status === "outcome_unknown")
+          )
+            return { ...response, isError: true };
+          return response;
         } catch (error) {
           if (error instanceof BridgeError)
             return {

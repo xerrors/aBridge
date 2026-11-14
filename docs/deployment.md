@@ -164,6 +164,7 @@ tag 驱动的 npm、Chrome ZIP 和 macOS 分发流程见[发布说明](releasing
 ABRIDGE_PUBLIC_ORIGIN=https://bridge.example.com
 ABRIDGE_OIDC_ISSUER_URL=https://yuxi.example.com/api/auth/provider
 ABRIDGE_OIDC_CLIENT_ID=abridge
+ABRIDGE_OIDC_CLIENT_NAME=Yuxi
 ABRIDGE_OIDC_CLIENT_SECRET=<在提供方登记的客户端秘密>
 ABRIDGE_DELEGATION_ENABLED=true
 # 可选：仅限可信私有网络，容器内访问提供方的地址
@@ -174,7 +175,7 @@ ABRIDGE_OIDC_BACKCHANNEL_ORIGIN=http://api:5050
 
 必须在提供方登记固定回调 `https://bridge.example.com/api/auth/oidc/callback`，客户端认证方式为 `client_secret_post`。登录入口 `GET /api/auth/oidc/login`，可用 `return_to=/?authorize=<id>` 保留现有设备绑定确认流程，仅接受本地限定入口；发现状态 `GET /api/auth/oidc/config`；请求 scope 为 `openid profile`，显示名使用可选的 `name`。提供方 issuer 必须精确匹配 discovery。非回环端点必须使用 HTTPS；生产公开地址必须配置 HTTPS。仅提供部分配置时拒绝启动。关闭委托但保留 OIDC 时仍可登录管理台、使用手工 Agent Key。
 
-首次登录按 `(issuer, sub)` 创建没有本地密码的普通账户，不匹配用户名或邮箱，不接管已有账户。启用平台委托后，每个外部身份和客户端拥有一个持久“平台连接”，初始设备范围为空；用户在 Agent 连接中编辑设备与能力后平台才有设备权限。该连接无 Agent Key、不支持密钥轮换；撤销后再次登录也不恢复授权。用户可在已撤销连接中显式点击“重新授权”（`POST /api/client-grants/:id/reconnect`），创建一个设备范围为空的新平台连接，再重新选择设备和能力。旧授权与会话保持撤销，重复点击旧记录不能重建授权，其他用户和手工 Key 连接不能使用此入口。
+首次登录按 `(issuer, sub)` 创建没有本地密码的普通账户，不匹配用户名或邮箱，不接管已有账户。启用平台委托后，每个外部身份和客户端拥有一个持久“平台连接”，默认覆盖该账户的全部设备（含新设备）和设备支持的能力，仍与设备授权、本机开关及就绪状态取交集；用户可编辑连接缩小范围。可选 `ABRIDGE_OIDC_CLIENT_NAME` 设置平台显示名称，未配置时使用 client ID。该连接无 Agent Key、不支持密钥轮换；撤销后再次登录也不恢复授权。当前已撤销的平台连接直接显示在 Agent 连接列表，用户可显式点击“重新授权”（`POST /api/client-grants/:id/reconnect`），确认允许访问全部设备（含新设备）后创建新的平台连接。已有连接的自定义策略不因升级或再次登录改变。旧授权与会话保持撤销，重复点击旧记录不能重建授权，其他用户和手工 Key 连接不能使用此入口。
 
 显式启用委托时，`POST /mcp` 接受同一 issuer 签发的 RS256 JWT：`sub` 为登录时的稳定主体、`aud` 精确为 `${ABRIDGE_PUBLIC_ORIGIN}/mcp`、`client_id` 为配置的 OIDC client ID、`purpose` 为 `abridge-delegation`，必须包含 `iat`、`exp`，最长 60 秒。公钥来自提供方 discovery 的 JWKS，浏览器 ID Token 不具备这些访问声明，不可用于 MCP。委托只解析已经登录建立的身份；不能通过 MCP 自动开户。个人设备列表通过 MCP `devices_list` 读取，无需为 HTTP 管理 API增加 Bearer 登录方式。
 

@@ -181,13 +181,15 @@ export function DevicePage({
                   <li key={cap}>
                     <span>{capabilityLabels[cap]}</span>
                     <span class={device.available?.[cap] ? "capability-ready" : "muted"}>
-                      {device.status !== "online"
-                        ? "离线"
-                        : device.paused
-                          ? "已暂停"
-                          : device.available?.[cap]
-                            ? "可用"
-                            : "未就绪"}
+                      {device.status === "unknown"
+                        ? "状态未知"
+                        : device.status !== "online"
+                          ? "离线"
+                          : device.paused
+                            ? "已暂停"
+                            : device.available?.[cap]
+                              ? "可用"
+                              : "未就绪"}
                     </span>
                   </li>
                 ))}
@@ -251,7 +253,9 @@ export function GrantsPage({
   reconnect: (grant: Grant) => void;
 }) {
   const active = grants.filter((grant) => grant.revoked_at === null);
-  const revoked = grants.filter((grant) => grant.revoked_at !== null);
+  const reconnectable = grants.filter((grant) => grant.revoked_at !== null && grant.can_reconnect);
+  const visible = [...active, ...reconnectable];
+  const revoked = grants.filter((grant) => grant.revoked_at !== null && !grant.can_reconnect);
   const owned = devices.filter((device) => device.status !== "revoked");
   return (
     <>
@@ -264,8 +268,28 @@ export function GrantsPage({
         </button>
       </div>
       <section class="surface" aria-label="Agent 连接列表">
-        {active.length ? (
-          active.map((grant) => {
+        {visible.length ? (
+          visible.map((grant) => {
+            if (grant.can_reconnect)
+              return (
+                <article
+                  class="agent-row"
+                  key={grant.id}
+                  data-connection-id={grant.id}
+                  aria-label={grant.name}
+                >
+                  <div>
+                    <div class="name">{grant.name}</div>
+                    <div class="device-meta">已断开</div>
+                  </div>
+                  <div class="agent-scope small muted">重新授权后可访问全部设备（含新设备）</div>
+                  <div class="actions">
+                    <button class="primary" onClick={() => reconnect(grant)}>
+                      重新授权
+                    </button>
+                  </div>
+                </article>
+              );
             const permitted = owned.filter((device) => connectionCapabilities(grant, device).length > 0);
             return (
               <article class="agent-row" key={grant.id} data-connection-id={grant.id} aria-label={grant.name}>
@@ -325,7 +349,6 @@ export function GrantsPage({
               <article class="revoked-row" key={grant.id}>
                 <span>{grant.name}</span>
                 <span class="small muted">已撤销</span>
-                {grant.can_reconnect && <button onClick={() => reconnect(grant)}>重新授权</button>}
               </article>
             ))}
           </div>
