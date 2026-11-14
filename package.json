@@ -21,7 +21,8 @@
     "icons": "node --import tsx tools/generate-icons.ts",
     "hooks": "git config --local core.hooksPath .github/hooks",
     "architecture:check": "node --import tsx tools/check-architecture.ts",
-    "package:macos": "node --import tsx tools/package-macos.ts"
+    "package:macos": "node --import tsx tools/package-macos.ts",
+    "test:browser:live": "node --import tsx tools/browser-live.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
@@ -35,7 +36,7 @@
     "tsx": "4.23.15",
     "typescript": "7.0.2"
   },
-  "version": "0.4.4",
+  "version": "0.4.5",
   "type": "module",
   "workspaces": [
     "apps/*",

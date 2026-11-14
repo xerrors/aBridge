@@ -73,6 +73,11 @@ export const TOOL_CAPABILITIES = {
   browser_open: "browser",
   browser_observe: "browser",
   browser_act: "browser",
+  browser_read: "browser",
+  browser_wait: "browser",
+  browser_evaluate: "browser",
+  browser_exec: "browser",
+  browser_locate_act: "browser",
   command_execute: "shell",
   files_list: "files",
   file_read: "files",
@@ -256,7 +261,78 @@ export const computerActionSchema = z.discriminatedUnion("type", [
 export const browserActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("click"), element_ref: elementRefSchema }).strict(),
   z.object({ type: z.literal("fill"), element_ref: elementRefSchema, text: z.string().max(60000) }).strict(),
+  z.object({ type: z.literal("hover"), element_ref: elementRefSchema }).strict(),
+  z
+    .object({ type: z.literal("press"), element_ref: elementRefSchema, key: z.string().min(1).max(100) })
+    .strict(),
+  z
+    .object({
+      type: z.literal("select"),
+      element_ref: elementRefSchema,
+      values: z.array(z.string().max(60000)).min(1).max(100),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("scroll"),
+      element_ref: elementRefSchema,
+      delta_x: z.number().finite().min(-10000).max(10000).default(0),
+      delta_y: z.number().finite().min(-10000).max(10000),
+    })
+    .strict(),
 ]);
+export const browserLocateActSchema = z
+  .object({
+    frame_selector: z.string().min(1).max(2000).optional(),
+    selector: z.string().min(1).max(2000),
+    action: z.discriminatedUnion("type", [
+      browserActionSchema.options[0].omit({ element_ref: true }),
+      browserActionSchema.options[1].omit({ element_ref: true }),
+      browserActionSchema.options[2].omit({ element_ref: true }),
+      browserActionSchema.options[3].omit({ element_ref: true }),
+      browserActionSchema.options[4].omit({ element_ref: true }),
+      browserActionSchema.options[5].omit({ element_ref: true }),
+    ]),
+  })
+  .strict();
+export const browserReadSchema = z
+  .object({
+    frame_selector: z.string().min(1).max(2000).optional(),
+    mode: z.enum(["text", "tables"]).default("text"),
+    snapshot_id: z.string().min(1).max(100).optional(),
+    offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
+    limit: z.number().int().min(1).max(24000).default(12000),
+    selector: z.string().min(1).max(2000).optional(),
+  })
+  .strict();
+export const browserWaitSchema = z
+  .object({
+    frame_selector: z.string().min(1).max(2000).optional(),
+    selector: z.string().min(1).max(2000).optional(),
+    text: z.string().min(1).max(2000).optional(),
+    state: z.enum(["visible", "hidden", "attached", "detached", "value"]).default("visible"),
+    value: z.string().max(60000).optional(),
+    timeout_ms: z.number().int().min(0).max(20000).default(10000),
+  })
+  .strict()
+  .refine((a) => Boolean(a.selector) || Boolean(a.text), "Use selector or text")
+  .refine(
+    (a) => a.state !== "value" || (a.selector !== undefined && a.value !== undefined),
+    "Value wait requires selector and value",
+  );
+export const browserEvaluateSchema = z
+  .object({
+    frame_selector: z.string().min(1).max(2000).optional(),
+    expression: z.string().min(1).max(65536),
+    timeout_ms: z.number().int().min(1).max(20000).default(10000),
+  })
+  .strict();
+export const browserExecSchema = z
+  .object({
+    code: z.string().min(1).max(65536),
+    timeout_ms: z.number().int().min(1).max(120000).default(20000),
+  })
+  .strict();
 export type ComputerAction = z.infer<typeof computerActionSchema>;
 export type BrowserAction = z.infer<typeof browserActionSchema>;
 

@@ -212,19 +212,29 @@ export function browserWorkerFixture(
         if (method === "DOM.resolveNode")
           return { object: { objectId: `${target.tabId}:${params.backendNodeId}` } };
         if (method === "Runtime.callFunctionOn") {
-          const args = params.arguments as { value: string }[];
-          if (args.length) {
-            assert.equal(params.objectId, `${target.tabId}:7`);
-            tab.text = args[0].value;
-          } else {
-            assert.equal(params.objectId, `${target.tabId}:8`);
-            tab.clicks++;
-          }
-          return { result: { value: true } };
+          return {
+            result: {
+              value: String(params.functionDeclaration).includes("function prepareInput")
+                ? { x: 10, y: 10 }
+                : true,
+            },
+          };
+        }
+        if (method === "Input.insertText") {
+          tab.text = String(params.text);
+          return {};
+        }
+        if (method === "Input.dispatchKeyEvent") {
+          if (params.type === "keyDown" && params.key === "Backspace") tab.text = "";
+          return {};
+        }
+        if (method === "Input.dispatchMouseEvent") {
+          if (params.type === "mouseReleased") tab.clicks++;
+          return {};
         }
         if (method === "Page.captureScreenshot") return { data: SCREENSHOT };
         if (method === "DOM.describeNode") return { node: { attributes: [] } };
-        if (["Page.enable", "Runtime.releaseObjectGroup"].includes(method)) return {};
+        if (["Page.enable", "Runtime.enable", "Runtime.releaseObjectGroup"].includes(method)) return {};
         throw Error(`Unexpected CDP fixture command: ${method}`);
       },
     },

@@ -54,7 +54,7 @@ You must run or have access to an aBridge Server and configure an MCP client wit
 
 ## 代码与远端命令说明
 
-当前扩展将观察、点击和填充实现打包在本地 JavaScript 内。Server 只提交已定义工具及参数；扩展不提供任意 JavaScript、原始 CDP 或 Cookie 导出接口。固定 DOM 读取/操作通过 `chrome.debugger` 调用执行。
+当前扩展将观察、输入、读取、等待和任务页执行通道打包在本地 JavaScript 内。Server 提交已定义工具及参数；代码模式在 Server 的 QuickJS 引擎组织流程，并可通过 `page.evaluate` 在自有任务页执行 JavaScript。原始 CDP 不对 Agent 开放，也没有专用 Cookie 导出工具；页面脚本可读取站点向页面开放的数据，不能把固定观察的敏感字段过滤视为脚本限制。浏览器执行通过 `chrome.debugger` 完成，生命周期和权限以[浏览器客户端](browser-profile-design.md)为准。
 
 MV3 对远程执行有严格要求，Debugger API 有特定例外；例外不豁免隐私、用途或可审查性要求。提交时应准确解释固定实现和有限参数，不能据此宣称“一定通过审核”。[官方 MV3 要求](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements)
 

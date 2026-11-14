@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserBridge } from "../src/bridge.ts";
+import { prepareInput } from "../src/page-tools.ts";
 function fixture() {
   const event = () => ({
     listeners: [],
@@ -49,6 +50,7 @@ function fixture() {
     },
     debugger: {
       onDetach: event(),
+      onEvent: event(),
       async attach(target) {
         calls.push(["attach", target]);
       },
@@ -66,7 +68,8 @@ function fixture() {
             result: { value: { text: "Save\nName", truncated: false, base_uri: "https://example.com/" } },
           };
         if (method === "DOM.resolveNode") return { object: { objectId: "internal-node-99" } };
-        if (method === "Runtime.callFunctionOn" && rejectWrite) throw Error("Transport lost");
+        if (method === "Input.dispatchMouseEvent" && rejectWrite) throw Error("Transport lost");
+        if (method === "Runtime.callFunctionOn") return { result: { value: { x: 10, y: 10 } } };
         if (method === "Page.captureScreenshot") return { data: "YWJj" };
         return {};
       },
@@ -109,7 +112,7 @@ test("owns background task tabs, reuses only that tab, closes only task resource
   assert.deepEqual(f.removed, [2, 3]);
   assert.equal(f.tabs.get(1).url, "https://personal.example/");
 });
-test("refs resolve backend node handles and click has one explicit dom_event route", async () => {
+test("refs resolve backend node handles and click uses native CDP input", async () => {
   const f = fixture();
   await f.request("open", "s1", { url: "https://example.com/" });
   const obs = (await f.request("observe")).result;
@@ -117,11 +120,15 @@ test("refs resolve backend node handles and click has one explicit dom_event rou
     observation_id: obs.observation_id,
     action: { type: "click", element_ref: "e1" },
   });
-  assert.equal(act.result.route, "dom_event");
+  assert.equal(act.result.route, "cdp_input");
   assert.equal(f.calls.find((c) => c[0] === "DOM.resolveNode")[2].backendNodeId, 99);
   const write = f.calls.find((c) => c[0] === "Runtime.callFunctionOn")[2];
   assert.equal(write.objectId, "internal-node-99");
-  assert.match(write.functionDeclaration, /dispatchEvent/);
+  assert.match(write.functionDeclaration, /elementFromPoint/);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed").length,
+    1,
+  );
   const replay = await f.request("act", "s1", {
     observation_id: obs.observation_id,
     action: { type: "click", element_ref: "e1" },
@@ -176,11 +183,11 @@ test("fill replaces values and passes text as a CDP argument, never source", asy
     observation_id: obs.observation_id,
     action: { type: "fill", element_ref: "e2", text },
   });
-  const write = f.calls.find((c) => c[0] === "Runtime.callFunctionOn")[2];
-  assert.deepEqual(write.arguments, [{ value: text }]);
-  assert.ok(!write.functionDeclaration.includes(text));
-  assert.match(write.functionDeclaration, /'input'/);
-  assert.match(write.functionDeclaration, /'change'/);
+  const write = f.calls.find((c) => c[0] === "Input.insertText")[2];
+  assert.deepEqual(write, { text });
+  const selection = f.calls.filter((c) => c[0] === "Runtime.callFunctionOn").at(-1)[2];
+  assert.ok(!selection.functionDeclaration.includes(text));
+  assert.match(selection.functionDeclaration, /select/);
 });
 test("privileged URLs and redirects reject, unknown writes close without retry", async () => {
   const f = fixture();
@@ -339,7 +346,7 @@ test("stop during in-flight DOM action reports unknown and never replays", async
   let release,
     writes = 0;
   f.chrome.debugger.sendCommand = async (...args) => {
-    if (args[1] === "Runtime.callFunctionOn") {
+    if (args[1] === "Input.dispatchMouseEvent" && args[2].type === "mousePressed") {
       writes++;
       await new Promise((resolve) => {
         release = resolve;
@@ -664,7 +671,7 @@ test("post-action navigation wait reports loading without losing or repeating th
   const send = f.chrome.debugger.sendCommand;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
     const result = await send(target, method, params);
-    if (method === "Runtime.callFunctionOn") {
+    if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased") {
       f.tabs.get(2).status = "loading";
       f.chrome.tabs.onUpdated.emit(2, { status: "loading" });
     }
@@ -969,4 +976,347 @@ test("protected field values never affect query matches, truncation or returned 
   assert.equal(visible.truncated, false);
   assert.equal(visible.elements[0].value, undefined);
   assert.ok(!JSON.stringify(visible).includes("secret-needle"));
+});
+
+test("saved text snapshots page without recapturing changed content and isolate sessions", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let reads = 0;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.expression.includes("captureContent")) {
+      reads++;
+      return { result: { value: "0123456789" } };
+    }
+    return send(target, method, params);
+  };
+  const first = (await f.request("read", "s1", { mode: "text", limit: 4 })).result;
+  assert.equal(first.text, "0123");
+  assert.equal(first.next_offset, 4);
+  const next = (
+    await f.request("read", "s1", { mode: "text", snapshot_id: first.snapshot_id, offset: 4, limit: 6 })
+  ).result;
+  assert.equal(next.text, "456789");
+  assert.equal(next.next_offset, null);
+  assert.equal(next.cached, true);
+  assert.equal(reads, 1);
+  await f.request("open", "s2", { url: "https://example.com/" });
+  assert.equal(
+    (await f.request("read", "s2", { snapshot_id: first.snapshot_id })).error.code,
+    "snapshot_missing",
+  );
+});
+
+test("table snapshots preserve row and merged-cell metadata with pagination", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  const rows = Array.from({ length: 205 }, (_, i) => ({
+    table: 0,
+    row: i,
+    cells: [{ text: String(i), row_span: 2, col_span: 1 }],
+  }));
+  f.chrome.debugger.sendCommand = async (target, method, params) =>
+    method === "Runtime.evaluate" && params.expression.includes("captureContent")
+      ? { result: { value: rows } }
+      : send(target, method, params);
+  const first = (await f.request("read", "s1", { mode: "tables", limit: 12000 })).result;
+  assert.equal(first.rows.length, 200);
+  assert.equal(first.rows[0].cells[0].row_span, 2);
+  assert.equal(first.next_offset, 200);
+  assert.equal(first.coverage, "loaded_main_document");
+});
+
+test("condition waits poll without input, time out, and stop promptly when task closes", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let checks = 0;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.expression.includes("checkCondition"))
+      return { result: { value: ++checks > 1 } };
+    return send(target, method, params);
+  };
+  assert.equal((await f.request("wait", "s1", { selector: "#ready", timeout_ms: 500 })).result.matched, true);
+  checks = -100;
+  assert.equal(
+    (await f.request("wait", "s1", { selector: "#missing", timeout_ms: 0 })).error.code,
+    "wait_timeout",
+  );
+  const waiting = f.request("wait", "s1", { selector: "#missing", timeout_ms: 20000 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await f.request("close");
+  assert.equal((await waiting).error.code, "session_closed");
+  assert.equal(f.calls.filter((call) => call[0].startsWith("Input.")).length, 0);
+});
+
+test("evaluate returns bounded serializable values and never replays failed scripts", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let runs = 0;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.expression === "test-script") {
+      runs++;
+      return { result: { value: { saved: 3 } } };
+    }
+    if (method === "Runtime.evaluate" && params.expression === "failed-script") {
+      runs++;
+      throw Error("lost");
+    }
+    return send(target, method, params);
+  };
+  assert.deepEqual((await f.request("evaluate", "s1", { expression: "test-script" })).result.value, {
+    saved: 3,
+  });
+  assert.equal(
+    (await f.request("evaluate", "s1", { expression: "failed-script" })).error.code,
+    "outcome_unknown",
+  );
+  assert.equal(runs, 2);
+  assert.equal(f.bridge.sessions.size, 0);
+});
+
+test("locator actions resolve each target anew and reject ambiguous selectors", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let ambiguous = false;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+    if (method === "DOM.querySelectorAll") return { nodeIds: ambiguous ? [3, 4] : [3] };
+    if (method === "DOM.describeNode") return { node: { backendNodeId: 100 } };
+    return send(target, method, params);
+  };
+  for (const text of ["one", "two", "three"])
+    assert.equal(
+      (await f.request("locate_act", "s1", { selector: "#name", action: { type: "fill", text } })).result
+        .executed,
+      true,
+    );
+  ambiguous = true;
+  assert.equal(
+    (await f.request("locate_act", "s1", { selector: "button", action: { type: "click" } })).error.code,
+    "target_not_unique",
+  );
+});
+
+test("press, select, scroll and hover expose distinct native or semantic routes", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  for (const action of [
+    { type: "press", key: "Enter" },
+    { type: "select", values: ["a"] },
+    { type: "scroll", delta_y: 300 },
+    { type: "hover" },
+  ]) {
+    const observation = (await f.request("observe")).result;
+    assert.equal(
+      (
+        await f.request("act", "s1", {
+          observation_id: observation.observation_id,
+          action: { ...action, element_ref: "e1" },
+        })
+      ).result.executed,
+      true,
+    );
+  }
+  assert.deepEqual(
+    f.calls.filter((call) => call[0] === "Input.dispatchKeyEvent").map((call) => call[2].type),
+    ["keyDown", "keyUp"],
+  );
+  assert.equal(
+    f.calls.filter((call) => call[0] === "Input.dispatchMouseEvent" && call[2].type === "mouseWheel").length,
+    1,
+  );
+});
+
+test("same-origin frames evaluate in their default context and unsupported frames never fall back", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let unsupported = false;
+  const evaluations = [];
+  f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextCreated", {
+    context: { id: 73, auxData: { frameId: "child-frame", isDefault: true } },
+  });
+  // An extension isolated world must never replace the site's default world.
+  f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextCreated", {
+    context: { id: 74, auxData: { frameId: "child-frame", isDefault: false } },
+  });
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.objectGroup === "abridge-frame")
+      return { result: unsupported ? { value: "unsupported_frame" } : { objectId: "frame-element" } };
+    if (method === "DOM.describeNode" && params.objectId === "frame-element")
+      return { node: { frameId: "child-frame" } };
+    if (method === "Runtime.evaluate" && params.contextId !== undefined) {
+      assert.equal(params.contextId, 73);
+      evaluations.push(params);
+      return {
+        result: {
+          value: params.expression.includes("checkCondition")
+            ? true
+            : params.expression.includes("captureContent")
+              ? "frame contents"
+              : 42,
+        },
+      };
+    }
+    if (method === "Runtime.callFunctionOn" && params.objectId === "frame-element") {
+      assert.match(params.functionDeclaration, /this.contentDocument.querySelectorAll/);
+      return { result: { objectId: "frame-node" } };
+    }
+    if (method === "DOM.describeNode" && params.objectId === "frame-node")
+      return { node: { backendNodeId: 100 } };
+    return send(target, method, params);
+  };
+  const args = { frame_selector: "#embedded" };
+  const snapshot = (await f.request("read", "s1", args)).result;
+  assert.equal(snapshot.text, "frame contents");
+  assert.equal(
+    (await f.request("read", "s1", { snapshot_id: snapshot.snapshot_id, offset: 1 })).result.coverage,
+    "loaded_same_origin_frame",
+  );
+  assert.equal((await f.request("wait", "s1", { ...args, selector: "#ready" })).result.matched, true);
+  assert.equal(
+    (await f.request("evaluate", "s1", { ...args, expression: "window.answer=42; window.answer" })).result
+      .value,
+    42,
+  );
+  assert.equal(evaluations.length, 3);
+  assert.equal(evaluations[2].expression, "window.answer=42; window.answer");
+  assert.equal(
+    (
+      await f.request("locate_act", "s1", {
+        ...args,
+        selector: "#name",
+        action: { type: "fill", text: "framed" },
+      })
+    ).result.executed,
+    true,
+  );
+  f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextDestroyed", {
+    executionContextId: 73,
+  });
+  assert.equal(
+    (await f.request("evaluate", "s1", { ...args, expression: "6*7" })).error.code,
+    "unsupported_frame",
+  );
+  assert.equal(evaluations.length, 3, "Destroyed contexts cannot run in the main document");
+  unsupported = true;
+  const before = f.calls.length;
+  for (const method of ["read", "wait", "evaluate", "locate_act"]) {
+    const result = await f.request(method, "s1", {
+      ...args,
+      selector: "#name",
+      expression: "6*7",
+      action: { type: "fill", text: "wrong document" },
+    });
+    assert.equal(result.error.code, "unsupported_frame");
+  }
+  assert.equal(f.calls.slice(before).filter((call) => call[0].startsWith("Input.")).length, 0);
+});
+
+test("frame context tracking clears on context reset, detach and tab release", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const created = () =>
+    f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextCreated", {
+      context: { id: 9, auxData: { frameId: "child", isDefault: true } },
+    });
+  created();
+  assert.equal(f.bridge.frameContexts.get(2).get("child"), 9);
+  f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextsCleared", {});
+  assert.equal(f.bridge.frameContexts.has(2), false);
+  created();
+  f.chrome.debugger.onDetach.emit({ tabId: 2 });
+  assert.equal(f.bridge.frameContexts.has(2), false);
+  created();
+  await f.request("close");
+  assert.equal(f.bridge.frameContexts.has(2), false);
+  created();
+  assert.equal(f.bridge.frameContexts.has(2), false);
+});
+
+test("read refuses navigation races without publishing misattributed snapshots", async () => {
+  for (const changedURL of [true, false]) {
+    const f = fixture();
+    await f.request("open", "s1", { url: "https://a.example/" });
+    const send = f.chrome.debugger.sendCommand;
+    f.chrome.debugger.sendCommand = async (target, method, params) => {
+      if (method === "Runtime.evaluate" && params.expression.includes("captureContent")) {
+        if (changedURL) f.tabs.get(2).url = "https://b.example/";
+        f.chrome.tabs.onUpdated.emit(2, {
+          status: "loading",
+          ...(changedURL ? { url: "https://b.example/" } : {}),
+        });
+        return { result: { value: "Document A text" } };
+      }
+      return send(target, method, params);
+    };
+    assert.equal((await f.request("read")).error.code, "stale_observation");
+    assert.equal(f.bridge.sessions.get("s1").snapshot, undefined);
+  }
+});
+
+test("navigation triggered by hover or fill preparation blocks subsequent native input", async () => {
+  for (const kind of ["hover", "fill"]) {
+    const f = fixture();
+    const opened = await f.request("open", "s1", { url: "https://example.com/" });
+    const send = f.chrome.debugger.sendCommand;
+    f.chrome.debugger.sendCommand = async (target, method, params) => {
+      const result = await send(target, method, params);
+      if (
+        (kind === "hover" && method === "Input.dispatchMouseEvent" && params.type === "mouseMoved") ||
+        (kind === "fill" &&
+          method === "Runtime.callFunctionOn" &&
+          params.functionDeclaration.includes("selectNodeContents"))
+      ) {
+        f.tabs.get(2).url = "https://example.com/new";
+        f.chrome.tabs.onUpdated.emit(2, { status: "loading" });
+      }
+      return result;
+    };
+    const action =
+      kind === "hover"
+        ? { type: "click", element_ref: "e1" }
+        : { type: "fill", element_ref: "e2", text: "do not type" };
+    assert.equal(
+      (await f.request("act", "s1", { observation_id: opened.result.observation.observation_id, action }))
+        .error.code,
+      "outcome_unknown",
+    );
+    assert.equal(
+      f.calls.filter(
+        (call) =>
+          call[0] === "Input.insertText" ||
+          (call[0] === "Input.dispatchMouseEvent" && call[2].type === "mousePressed"),
+      ).length,
+      0,
+    );
+  }
+});
+
+test("native frame coordinates reject transformed frame ancestors", () => {
+  const top = {
+    getComputedStyle: () => ({ transform: "matrix(2,0,0,2,0,0)", perspective: "none", zoom: "1" }),
+  };
+  const frame = { ownerDocument: { defaultView: top }, parentElement: null };
+  const win = {
+    innerWidth: 100,
+    innerHeight: 100,
+    top,
+    frameElement: frame,
+    getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+  };
+  const target = {
+    isConnected: true,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    matches: () => false,
+    closest: () => null,
+    contains: () => false,
+  };
+  target.ownerDocument = { defaultView: win, elementFromPoint: () => target };
+  assert.throws(() => prepareInput.call(target), /Transformed frames are unsupported/);
 });

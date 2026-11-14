@@ -6,14 +6,15 @@
 
 ## 日常构建、检查与通用发布
 
-| 文件                                           | 用途                                        | 入口                                |
-| ---------------------------------------------- | ------------------------------------------- | ----------------------------------- |
-| [build.ts](build.ts)                           | 构建 Server、Desktop CLI、管理台和扩展      | `build`，也由 `pretest` 调用        |
-| [test.ts](test.ts)                             | 发现并执行各 workspace 与工具的自动测试     | `test`                              |
-| [check-architecture.ts](check-architecture.ts) | 校验生产导入、运行依赖归属与 workspace 接口 | `architecture:check`                |
-| [package-release.ts](package-release.ts)       | 生成 Server tarball 与扩展 ZIP              | `package`；发布 CI 使用公开分发参数 |
-| [check-package.ts](check-package.ts)           | 校验分发内容、版本与依赖边界                | `package:check`                     |
-| [check-release.ts](check-release.ts)           | 校验发布标签、版本及 main 历史              | 发布 CI                             |
+| 文件                                           | 用途                                            | 入口                                      |
+| ---------------------------------------------- | ----------------------------------------------- | ----------------------------------------- |
+| [build.ts](build.ts)                           | 构建 Server、Desktop CLI、管理台和扩展          | `build`，也由 `pretest` 调用              |
+| [test.ts](test.ts)                             | 发现并执行各 workspace 与工具的自动测试         | `test`                                    |
+| [browser-live.ts](browser-live.ts)             | 通过 ego-browser 在真实引擎上验收代码执行与输入 | `test:browser:live`（需本机 ego-browser） |
+| [check-architecture.ts](check-architecture.ts) | 校验生产导入、运行依赖归属与 workspace 接口     | `architecture:check`                      |
+| [package-release.ts](package-release.ts)       | 生成 Server tarball 与扩展 ZIP                  | `package`；发布 CI 使用公开分发参数       |
+| [check-package.ts](check-package.ts)           | 校验分发内容、版本与依赖边界                    | `package:check`                           |
+| [check-release.ts](check-release.ts)           | 校验发布标签、版本及 main 历史                  | 发布 CI                                   |
 
 `check` 串联格式、架构、类型、测试和分发检查；发布流程见 [发布说明](../docs/releasing.md)。
 
@@ -52,3 +53,5 @@
 | [fixtures/README.md](fixtures/README.md)                       | 启动验收目标、核对结果与清理说明             | 手工验收指南                       |
 
 `fixtures/` 保存可复用的受控验收源码，不是中间过程产物。临时编译文件使用临时目录，验收后清理；需要保留的日志、截图和验收结果放入已忽略的 `.local/`，不混入 `tools/`。
+
+`test:browser:live` 使用自有本机 HTTP 页面，核对三条批量提交的服务端记录、数字/邮箱替换与清空、跨调用状态、条件等待、长文快照分页、表格提取、键盘、滚动和同源 iframe 输入。测试直接运行实际 BrowserBridge 与 QuickJS，通过薄 Chrome API 适配器调用真实 CDP；它不替代已安装扩展的绑定、WebSocket 重连或商店包验收。标准 `check` 保持无需真实浏览器；服务端与扩展 worker 的线缆集成由自动测试单独覆盖。

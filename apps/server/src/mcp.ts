@@ -6,6 +6,9 @@ import {
   capabilitySchema,
   computerActionSchema,
   browserActionSchema,
+  browserReadSchema,
+  browserWaitSchema,
+  browserExecSchema,
   actWaitAfterSchema,
   type DeviceTool,
 } from "@abridge/protocol";
@@ -199,12 +202,50 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_act",
-    "Click or fill a reference from the current DOM observation. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
+    "Click, fill, press, select, hover or scroll a reference from the current page observation. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Continue from the returned observation. Observation errors never justify repeating an executed action.",
     { ...base, observation_id: id, action: browserActionSchema, ...after },
     (a) => {
       if (a.screenshot && !a.observe_after)
         throw new BridgeError("invalid_arguments", "Screenshot requires observe_after=true", 422);
       return exec("browser_act", a);
+    },
+  );
+  register(
+    "browser_read",
+    "Read current page text or loaded table rows, or page a saved snapshot without capturing again. Offsets count text characters or table rows. Read coverage and truncation before drawing conclusions.",
+    { ...base, ...browserReadSchema.shape },
+    (a) => exec("browser_read", a),
+  );
+  register(
+    "browser_wait",
+    "Wait for a selector or page text condition in the existing task tab. This is read-only; a timeout never justifies repeating an executed action.",
+    { ...base, ...browserWaitSchema.shape },
+    (a) => {
+      const parsed = browserWaitSchema.safeParse({
+        frame_selector: a.frame_selector,
+        selector: a.selector,
+        text: a.text,
+        state: a.state,
+        value: a.value,
+        timeout_ms: a.timeout_ms,
+      });
+      if (!parsed.success)
+        throw new BridgeError(
+          "invalid_arguments",
+          "Use selector or text; value waits require selector and value",
+          422,
+        );
+      return exec("browser_wait", a);
+    },
+  );
+  register(
+    "browser_exec",
+    "Run an async JavaScript body in this session's persistent browser runtime. Use explicit state for cross-call values and page methods for browser I/O; return a JSON value. No Node APIs. Keep stable operation_id to recover without replay. Calls yield after wait_seconds; inspect command_status for the same operation. Session close clears state. See browser runtime documentation for supported page methods.",
+    { ...base, ...browserExecSchema.shape, wait_seconds: wait },
+    async (a) => {
+      const { session_id, operation_id, wait_seconds, ...args } = a;
+      const started = await control.execute(grant, session_id, "browser_exec", args, operation_id, false);
+      return control.waitOperation(grant, started.operation_id, wait_seconds);
     },
   );
   register(

@@ -22,17 +22,17 @@ Agent 通过 `devices_list` 选择设备 ID，再创建仅含 `browser` 的会�
 
 每个任务会话创建自己的后台标签页，复用所在 Profile 的网站登录态。任务只导航和操作自有标签页，不接管原有个人标签；正常会话关闭、断连和停止时清理任务资源。浏览器的标签恢复行为可能受浏览器设置影响，清理失败会保留记录并阻止新任务。
 
-| 工具              | 行为                                                    |
-| ----------------- | ------------------------------------------------------- |
-| `browser_open`    | 导航自有任务页，并在同一次调用中返回有界页面观察        |
-| `browser_observe` | 刷新同一任务页，聚焦已加载文本或检查加载状态            |
-| `browser_act`     | 对当前观察的精确引用点击或填充，默认等 2 秒后附带新观察 |
+| 工具              | 行为                                                  |
+| ----------------- | ----------------------------------------------------- |
+| `browser_open`    | 导航自有任务页，并在同一次调用中返回有界页面观察      |
+| `browser_observe` | 刷新同一任务页，聚焦已加载文本或检查加载状态          |
+| `browser_act`     | 对当前观察的精确引用执行输入，默认等 2 秒后附带新观察 |
 
 `browser_act` 的外层参数 `wait_after_ms` 决定动作完成后、读取页面与截图前的等待时间，默认 `2000` 毫秒，可设 `0–10000` 的整数；例如 `3000` 等待 3 秒，`0` 立即观察。`observe_after=false` 不等待，单独的 `browser_open` 与 `browser_observe` 不新增固定等待。等待计入已有时间预算，可被取消或会话关闭打断；动作已经执行但后续观察失败时，只重新观察，不重复点击。
 
 观察返回可见文本、交互元素、链接和明确截断标记。引用按会话与文档版本绑定，最长有效 10 秒，动作和导航后失效。截图需显式请求，通过原生 MCP 图片块返回。具体预算与恢复语义见 [执行契约](architecture.md)。
 
-扩展内部使用固定 Chrome debugger 调用。远程不暴露任意 JavaScript、原始 CDP、密码字段读取或 Cookie 导出。点击固定使用合成 DOM 事件，填充替换值并触发 `input`/`change`；页面可以拒绝这些操作，执行回执不能代替实际业务效果确认。
+扩展通过固定 Chrome debugger 通道执行授权的操作。点击、按键、悬停和滚动使用 CDP Input；填充使用浏览器文本输入，原生 select 使用 DOM 语义事件。原始 CDP 不对 Agent 开放。代码模式的 `page.evaluate` 在任务页执行 JavaScript，具有该页登录用户权限，固定观察中的密码过滤不能约束脚本读取。页面可拒绝操作，执行回执不能代替实际业务效果确认。
 
 ## 连接与本机控制
 
@@ -45,6 +45,46 @@ Agent 通过 `devices_list` 选择设备 ID，再创建仅含 `browser` 的会�
 ## 限制
 
 - 仅支持 HTTP(S) 页面，不能导航浏览器内部页面。
-- DOM 合成输入不等同于真实用户输入，密码管理器、原生对话框、验证码和多因素验证可能需要用户操作。
+- 下拉选择使用 DOM 语义事件；密码管理器、原生对话框、验证码和多因素验证可能需要用户操作。
 - 网站登录、浏览器调试提示、跨进程 iframe 和各站点后台行为受浏览器与站点实现约束。
 - 自动化 API 替身测试不能证明所有浏览器版本和网站行为；涉及新场景时，应使用自有测试页面核对实际效果。
+
+## 编程执行与按需读取
+
+公开工具增加 `browser_read`、`browser_wait` 和 `browser_exec`。`browser_act` 增加 `press`、`select`、`scroll`、`hover`；引用的单次使用和10秒期限保持原契约。代码中的 locator 每步重新解析唯一 CSS 目标，省去每字段一次整页观察及固定等待；不接受模糊多目标选择。
+
+`browser_exec` 的 `code` 是 async JavaScript 函数体，可使用 `page`、`state`、`console` 和 `return`。代码在 QuickJS WASM 中运行，无 Node、文件、终端或直接网络接口；`page.evaluate` 是显式的页面内代码通道，网站网络请求仍由浏览器执行。每段创建新的执行上下文，只有 JSON `state` 跨调用保存，局部变量和函数不跨调用延续。状态归当前会话所有，关闭、断连、暂停或 Server 重启后清除；状态不是持久业务数据库。
+
+```javascript
+// browser_exec.code；重复调用使用同一个 session_id。
+for (const item of [
+  { name: "Apple", quantity: 2 },
+  { name: "Pear", quantity: 3 },
+]) {
+  await page.locator("#name").fill(item.name);
+  await page.locator("#quantity").fill(String(item.quantity));
+  await page.locator("#save").click();
+  await page.wait({ selector: "#status", text: "Saved", timeout_ms: 5000 });
+  state.completed = (state.completed || 0) + 1;
+}
+return { completed: state.completed };
+```
+
+支持的页面接口：
+
+| 接口                                             | 行为                                                                          |
+| ------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `page.goto(url)` / `page.observe(options?)`      | 导航自有任务页或刷新观察                                                      |
+| `page.locator(css)`                              | 唯一 CSS 目标的 click/fill/press/select/hover/scroll/read/waitFor             |
+| `page.read(options?)`                            | 文本或表格快照，支持 selector、mode、snapshot_id、offset、limit               |
+| `page.wait(options)`                             | selector/text 的 visible/hidden/attached/detached，或 selector/value 的值等待 |
+| `page.evaluate(expressionOrFunction, argument?)` | 执行页面 JavaScript 并返回 JSON，函数参数需可序列化                           |
+| `page.frameLocator(css)`                         | 显式选择单层同源 iframe 后使用 locator/read/wait/evaluate                     |
+
+按键支持 Enter、Tab、Escape、方向键等命名键和单字符，暂不接受修饰键组合；`select(valueOrValues)` 按原生选项 value 选择；`scroll(deltaY, deltaX?)` 发送滚轮输入。frame 支持当前同源文档，跨源 frame 明确拒绝，不回退到主文档；嵌套 frame、文件传输和原生文件对话框尚无专门接口。`evaluate` 可处理 DOM 数据与特定页面逻辑，但不能把它当成任意 frame 的通用替代。
+
+代码默认限20秒，`timeout_ms` 可设至120秒；`wait_seconds` 默认15秒，等待返回后原操作可能仍在执行，应使用同一 `operation_id` 查询 `command_status`，或 `command_cancel` 取消。每段最多1000个浏览器步骤，QuickJS内存16MiB，连续纯计算有中断限额。日志最多100条/12000字符，状态和内部序列化结果最多1MiB；最终 value 超24000字符返回明确截断预览，建议在脚本内汇总或用快照分页。完整 JSON state 在正常序列化后保存；取消、超时或执行失败不能保证 state 包含最后一步进度，恢复应核对回执与实际页面。
+
+每个浏览器调用都必须 `await`，不支持返回后继续后台写入。批次不是事务；第八步失败不会撤销前七步。回执附带 `steps_completed`，外层和每个步骤分别记录操作ID。代码有副作用后异常按结果未知处理，不重放整段；执行期间同会话独占，取消会终止运行并取消在途浏览器步骤。当前不提供业务事实 `expect` 与人工接管恢复协议。
+
+`browser_read` 缓存单份当前会话快照，最多100万字符；新快照替换旧快照。文本按字符分页，表格按行分页，每页最多200行，并保留单元格行列合并信息。响应标记来源URL、缓存与截断，覆盖范围为已加载的主文档或显式同源 frame，不包含未加载分页或虚拟列表外的数据。缓存只供阅读，不授予动作权限。等待上限20秒，不自动重新提交动作；页面脚本超时可能已有副作用，会关闭任务页并报告结果未知。

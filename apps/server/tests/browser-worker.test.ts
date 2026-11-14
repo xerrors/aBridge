@@ -139,21 +139,19 @@ test(
     };
     const filled = await tool<OperationResult>("browser_act", fillArgs);
     assert.equal(filled.value.status, "executed");
-    assert.equal(filled.value.result.route, "replace_value");
+    assert.equal(filled.value.result.route, "cdp_input");
     assert.equal(worker.tabs.get(aTab)?.text, input);
     const filledObservation = filled.value.result.observation;
     assert.ok(filledObservation?.observation_id);
     assert.equal(filledObservation.elements.find((item) => item.role === "textbox")?.value, input);
-    const fillCommand = worker.commands.find((command) => command.method === "Runtime.callFunctionOn");
+    const fillCommand = worker.commands.find((command) => command.method === "Input.insertText");
     assert.ok(fillCommand);
     assert.deepEqual(
-      fillCommand.params.arguments,
-      [{ value: input }],
-      "User text is sent as a CDP argument, never interpolated into JavaScript",
+      fillCommand.params,
+      { text: input },
+      "User text is sent as a CDP parameter, never interpolated into JavaScript",
     );
-    assert.equal(fillCommand.params.objectId, `${aTab}:7`);
-    const sideEffects = () =>
-      worker!.commands.filter((command) => command.method === "Runtime.callFunctionOn");
+    const sideEffects = () => worker!.commands.filter((command) => command.method.startsWith("Input."));
     const effectsAfterFill = sideEffects().length;
     const replay = await tool<OperationResult>("browser_act", fillArgs);
     assert.equal(replay.value.operation_id, filled.value.operation_id);
@@ -181,12 +179,22 @@ test(
       },
     });
     assert.equal(clicked.value.status, "executed");
-    assert.equal(clicked.value.result.route, "dom_event");
+    assert.equal(clicked.value.result.route, "cdp_input");
     assert.equal(worker.tabs.get(aTab)?.clicks, 1);
     assert.equal(worker.tabs.get(bTab)?.clicks, 0);
     assert.match(clicked.value.result.observation!.text, /Clicks: 1/);
-    assert.deepEqual(sideEffects().at(-1)!.params.arguments, []);
-    assert.equal(sideEffects().at(-1)!.params.objectId, `${aTab}:8`);
+
+    assert.equal(
+      worker.commands.filter(
+        (command) => command.method === "Input.dispatchMouseEvent" && command.params.type === "mouseReleased",
+      ).length,
+      1,
+    );
+    assert.equal(
+      worker.commands.filter((command) => command.method === "Runtime.callFunctionOn").at(-1)!.params
+        .objectId,
+      `${aTab}:8`,
+    );
     for (const frame of worker.incoming.filter((frame) => frame.type === "dispatch")) {
       assert.ok(operationFrameSchema.safeParse(frame).success, JSON.stringify(frame));
       assert.equal(frame.protocol, PROTOCOL_VERSION);

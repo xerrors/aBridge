@@ -1,6 +1,6 @@
 # aBridge for Browser Privacy Policy
 
-Last updated: November 14, 2026
+Last updated: November 15, 2026
 
 aBridge for Browser connects the browser Profile where you install it to an aBridge Server that you choose. It lets Agents that you authorize observe and operate task pages in that browser.
 
@@ -8,7 +8,7 @@ aBridge for Browser connects the browser Profile where you install it to an aBri
 
 The extension sends its device identity, connection status and capability information to your configured Server. When an authorized Agent requests a browser operation, the extension may send the task page's URL, title, visible text, interactive element information, action results and, when requested, a screenshot through that Server to the Agent. Page content may contain personal or sensitive information. Only authorize Agents and Servers you trust with that content.
 
-The extension creates task tabs in the current Profile. Websites in those tabs use that Profile's existing login sessions under the browser's normal rules. The extension does not provide an interface for exporting cookies, browser password databases or saved passwords. Protected password-field values are excluded from observations; this does not make all page text or screenshots free of sensitive information.
+The extension creates task tabs in the current Profile. Websites in those tabs use that Profile's existing login sessions under the browser's normal rules. There is no dedicated cookie or browser password database export tool. Protected password-field values are excluded from fixed observations. Authorized code can execute JavaScript inside task pages, read page-accessible data and make requests under the website session; observation filtering does not limit that code or make page text and screenshots free of sensitive information.
 
 The project does not configure a developer-operated collection endpoint, advertising SDK or analytics service in the extension. Data goes to the Server you configure and the Agents you authorize, and websites receive ordinary browser requests when task pages are loaded or operated. The people operating those services control their own handling and retention of the data they receive.
 
@@ -30,7 +30,7 @@ The supplied Server implementation keeps device, grant, session, operation and a
 - `alarms`: attempt reconnection when the browser is running.
 - Optional host access: contact the Server origin you enter during registration. The extension asks for that origin when you bind it.
 
-The extension does not accept arbitrary JavaScript or raw debugging commands from Agents. It supports the browser actions documented in the project.
+Authorized browser code runs in an isolated JavaScript engine on your Server and can call task-page actions, read snapshots and evaluate page JavaScript. Raw debugging commands are not exposed to Agents. Code state and snapshots are held in bounded memory and cleared with their owning sessions.
 
 ## Your controls
 

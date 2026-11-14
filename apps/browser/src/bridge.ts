@@ -1,4 +1,5 @@
-// Only this fixed protocol is available remotely; CDP and JavaScript stay internal.
+import { prepareInput, prepareFill, selectValues, captureContent, checkCondition } from "./page-tools.js";
+// Browser execution is restricted to task-owned tabs; raw CDP stays internal.
 import {
   OBSERVATION_SECONDS,
   MAX_IMAGE_BYTES,
@@ -22,14 +23,21 @@ interface AXNode {
 interface CdpResults {
   "Accessibility.getFullAXTree": { nodes?: AXNode[] };
   "Runtime.evaluate": {
-    result?: { value?: { text?: unknown; truncated?: boolean; base_uri?: string } };
+    result?: { value?: unknown; objectId?: string };
     exceptionDetails?: unknown;
   };
-  "DOM.describeNode": { node?: { attributes?: string[] } };
+  "DOM.describeNode": { node?: { attributes?: string[]; backendNodeId?: number; frameId?: string } };
+  "DOM.getDocument": { root: { nodeId: number } };
+  "DOM.querySelectorAll": { nodeIds: number[] };
   "DOM.resolveNode": { object?: { objectId?: string } };
-  "Runtime.callFunctionOn": { exceptionDetails?: unknown };
+  "Runtime.callFunctionOn": { result?: { value?: unknown; objectId?: string }; exceptionDetails?: unknown };
+  "Input.dispatchMouseEvent": object;
+  "Input.dispatchKeyEvent": object;
+  "Input.insertText": object;
+  "Runtime.terminateExecution": object;
   "Page.captureScreenshot": { data?: unknown };
   "Page.enable": object;
+  "Runtime.enable": object;
   "Runtime.releaseObjectGroup": object;
 }
 interface ElementResult {
@@ -62,6 +70,14 @@ interface Session {
   attached: boolean;
   revision: number;
   busy: boolean;
+  snapshot?: {
+    id: string;
+    format: string;
+    value: string | unknown[];
+    url: string;
+    truncated: boolean;
+    coverage: string;
+  };
   denied?: boolean;
   attachAttempt?: AttachAttempt | null;
   waitCancel?: (() => void) | null;
@@ -202,6 +218,7 @@ export class BrowserBridge {
   generation = 0;
   ownershipWrites = Promise.resolve();
   readonly ownedTabs = new Set<number>();
+  readonly frameContexts = new Map<number, Map<string, number>>();
   constructor(
     chrome: typeof globalThis.chrome,
     { now = () => Date.now(), uuid = () => crypto.randomUUID(), navigationTimeout = 15000 } = {},
@@ -225,6 +242,7 @@ export class BrowserBridge {
         }
     });
     chrome.tabs.onRemoved.addListener((id) => {
+      this.frameContexts.delete(id);
       this.ownedTabs.delete(id);
       void this.persistOwnership().catch(() => {});
       for (const [key, session] of this.sessions)
@@ -234,6 +252,7 @@ export class BrowserBridge {
         }
     });
     chrome.debugger.onDetach.addListener((source) => {
+      if (source.tabId !== undefined) this.frameContexts.delete(source.tabId);
       for (const session of this.sessions.values())
         if (source.tabId === session.tabId!) {
           session.attached = false;
@@ -241,6 +260,28 @@ export class BrowserBridge {
           session.revision++;
           session.waitCancel?.();
         }
+    });
+    chrome.debugger.onEvent?.addListener((source, method, params) => {
+      if (source.tabId === undefined || !this.ownedTabs.has(source.tabId)) return;
+      const data = params as
+        | {
+            context?: { id?: number; auxData?: { frameId?: string; isDefault?: boolean } };
+            executionContextId?: number;
+          }
+        | undefined;
+      if (method === "Runtime.executionContextsCleared") this.frameContexts.delete(source.tabId);
+      else if (method === "Runtime.executionContextCreated") {
+        const context = data?.context;
+        if (context?.auxData?.isDefault && context.auxData.frameId && typeof context.id === "number") {
+          let contexts = this.frameContexts.get(source.tabId);
+          if (!contexts) this.frameContexts.set(source.tabId, (contexts = new Map()));
+          contexts.set(context.auxData.frameId, context.id);
+        }
+      } else if (method === "Runtime.executionContextDestroyed") {
+        const contexts = this.frameContexts.get(source.tabId);
+        for (const [frameId, contextId] of contexts ?? [])
+          if (contextId === data?.executionContextId) contexts!.delete(frameId);
+      }
     });
   }
   async persistOwnership() {
@@ -318,6 +359,7 @@ export class BrowserBridge {
       await readBudget(() => attempt.promise, deadline);
       if (this.sessions.get(session.id) !== session) throw fail("session_closed", "连接调试器期间任务已结束");
       await this.command(session, "Page.enable", {}, deadline);
+      await this.command(session, "Runtime.enable", {}, deadline);
       session.attached = true;
       if (session.attachAttempt === attempt) session.attachAttempt = null;
     } catch (caught) {
@@ -390,7 +432,11 @@ export class BrowserBridge {
       // A transport lifetime is bounded by the native connection. Reject excess IDs, never evict and replay.
       if (this.seen.size > OPERATION_JOURNAL_LIMIT)
         throw fail("request_limit", "连接请求数量达到上限，请重新连接");
-      if (!["open", "observe", "act", "close", "stop"].includes(method || ""))
+      if (
+        !["open", "observe", "act", "read", "wait", "evaluate", "locate_act", "close", "stop"].includes(
+          method || "",
+        )
+      )
         throw fail("unsupported_method", "不支持的浏览器方法");
       if (method === "stop") {
         await this.stop();
@@ -414,7 +460,17 @@ export class BrowserBridge {
       session.busy = true;
       try {
         const result =
-          method === "observe" ? await this.observe(session, params) : await this.act(session, params);
+          method === "observe"
+            ? await this.observe(session, params)
+            : method === "read"
+              ? await this.read(session, params)
+              : method === "wait"
+                ? await this.wait(session, params)
+                : method === "evaluate"
+                  ? await this.evaluate(session, params)
+                  : method === "locate_act"
+                    ? await this.locateAct(session, params)
+                    : await this.act(session, params);
         return { id, result };
       } finally {
         session.busy = false;
@@ -614,7 +670,8 @@ export class BrowserBridge {
       },
       deadline,
     );
-    const page = visible.result?.value;
+    const page = visible.result?.value as
+      { text?: unknown; truncated?: boolean; base_uri?: string } | undefined;
     if (visible.exceptionDetails || !page || typeof page.text !== "string")
       throw fail("observation_failed", "无法读取页面可见内容，请重新观察");
     const candidates: { item: ElementResult; backendNodeId: number }[] = [];
@@ -754,12 +811,310 @@ export class BrowserBridge {
     };
     return result;
   }
+  async locateAct(session: Session, params: BridgeParams): Promise<Result> {
+    if (typeof params.selector !== "string" || !params.selector || params.selector.length > 2000)
+      throw fail("invalid_params", "需要 CSS selector");
+    const tab = await this.valid(session);
+    await this.attach(session);
+    let backendNodeId: number | undefined;
+    if (params.frame_selector !== undefined) {
+      const frame = await this.frameTarget(session, params.frame_selector);
+      try {
+        const resolved = await this.command(session, "Runtime.callFunctionOn", {
+          objectId: frame.objectId,
+          functionDeclaration:
+            "function(selector){const nodes=this.contentDocument.querySelectorAll(selector);if(nodes.length!==1)throw new Error('Target must match exactly once');return nodes[0]}",
+          arguments: [{ value: params.selector }],
+          returnByValue: false,
+        });
+        if (resolved.exceptionDetails || !resolved.result?.objectId)
+          throw fail("target_not_unique", "frame selector 必须恰好匹配一个元素");
+        const { node } = await this.command(session, "DOM.describeNode", {
+          objectId: resolved.result.objectId,
+        });
+        backendNodeId = node?.backendNodeId;
+      } finally {
+        await this.command(session, "Runtime.releaseObjectGroup", { objectGroup: "abridge-frame" }).catch(
+          () => {},
+        );
+      }
+    } else {
+      const { root } = await this.command(session, "DOM.getDocument", {});
+      const { nodeIds } = await this.command(session, "DOM.querySelectorAll", {
+        nodeId: root.nodeId,
+        selector: params.selector,
+      });
+      if (nodeIds.length !== 1) throw fail("target_not_unique", "selector 必须恰好匹配一个元素");
+      const { node } = await this.command(session, "DOM.describeNode", { nodeId: nodeIds[0] });
+      backendNodeId = node?.backendNodeId;
+    }
+    if (!backendNodeId) throw fail("target_missing", "目标元素不存在");
+    const id = this.uuid();
+    session.observation = {
+      id,
+      refs: new Map([["target", backendNodeId]]),
+      revision: session.revision,
+      expires: this.now() + OBSERVATION_SECONDS * 1000,
+      url: tab.url!,
+    };
+    return this.act(session, {
+      ...params,
+      observation_id: id,
+      action: { ...(params.action as Record<string, unknown>), element_ref: "target" },
+      observe_after: false,
+      wait_after_ms: 0,
+    });
+  }
+  async frameTarget(
+    session: Session,
+    selector: unknown,
+    deadline?: number,
+  ): Promise<{ objectId: string; frameId: string }> {
+    if (typeof selector !== "string" || !selector || selector.length > 2000)
+      throw fail("invalid_params", "frame_selector 无效");
+    await this.valid(session, deadline);
+    await this.attach(session, deadline);
+    const frame = await this.command(
+      session,
+      "Runtime.evaluate",
+      {
+        expression: `(()=>{const frames=document.querySelectorAll(${JSON.stringify(selector)});if(frames.length!==1)return 'frame_not_unique';const frame=frames[0];if(frame.tagName!=='IFRAME'||!frame.contentDocument)return 'unsupported_frame';return frame})()`,
+        returnByValue: false,
+        objectGroup: "abridge-frame",
+      },
+      deadline,
+    );
+    if (frame.exceptionDetails || !frame.result?.objectId)
+      throw fail("unsupported_frame", "frame 必须唯一且为已加载的同源 iframe；不会转投主文档");
+    try {
+      const { node } = await this.command(
+        session,
+        "DOM.describeNode",
+        { objectId: frame.result.objectId },
+        deadline,
+      );
+      if (!node?.frameId) throw fail("unsupported_frame", "无法确定 iframe 文档；不会转投主文档");
+      return { objectId: frame.result.objectId, frameId: node.frameId };
+    } catch (error) {
+      await this.command(session, "Runtime.releaseObjectGroup", { objectGroup: "abridge-frame" }).catch(
+        () => {},
+      );
+      throw error;
+    }
+  }
+  async pageValue(
+    session: Session,
+    expression: string,
+    timeout = 10000,
+    frameSelector?: unknown,
+  ): Promise<unknown> {
+    const deadline = performance.now() + timeout;
+    await this.valid(session, deadline);
+    await this.attach(session, deadline);
+    const frame =
+      frameSelector === undefined ? undefined : await this.frameTarget(session, frameSelector, deadline);
+    let result: CdpResults["Runtime.evaluate"];
+    try {
+      const contextId = frame && this.frameContexts.get(session.tabId!)?.get(frame.frameId);
+      if (frame && contextId === undefined)
+        throw fail("unsupported_frame", "iframe 执行上下文不可用；不会转投主文档");
+      result = await this.command(
+        session,
+        "Runtime.evaluate",
+        { expression, awaitPromise: true, returnByValue: true, timeout, ...(frame ? { contextId } : {}) },
+        deadline,
+      );
+    } finally {
+      if (frame)
+        await this.command(session, "Runtime.releaseObjectGroup", { objectGroup: "abridge-frame" }).catch(
+          () => {},
+        );
+    }
+    if (result.exceptionDetails) throw fail("page_script_failed", "页面脚本执行失败");
+    return result.result?.value ?? null;
+  }
+  async evaluate(session: Session, params: BridgeParams): Promise<Result> {
+    if (typeof params.expression !== "string" || params.expression.length > 65536)
+      throw fail("invalid_params", "expression 过长或无效");
+    const timeout = typeof params.timeout_ms === "number" ? params.timeout_ms : 10000;
+    if (!Number.isInteger(timeout) || timeout < 1 || timeout > 20000)
+      throw fail("invalid_params", "timeout_ms 无效");
+    session.observation = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const value = await Promise.race([
+        this.pageValue(session, params.expression, timeout, params.frame_selector),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            // A timed-out script may already have written: terminate and release its tab.
+            void this.close(session.id, session);
+            reject(fail("outcome_unknown", "脚本超时，任务已释放；不要重放"));
+          }, timeout);
+        }),
+      ]);
+      if (JSON.stringify(value).length > 24000)
+        throw fail("result_too_large", "脚本结果超过24000字符，请在代码中分页或汇总");
+      return { value, executed: true };
+    } catch (caught) {
+      const error = errorDetails(caught);
+      if (!["invalid_params", "unsupported_frame", "result_too_large"].includes(error.code || "")) {
+        await this.close(session.id, session);
+        throw fail("outcome_unknown", "脚本可能已有副作用，任务已释放；不要重放");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async read(session: Session, params: BridgeParams): Promise<Result> {
+    const mode = params.mode === undefined ? "text" : params.mode;
+    if (mode !== "text" && mode !== "tables") throw fail("invalid_params", "mode 必须为 text/tables");
+    const offset = params.offset === undefined ? 0 : params.offset;
+    const limit = params.limit === undefined ? (mode === "text" ? 12000 : 100) : params.limit;
+    if (
+      !Number.isInteger(offset) ||
+      (offset as number) < 0 ||
+      !Number.isInteger(limit) ||
+      (limit as number) < 1 ||
+      (limit as number) > 24000
+    )
+      throw fail("invalid_params", "分页参数无效");
+    if (
+      params.selector !== undefined &&
+      (typeof params.selector !== "string" || params.selector.length > 2000)
+    )
+      throw fail("invalid_params", "selector 无效");
+    const initial = await this.valid(session);
+    if (params.snapshot_id !== undefined) {
+      if (!session.snapshot || session.snapshot.id !== params.snapshot_id || session.snapshot.format !== mode)
+        throw fail("snapshot_missing", "快照不存在或格式不同");
+    } else {
+      const revision = session.revision;
+      const sourceURL = initial.url;
+      const value = await this.pageValue(
+        session,
+        `(${captureContent.toString()})(${JSON.stringify(params.selector)},${JSON.stringify(mode === "tables" ? "table" : "text")})`,
+        10000,
+        params.frame_selector,
+      );
+      if (typeof value !== "string" && !Array.isArray(value)) throw fail("read_failed", "页面内容无效");
+      const current = await this.valid(session);
+      if (
+        session.revision !== revision ||
+        current.url !== sourceURL ||
+        current.status === "loading" ||
+        current.pendingUrl
+      )
+        throw fail("stale_observation", "读取期间页面已导航；请重新读取");
+      let truncated = false;
+      let saved = value;
+      if (typeof saved === "string" && saved.length > 1000000) {
+        saved = saved.slice(0, 1000000);
+        truncated = true;
+      }
+      if (Array.isArray(saved)) {
+        const rows: unknown[] = [];
+        let size = 0;
+        for (const row of saved) {
+          size += JSON.stringify(row).length;
+          if (size > 1000000) {
+            truncated = true;
+            break;
+          }
+          rows.push(row);
+        }
+        saved = rows;
+      }
+      session.snapshot = {
+        id: this.uuid(),
+        format: mode,
+        value: saved,
+        url: sourceURL!,
+        truncated,
+        coverage: params.frame_selector ? "loaded_same_origin_frame" : "loaded_main_document",
+      };
+    }
+    const snapshot = session.snapshot!;
+    const start = offset as number;
+    let end = Math.min(
+      snapshot.value.length,
+      start + Math.min(limit as number, mode === "text" ? 24000 : 200),
+    );
+    let page = snapshot.value.slice(start, end);
+    while (JSON.stringify(page).length > 24000 && end > start + 1) {
+      end--;
+      page = snapshot.value.slice(start, end);
+    }
+    if (JSON.stringify(page).length > 24000)
+      throw fail("result_too_large", "单行数据超过返回预算，请用脚本提取较小字段");
+    return {
+      snapshot_id: snapshot.id,
+      mode,
+      ...(mode === "text" ? { text: page } : { rows: page }),
+      offset: start,
+      total: snapshot.value.length,
+      next_offset: end < snapshot.value.length ? end : null,
+      truncated: snapshot.truncated,
+      source_url: snapshot.url,
+      coverage: snapshot.coverage,
+      cached: params.snapshot_id !== undefined,
+    };
+  }
+  async wait(session: Session, params: BridgeParams): Promise<Result> {
+    const state = typeof params.state === "string" ? params.state : "visible";
+    const timeout = typeof params.timeout_ms === "number" ? params.timeout_ms : 10000;
+    if (
+      !["visible", "hidden", "attached", "detached", "value"].includes(state) ||
+      !Number.isInteger(timeout) ||
+      timeout < 0 ||
+      timeout > 20000 ||
+      (params.selector === undefined && params.text === undefined)
+    )
+      throw fail("invalid_params", "等待条件无效");
+    if (
+      (params.selector !== undefined && typeof params.selector !== "string") ||
+      (params.text !== undefined && typeof params.text !== "string")
+    )
+      throw fail("invalid_params", "等待目标无效");
+    const deadline = performance.now() + timeout;
+    const expression = `(${checkCondition.toString()})(${JSON.stringify(params.selector)},${JSON.stringify(params.text)},${JSON.stringify(state)},${JSON.stringify(params.value)})`;
+    do {
+      try {
+        if (
+          await this.pageValue(
+            session,
+            expression,
+            Math.max(1, Math.ceil(deadline - performance.now())),
+            params.frame_selector,
+          )
+        )
+          return { matched: true, state };
+      } catch (caught) {
+        if (errorDetails(caught).code === "observation_timeout") break;
+        throw caught;
+      }
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) break;
+      await this.waitAfterAction(session, Math.min(100, Math.max(1, remaining - 1)), deadline + 1);
+    } while (performance.now() < deadline);
+    throw fail("wait_timeout", "等待条件未在期限内满足");
+  }
   async act(session: Session, params: BridgeParams): Promise<Result> {
     options(params, true);
     const parsedWait = actWaitAfterSchema.safeParse(params.wait_after_ms);
     if (!parsedWait.success) throw fail("invalid_params", "wait_after_ms 必须是 0–10000 的整数毫秒");
     const observation = session.observation;
-    const action = params.action as { type?: string; element_ref?: string; text?: unknown } | undefined;
+    const action = params.action as
+      | {
+          type?: string;
+          element_ref?: string;
+          text?: unknown;
+          key?: string;
+          values?: string[];
+          delta_x?: number;
+          delta_y?: number;
+        }
+      | undefined;
     if (
       !observation ||
       observation.id !== params.observation_id ||
@@ -769,12 +1124,28 @@ export class BrowserBridge {
       throw fail("stale_observation", "观察已失效，请重新观察");
     if (
       !action ||
-      !["click", "fill"].includes(action.type || "") ||
+      !["click", "fill", "press", "select", "scroll", "hover"].includes(action.type || "") ||
       !observation.refs.has(action.element_ref || "")
     )
-      throw fail("invalid_action", "需要当前观察中的精确元素和 click/fill 动作");
+      throw fail("invalid_action", "需要当前观察中的精确元素和支持的动作");
     if (action.type === "fill" && (typeof action.text !== "string" || action.text.length > MAX_TEXT))
       throw fail("invalid_action", "填充文本无效或过长");
+    if (action.type === "press" && (typeof action.key !== "string" || !action.key || action.key.length > 32))
+      throw fail("invalid_action", "key 无效");
+    if (
+      action.type === "select" &&
+      (!Array.isArray(action.values) ||
+        !action.values.length ||
+        !action.values.every((value) => typeof value === "string"))
+    )
+      throw fail("invalid_action", "values 无效");
+    if (
+      action.type === "scroll" &&
+      ![action.delta_x ?? 0, action.delta_y ?? 0].every(
+        (value) => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 10000,
+      )
+    )
+      throw fail("invalid_action", "滚动距离无效");
     const tab = await this.valid(session);
     if (tab.url !== observation.url || tab.status === "loading" || tab.pendingUrl)
       throw fail("stale_observation", "页面已变化，请重新观察");
@@ -785,22 +1156,144 @@ export class BrowserBridge {
     if (!object?.objectId) throw fail("stale_observation", "元素已不存在");
     try {
       if (session.revision !== observation.revision) throw fail("stale_observation", "页面已导航");
-      const functionDeclaration =
-        action.type === "click"
-          ? `function(){if(!this.isConnected)throw new Error('Element detached');this.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:this.ownerDocument.defaultView}));return true;}`
-          : `function(text){if(!this.isConnected)throw new Error('Element detached');const w=this.ownerDocument.defaultView;const p=this instanceof w.HTMLInputElement?w.HTMLInputElement.prototype:this instanceof w.HTMLTextAreaElement?w.HTMLTextAreaElement.prototype:null;if(p){if(this.disabled||this.readOnly||this.type==='file')throw new Error('Field unavailable');Object.getOwnPropertyDescriptor(p,'value').set.call(this,text);}else if(this.isContentEditable){this.textContent=text;}else{throw new Error('Element is not editable');}this.dispatchEvent(new w.Event('input',{bubbles:true}));this.dispatchEvent(new w.Event('change',{bubbles:true}));return true;}`;
-      let response;
-      // Parameters and read-only target resolution above remain correctable.
-      // Once input is dispatched the old reference is consumed even if the
-      // outcome is uncertain; post-action reads never replay that input.
-      session.observation = null;
-      try {
-        response = await this.command(session, "Runtime.callFunctionOn", {
+      let response: CdpResults["Runtime.callFunctionOn"] = {};
+      const native = ["click", "fill", "hover", "press", "scroll"].includes(action.type!);
+      let point: { x: number; y: number } | undefined;
+      if (native) {
+        const prepared = await this.command(session, "Runtime.callFunctionOn", {
           objectId: object.objectId,
-          functionDeclaration,
-          arguments: action.type === "fill" ? [{ value: action.text }] : [],
+          functionDeclaration: prepareInput.toString(),
           returnByValue: true,
         });
+        if (prepared.exceptionDetails) throw fail("action_failed", "元素不可见、被遮挡或不可用");
+        point = prepared.result?.value as { x: number; y: number } | undefined;
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
+          throw fail("action_failed", "无法确定输入位置");
+      }
+      const assertCurrentDocument = async () => {
+        const currentTab = await this.valid(session);
+        if (
+          session.revision !== observation.revision ||
+          currentTab.url !== observation.url ||
+          currentTab.status === "loading" ||
+          currentTab.pendingUrl
+        )
+          throw fail("stale_observation", "准备输入期间页面已导航，请重新观察");
+      };
+      await assertCurrentDocument();
+      session.observation = null;
+      try {
+        if (action.type === "click" || action.type === "hover" || action.type === "scroll") {
+          await this.command(session, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+          await assertCurrentDocument();
+          if (action.type === "click") {
+            try {
+              await this.command(session, "Input.dispatchMouseEvent", {
+                type: "mousePressed",
+                ...point,
+                button: "left",
+                clickCount: 1,
+              });
+            } finally {
+              await this.command(session, "Input.dispatchMouseEvent", {
+                type: "mouseReleased",
+                ...point,
+                button: "left",
+                clickCount: 1,
+              });
+            }
+          } else if (action.type === "scroll") {
+            await this.command(session, "Input.dispatchMouseEvent", {
+              type: "mouseWheel",
+              ...point,
+              deltaX: action.delta_x || 0,
+              deltaY: action.delta_y || 0,
+            });
+          }
+        } else if (action.type === "press") {
+          const key = action.key || "";
+          const keys: Record<string, number> = {
+            Enter: 13,
+            Tab: 9,
+            Escape: 27,
+            Backspace: 8,
+            Delete: 46,
+            ArrowLeft: 37,
+            ArrowUp: 38,
+            ArrowRight: 39,
+            ArrowDown: 40,
+            Home: 36,
+            End: 35,
+            PageUp: 33,
+            PageDown: 34,
+            Space: 32,
+          };
+          if (!keys[key] && key.length !== 1) throw fail("invalid_action", "不支持的按键");
+          const payload = {
+            key: key === "Space" ? " " : key,
+            windowsVirtualKeyCode: keys[key] || key.toUpperCase().charCodeAt(0),
+          };
+          try {
+            await this.command(session, "Input.dispatchKeyEvent", {
+              type: "keyDown",
+              ...payload,
+              ...(key.length === 1 || key === "Space" ? { text: payload.key } : {}),
+            });
+          } finally {
+            await this.command(session, "Input.dispatchKeyEvent", { type: "keyUp", ...payload });
+          }
+        } else if (action.type === "fill") {
+          const prepared = await this.command(session, "Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: prepareFill.toString(),
+            returnByValue: true,
+          });
+          if (prepared.exceptionDetails) throw fail("action_failed", "字段不可编辑");
+          await assertCurrentDocument();
+          if ((prepared.result?.value as { select_all?: boolean } | undefined)?.select_all) {
+            try {
+              await this.command(session, "Input.dispatchKeyEvent", {
+                type: "rawKeyDown",
+                key: "a",
+                code: "KeyA",
+                windowsVirtualKeyCode: 65,
+                modifiers: 2,
+                commands: ["selectAll"],
+              });
+            } finally {
+              await this.command(session, "Input.dispatchKeyEvent", {
+                type: "keyUp",
+                key: "a",
+                code: "KeyA",
+                windowsVirtualKeyCode: 65,
+                modifiers: 2,
+              });
+            }
+          }
+          await assertCurrentDocument();
+          if (action.text === "") {
+            try {
+              await this.command(session, "Input.dispatchKeyEvent", {
+                type: "rawKeyDown",
+                key: "Backspace",
+                windowsVirtualKeyCode: 8,
+              });
+            } finally {
+              await this.command(session, "Input.dispatchKeyEvent", {
+                type: "keyUp",
+                key: "Backspace",
+                windowsVirtualKeyCode: 8,
+              });
+            }
+          } else await this.command(session, "Input.insertText", { text: action.text });
+        } else {
+          response = await this.command(session, "Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: selectValues.toString(),
+            arguments: [{ value: action.values }],
+            returnByValue: true,
+          });
+        }
       } catch {
         let cleanupFailed = false;
         try {
@@ -819,7 +1312,10 @@ export class BrowserBridge {
       return await this.afterObservation(
         session,
         params,
-        { executed: true, route: action.type === "click" ? "dom_event" : "replace_value" },
+        {
+          executed: true,
+          route: native ? "cdp_input" : action.type === "select" ? "select_value" : "replace_value",
+        },
         true,
         performance.now() + this.navigationTimeout,
         parsedWait.data,
@@ -832,6 +1328,7 @@ export class BrowserBridge {
   }
   async removeOwned(tabId: number) {
     if (!this.ownedTabs.has(tabId)) return;
+    this.frameContexts.delete(tabId);
     try {
       await this.chrome.tabs.remove(tabId);
     } catch {

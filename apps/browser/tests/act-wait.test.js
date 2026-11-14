@@ -15,7 +15,7 @@ const event = () => ({
   },
 });
 const flush = async () => {
-  for (let i = 0; i < 30; i++) await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
 };
 function fixture(navigationTimeout = 15000) {
   const updates = event(),
@@ -45,7 +45,9 @@ function fixture(navigationTimeout = 15000) {
         }
         if (method === "Runtime.evaluate") return { result: { value: { text: state, base_uri: tab.url } } };
         if (method === "DOM.resolveNode") return { object: { objectId: "update-button" } };
-        if (method === "Runtime.callFunctionOn") {
+        if (method === "Runtime.callFunctionOn") return { result: { value: { x: 10, y: 10 } } };
+        if (method === "Input.dispatchMouseEvent") {
+          if (arguments[2]?.type !== "mouseReleased") return {};
           writes++;
           setTimeout(() => {
             state = "after";

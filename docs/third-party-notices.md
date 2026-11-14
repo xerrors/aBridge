@@ -14,13 +14,15 @@ retains the official SDK packages and the license for its copied Node.js runtime
 | ws                                                | Device WebSocket connections                              | MIT                                                                     |
 | Zod                                               | Runtime contract validation, including the browser bundle | MIT                                                                     |
 | `@trycua/cua-driver` 0.47.8                       | Optional desktop-only official Node SDK                   | MIT                                                                     |
+| quickjs-emscripten / QuickJS                      | Isolated browser code execution on Server                 | MIT (package and engine notices retained in installed dependencies)     |
 | Node.js                                           | Server runtime and copied desktop runtime                 | Node.js distribution LICENSE, including its third-party notices         |
 
 Sources: [Fastify](https://github.com/fastify/fastify),
 [MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk),
 [Preact](https://github.com/preactjs/preact), [ws](https://github.com/websockets/ws),
 [Zod](https://github.com/colinhacks/zod), [Cua](https://github.com/trycua/cua),
-[Node.js](https://github.com/nodejs/node).
+[Node.js](https://github.com/nodejs/node),
+[quickjs-emscripten](https://github.com/justjake/quickjs-emscripten).
 
 Installed npm dependencies retain their own LICENSE and NOTICE files. The
 following original MIT notices are also included for code bundled into browser

@@ -95,7 +95,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 ## 浏览器操作
 
-每个扩展安装实例注册为独立设备；Profile 由会话的 `device_id` 确定。`browser_open(url=...)` 仅导航自有任务标签，并固定附带新页面观察，不公开关闭观察的选项。`browser_act` 支持明确的 `click`/`fill`，默认在动作完成后等待 `2000` 毫秒，再附带新观察；外层参数 `wait_after_ms` 可设为 `0–10000` 的整数毫秒，`observe_after=false` 时不等待。`browser_observe` 用于刷新、聚焦查询或检查仍在加载的同一任务页。
+每个扩展安装实例注册为独立设备；Profile 由会话的 `device_id` 确定。`browser_open(url=...)` 仅导航自有任务标签，并固定附带新页面观察，不公开关闭观察的选项。`browser_act` 支持 `click`、`fill`、`press`、`select`、`scroll`、`hover`，默认在动作完成后等待 `2000` 毫秒，再附带新观察；外层参数 `wait_after_ms` 可设为 `0–10000` 的整数毫秒，`observe_after=false` 时不等待。`browser_observe` 用于刷新、聚焦查询或检查仍在加载的同一任务页。
 
 导航加载超时保留任务页，返回 `navigation_state=loading`。导航等待与后观察（含 debugger 初始化）共享 15 秒内部预算；后观察遇导航竞态，最多只读重试两次，额外预算不超过 2 秒。不重新打开标签，也不重放点击或填充。该内部预算不等于标签创建、导航提交或 DOM 动作的总执行期限。
 
@@ -103,7 +103,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 浏览器观察文本 JSON 总预算约 7000 字符，不含独立图片；正文优先且上限 4000 字符，再分配交互元素和链接。`query` 聚焦已加载页面中的文本。截断不表示内容不存在，未显示字段也不能用于推断站点全部能力。
 
-浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。点击使用显式合成 DOM 事件，填充替换字段并触发 `input`/`change`；站点可能拒绝。远程接口不接受任意 JavaScript、原始 CDP 或 Cookie 导出。详细生命周期见 [浏览器客户端](browser-profile-design.md)。
+浏览器引用最长有效 10 秒，按会话、文档版本和目标绑定，动作与导航后失效。点击、键盘、悬停与滚动在元素准备后通过 CDP Input 执行；填充使用浏览器文本输入，原生下拉选择触发 DOM 语义事件。站点仍可能拒绝操作。`browser_exec` 在 Server 的隔离 QuickJS 引擎中组织浏览器代码，通过受会话约束的内部工具执行；`page.evaluate` 可执行任务页 JavaScript，原始 CDP 不对 Agent 开放。页面脚本具有该站点登录用户的页面权限，因此固定观察的密码过滤不约束脚本读取。`browser_read` 保存有界文本或表格快照并支持缓存分页；`browser_wait` 支持有期限的条件等待。代码运行与普通动作共用授权、去重和取消，单会话代码执行期间拒绝其他操作；每个浏览器步骤独立检查授权并持有派生操作 ID。代码默认最多20秒，可设至120秒，MCP等待默认15秒后可通过 `command_status` 查询或 `command_cancel` 取消。详细生命周期及代码接口见 [浏览器客户端](browser-profile-design.md)。
 
 ## Shell、文件与结果
 

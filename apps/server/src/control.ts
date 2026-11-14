@@ -6,10 +6,16 @@ import {
   deviceCapabilities,
   requiredCapabilities,
   operationFrameSchema,
+  browserExecSchema,
+  browserReadSchema,
+  browserWaitSchema,
+  browserEvaluateSchema,
+  browserLocateActSchema,
   type Capability,
   type DeviceKind,
   type DeviceTool,
 } from "@abridge/protocol";
+import { BrowserRuntime, BrowserRuntimeError } from "./browser-runtime.js";
 import { deviceAccess, grantExpired, sessionDeadline } from "./policy.js";
 import { Store, identifier } from "./store.js";
 import {
@@ -44,6 +50,8 @@ interface Pending {
   resolve(response: OperationResponse): void;
   output: { stdout: string; stderr: string };
   starts: { stdout: number; stderr: number };
+  parentId?: string;
+  abort?: AbortController;
 }
 interface Cached {
   response: OperationResponse;
@@ -68,6 +76,8 @@ function sortedJson(value: unknown): string {
 
 /** The only owner of connection/session/operation transitions and result publication. */
 export class ControlService {
+  private readonly browserRuntime = new BrowserRuntime();
+  private readonly browserExecutions = new Map<string, string>();
   private readonly connections = new Map<string, AttachedDevice>();
   private readonly pending = new Map<string, Pending>();
   // Retain the last local policy across disconnects; offline status does not revoke completed results.
@@ -224,6 +234,7 @@ export class ControlService {
     reason: string,
     status: SessionState = "stopped",
   ): Promise<void> {
+    this.browserRuntime.close(session.id);
     this.store.closeSession(session.id, status);
     await this.cancelMatching(session.device_id, reason, { sessionId: session.id });
     const connection = this.connections.get(session.device_id);
@@ -306,7 +317,13 @@ export class ControlService {
     args: JsonObject,
     operationId?: string,
     wait = true,
+    parentId?: string,
   ): Promise<OperationResponse> {
+    if (tool === "browser_exec") args = browserExecSchema.parse(args);
+    if (tool === "browser_read") args = browserReadSchema.parse(args);
+    if (tool === "browser_wait") args = browserWaitSchema.parse(args);
+    if (tool === "browser_evaluate") args = browserEvaluateSchema.parse(args);
+    if (tool === "browser_locate_act") args = browserLocateActSchema.parse(args);
     const deadline = this.mono() + 30,
       current = this.currentGrant(grant),
       session = this.authorizedSession(current, sessionId),
@@ -334,6 +351,16 @@ export class ControlService {
         );
       return this.operationStatus(current, id);
     }
+    if (
+      tool === "browser_exec" &&
+      [...this.pending.values()].some((pending) => pending.operation.session_id === sessionId)
+    )
+      throw new BridgeError("session_busy", "Session already has an operation in progress", 409);
+    const activeCode = this.browserExecutions.get(sessionId);
+    if (activeCode && activeCode !== parentId)
+      throw new BridgeError("session_busy", "Browser code owns this session until it finishes", 409);
+    if (parentId && (!this.pending.has(parentId) || activeCode !== parentId))
+      throw new BridgeError("operation_cancelled", "Parent browser execution ended", 409);
     const connection = this.readyConnection(device.id);
     if (required.some((cap) => !connection.capabilities[cap]))
       throw new BridgeError("capability_unavailable", "Local capability is disabled or unavailable");
@@ -363,8 +390,70 @@ export class ControlService {
       resolve,
       output: { stdout: "", stderr: "" },
       starts: { stdout: 0, stderr: 0 },
+      parentId,
     });
     this.store.renewSession(sessionId, sessionDeadline(current, this.now() + SESSION_IDLE_SECONDS));
+    if (tool === "browser_exec") {
+      this.browserExecutions.set(sessionId, id);
+      const abort = new AbortController();
+      this.pending.get(id)!.abort = abort;
+      let stepIndex = 0;
+      const timeout = setTimeout(
+        () => abort.abort(new Error("Browser execution timed out")),
+        Number(args.timeout_ms),
+      );
+      void this.browserRuntime
+        .run(
+          sessionId,
+          String(args.code),
+          async (method, callArgs) => {
+            if (abort.signal.aborted || !this.pending.has(id)) throw new Error("Browser execution cancelled");
+            const allowed = ["open", "observe", "read", "wait", "evaluate", "locate_act"] as const;
+            if (!allowed.some((name) => name === method)) throw new Error("Unknown browser runtime method");
+            const step = `step_${createHash("sha256")
+              .update(id + ":" + String(++stepIndex))
+              .digest("hex")}`;
+            const response = await this.execute(
+              current,
+              sessionId,
+              `browser_${method}` as DeviceTool,
+              callArgs,
+              step,
+              true,
+              id,
+            );
+            if (response.status !== "executed")
+              throw new BridgeError(
+                response.error?.code ?? "browser_step_failed",
+                response.error?.message ?? "Browser step did not complete",
+              );
+            return response.result;
+          },
+          abort.signal,
+        )
+        .then(
+          (result) => this.finish(id, "executed", result),
+          (error: unknown) =>
+            this.finish(
+              id,
+              "outcome_unknown",
+              error instanceof BrowserRuntimeError ? error.result : undefined,
+              {
+                code: error instanceof BrowserRuntimeError ? error.code : "browser_execution_failed",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "Browser execution failed; inspect the page before continuing",
+              },
+            ),
+        )
+        .finally(() => {
+          clearTimeout(timeout);
+          if (this.browserExecutions.get(sessionId) === id) this.browserExecutions.delete(sessionId);
+        });
+      if (!wait) return this.operationStatus(current, id);
+      return this.waitOperation(current, id, 15);
+    }
     const sent = await this.safeSend(
       connection,
       operationFrameSchema.parse({
@@ -421,6 +510,12 @@ export class ControlService {
           (!scope.grantId || o.grant_id === scope.grantId),
       )
       .map((p) => p.operation.id);
+    const parents = new Set(ids);
+    for (const pending of this.pending.values()) {
+      if (pending.parentId && parents.has(pending.parentId) && !ids.includes(pending.operation.id))
+        ids.push(pending.operation.id);
+    }
+    for (const id of ids) this.pending.get(id)?.abort?.abort(new Error(reason));
     const connection = this.connections.get(deviceId);
     if (ids.length && connection)
       await this.safeSend(connection, {
@@ -437,7 +532,10 @@ export class ControlService {
   ): Promise<void> {
     this.stopping.set(deviceId, (this.stopping.get(deviceId) ?? 0) + 1);
     try {
-      for (const session of this.store.sessions(deviceId)) this.store.closeSession(session.id, status);
+      for (const session of this.store.sessions(deviceId)) {
+        this.browserRuntime.close(session.id);
+        this.store.closeSession(session.id, status);
+      }
       const connection = this.connections.get(deviceId);
       await this.cancelMatching(deviceId, reason);
       if (connection)
@@ -634,7 +732,8 @@ export class ControlService {
           message: "Connection ended; operation will not be replayed",
         });
     if (current)
-      for (const session of this.store.sessions(ticket.deviceId))
+      for (const session of this.store.sessions(ticket.deviceId)) {
+        this.browserRuntime.close(session.id);
         this.store.closeSession(
           session.id,
           reason === "server_restarted"
@@ -645,6 +744,7 @@ export class ControlService {
                 ? "revoked"
                 : "connection_lost",
         );
+      }
   }
   async receive(ticket: AttachedDevice, message: JsonObject): Promise<void> {
     const device = this.store.device(ticket.deviceId);
@@ -696,6 +796,8 @@ export class ControlService {
     const pending = this.pending.get(message.operation_id);
     if (!pending || pending.operation.device_id !== device.id || pending.operation.epoch !== ticket.epoch)
       return;
+    // browser_exec is owned and completed by the server runtime, never by a device receipt.
+    if (pending.abort) return;
     if (message.type === "output") {
       if ((message.stream === "stdout" || message.stream === "stderr") && typeof message.data === "string") {
         const stream = message.stream,
@@ -724,6 +826,14 @@ export class ControlService {
   ): void {
     const pending = this.pending.get(id);
     if (!pending) return;
+    pending.abort?.abort(new Error("Browser execution ended"));
+    if (pending.abort) {
+      for (const child of this.pending.values())
+        if (child.parentId === id)
+          void this.cancelMatching(child.operation.device_id, "Parent browser execution ended", {
+            operationId: child.operation.id,
+          });
+    }
     this.store.finishOperation(id, status);
     const response: OperationResponse = { operation_id: id, status };
     if (result !== undefined) response.result = result;
@@ -797,6 +907,7 @@ export class ControlService {
   }
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    this.browserRuntime.closeAll();
     if (this.monitor) clearInterval(this.monitor);
     this.monitor = undefined;
     const tickets = [...this.connections.values()];

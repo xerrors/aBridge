@@ -275,7 +275,15 @@ async function dispatch(connection: WebSocket, message: DeviceDispatchEnvelope) 
       throw fail("stale_operation", "操作序号已失效");
     sequence = message.sequence;
     if (
-      !["browser_open", "browser_observe", "browser_act"].includes(message.tool) ||
+      ![
+        "browser_open",
+        "browser_observe",
+        "browser_act",
+        "browser_read",
+        "browser_wait",
+        "browser_evaluate",
+        "browser_locate_act",
+      ].includes(message.tool) ||
       !message.arguments ||
       typeof message.arguments !== "object" ||
       Array.isArray(message.arguments)

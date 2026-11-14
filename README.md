@@ -62,13 +62,13 @@ open "$HOME/Applications/aBridge.app"
 
 按 `devices_list` → `session_open` → 工具操作 → `session_close` 使用。Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不可互换。连接的设备范围、能力和期限可编辑，无需替换 MCP 中的 Key；密钥轮换单独进行。管理台可预览该连接能看到的设备。设备类型、授权、本机开关、系统权限和连接状态共同决定有效能力。
 
-| 范围       | 工具                                                                                     |
-| ---------- | ---------------------------------------------------------------------------------------- |
-| 设备与会话 | `devices_list`、`device_get`、`session_open`、`session_close`                            |
-| 桌面       | `computer_open`、`computer_apps`、`computer_windows`、`computer_observe`、`computer_act` |
-| 浏览器     | `browser_open`、`browser_observe`、`browser_act`                                         |
-| Shell      | `command_execute`、`command_status`、`command_cancel`                                    |
-| 文件       | `files_list`、`file_read`、`file_write`                                                  |
+| 范围       | 工具                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------ |
+| 设备与会话 | `devices_list`、`device_get`、`session_open`、`session_close`                                    |
+| 桌面       | `computer_open`、`computer_apps`、`computer_windows`、`computer_observe`、`computer_act`         |
+| 浏览器     | `browser_open`、`browser_observe`、`browser_act`、`browser_read`、`browser_wait`、`browser_exec` |
+| Shell      | `command_execute`、`command_status`、`command_cancel`                                            |
+| 文件       | `files_list`、`file_read`、`file_write`                                                          |
 
 导航和动作返回下一步可使用的观察；短命令直接返回输出，长命令才需继续等待。接口时效、分页和失败语义见 [架构与执行契约](docs/architecture.md)。
 

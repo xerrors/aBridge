@@ -193,7 +193,7 @@ test("device names are editable by their account or device key while capabilitie
   }
 });
 
-test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yielding, files and image blocks", async () => {
+test("real MCP + WebSocket: all 21 tools, direct shell result, idempotency, yielding, files and image blocks", async () => {
   const f = await fixture();
   try {
     const user = await f.store.createUser("owner", "test-password-long"),
@@ -244,7 +244,7 @@ test("real MCP + WebSocket: all 18 tools, direct shell result, idempotency, yiel
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
     });
-    assert.equal(((await list.json()) as { result: { tools: unknown[] } }).result.tools.length, 18);
+    assert.equal(((await list.json()) as { result: { tools: unknown[] } }).result.tools.length, 21);
     const opened = await rpc(f.url, grant.key, "session_open", {
         device_id: device.device.id,
         capabilities: ["shell", "files", "screen"],
