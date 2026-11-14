@@ -47,7 +47,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 ## 身份与授权
 
-实例管理员通过独立的 Admin Token 或管理员 Cookie 创建普通用户、查看全局用户及设备统计；第一个用户和后续用户统一由 `/api/admin/users` 创建。管理员不自动拥有普通账户身份，也不能用管理员凭据调用设备或 MCP 接口。Token 默认在数据库旁私有保存，支持 `ABRIDGE_ADMIN_TOKEN` 覆盖；浏览器用 Token 兑换 30 天签名 Cookie，会话与普通用户登录相互独立、跨重启保留，Token 重置使全部旧管理员会话失效。
+实例管理员通过独立的 Admin Token 或管理员 Cookie 创建普通用户、查看全局用户及设备统计；本地账户统一由 `/api/admin/users` 创建；可选 OIDC 外部身份在首次验证登录时建立独立账户。管理员不自动拥有普通账户身份，也不能用管理员凭据调用设备或 MCP 接口。Token 默认在数据库旁私有保存，支持 `ABRIDGE_ADMIN_TOKEN` 覆盖；浏览器用 Token 兑换 30 天签名 Cookie，会话与普通用户登录相互独立、跨重启保留，Token 重置使全部旧管理员会话失效。
 
 设备名称可在管理台、Mac App 和浏览器扩展中修改，服务端在连接欢迎消息及心跳确认中同步最新名称。管理台的设备设置只允许改名，设备本机能力由客户端管理并只读展示；首次绑定时确认的能力范围和 Agent 连接策略继续限制访问。新设备 ID 使用 12 位随机 Base64URL 字符，生成时检查重复；已有设备 ID 保持不变，ID 不作为认证凭据。
 

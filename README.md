@@ -21,7 +21,7 @@ npm run build
 npm start -- --web
 ```
 
-CLI 默认启动 Server，输出带管理员 Token 的实例管理链接，`--web` 自动打开。首次生成的 Token 私有持久保存，也可用 `ABRIDGE_ADMIN_TOKEN` 覆盖。管理员通过面板或 API 创建用户、查看用户与设备统计；普通用户登录后维护自己的设备和 Agent 连接。浏览器自动保存独立的管理员会话，后续访问无需重新粘贴 Token。
+CLI 默认启动 Server，终端仅输出普通地址；`--web` 在本机浏览器打开带管理员 Token 的实例管理链接。首次生成的 Token 私有持久保存，也可用 `ABRIDGE_ADMIN_TOKEN` 覆盖。管理员通过面板或 API 创建用户、查看用户与设备统计；普通用户登录后维护自己的设备和 Agent 连接。浏览器自动保存独立的管理员会话，后续访问无需重新粘贴 Token。
 
 默认监听 `127.0.0.1:8765`。状态目录、数据库、反向代理与无图形环境的配置见 [安装与维护](docs/deployment.md)。Server 使用 Node 内置 SQLite；最低支持版本中的 API 仍为实验状态，具体约束见 [架构](docs/architecture.md)。
 
