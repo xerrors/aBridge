@@ -39,6 +39,13 @@ type Running = {
   client: string;
   task: Promise<void>;
 };
+type Admission = {
+  request_hash: string;
+  controller: AbortController;
+  capabilities: Set<string>;
+  session: string;
+  socket: WebSocket;
+};
 export type ClientOptions = {
   stateDir: string;
   config: ClientConfig;
@@ -69,6 +76,7 @@ export class DeviceClient {
   private lastAck = 0;
   private lease = DEVICE_LEASE_SECONDS;
   private readonly operations = new Map<string, Running>();
+  private readonly admissions = new Map<string, Admission>();
   private readonly closedSessions = new Set<string>();
   private serverCapabilities = new Set<string>();
   private status = "offline";
@@ -350,7 +358,10 @@ export class DeviceClient {
       return;
     }
     if (frame.type === "dispatch") {
-      await this.dispatch(frame);
+      // Native readiness can wait asynchronously. Keep receiving cancellation
+      // and session controls while that admission is pending.
+      const socket = this.socket;
+      void this.dispatch(frame).catch(() => socket?.terminate());
       return;
     }
     if (frame.type === "cancel" && Array.isArray(frame.operation_ids)) {
@@ -362,7 +373,11 @@ export class DeviceClient {
     if (frame.type === "session_close" && typeof frame.session_id === "string") {
       this.closedSessions.add(frame.session_id);
       await this.stopOperations(
-        new Set([...this.operations].filter(([, op]) => op.session === frame.session_id).map(([id]) => id)),
+        new Set(
+          [...this.operations, ...this.admissions]
+            .filter(([, op]) => op.session === frame.session_id)
+            .map(([id]) => id),
+        ),
       );
       await this.executor.closeSession(frame.session_id);
       return;
@@ -413,7 +428,8 @@ export class DeviceClient {
     const hash = createHash("sha256")
       .update(canonical({ tool: frame.tool, arguments: frame.arguments, session_id: frame.session_id }))
       .digest("hex");
-    const prior = this.journal!.get(id);
+    const pending = this.admissions.get(id);
+    const prior = this.journal!.get(id) ?? (pending ? { ...pending, status: "executing" } : undefined);
     if (prior) {
       await this.send({
         type: "result",
@@ -449,54 +465,77 @@ export class DeviceClient {
       await this.refuse(id, "session_closed", "This session is closed");
       return;
     }
-    const required = requiredCapabilities(frame.tool, frame.arguments),
-      capabilities = await this.capabilities();
-    if (
-      [...required].some(
-        (cap) =>
-          !capabilities[cap] ||
-          !this.serverCapabilities.has(cap) ||
-          !frame.session_capabilities.includes(cap),
-      )
-    ) {
-      await this.refuse(id, "capability_unavailable", "Required capability is unavailable");
-      return;
-    }
-    if (this.operations.size >= MAX_DEVICE_OPERATIONS) {
+    if (this.operations.size + this.admissions.size >= MAX_DEVICE_OPERATIONS) {
       await this.refuse(id, "device_busy", "Device operation limit reached");
       return;
     }
-    if (
-      this.options.config.paused ||
-      this.options.config.revoked ||
-      this.closedSessions.has(frame.session_id) ||
-      this.now() - this.lastAck >= this.lease * 1000 ||
-      this.socket?.readyState !== WebSocket.OPEN
-    ) {
-      await this.refuse(id, "device_paused", "Local access stopped during admission");
-      return;
-    }
-    if ([...required].some((cap) => !this.options.config.capabilities[cap])) {
-      await this.refuse(id, "capability_unavailable", "Capability disabled during admission");
-      return;
-    }
-    if (frame.expires_at <= Date.now() / 1000) {
-      await this.refuse(id, "dispatch_expired", "Operation start deadline expired during admission");
-      return;
-    }
-    const controller = new AbortController();
-    this.journal!.start(id, hash);
-    const operation: Running = {
-      controller,
+    const required = requiredCapabilities(frame.tool, frame.arguments);
+    const admission: Admission = {
+      request_hash: hash,
+      controller: new AbortController(),
       capabilities: required,
       session: frame.session_id,
-      client: frame.client_name ?? "MCP Agent",
-      task: Promise.resolve(),
+      socket: this.socket!,
     };
-    this.operations.set(id, operation);
-    operation.task = this.execute(frame, operation);
-    void operation.task.catch(() => {});
-    await this.writeStatus();
+    // Reserve identity before yielding, so concurrent admissions cannot replay
+    // the same operation or evade the device operation limit.
+    this.admissions.set(id, admission);
+    try {
+      const capabilities = await this.capabilities();
+      if (this.socket !== admission.socket || frame.connection_epoch !== this.epoch) return;
+      if (admission.controller.signal.aborted) {
+        await this.refuse(id, "operation_cancelled", "Operation stopped before execution");
+        return;
+      }
+      if (
+        [...required].some(
+          (cap) =>
+            !capabilities[cap] ||
+            !this.serverCapabilities.has(cap) ||
+            !frame.session_capabilities.includes(cap),
+        )
+      ) {
+        await this.refuse(id, "capability_unavailable", "Required capability is unavailable");
+        return;
+      }
+      if (this.operations.size >= MAX_DEVICE_OPERATIONS) {
+        await this.refuse(id, "device_busy", "Device operation limit reached");
+        return;
+      }
+      if (
+        this.options.config.paused ||
+        this.options.config.revoked ||
+        this.closedSessions.has(frame.session_id) ||
+        this.now() - this.lastAck >= this.lease * 1000 ||
+        this.socket?.readyState !== WebSocket.OPEN
+      ) {
+        await this.refuse(id, "device_paused", "Local access stopped during admission");
+        return;
+      }
+      if ([...required].some((cap) => !this.options.config.capabilities[cap])) {
+        await this.refuse(id, "capability_unavailable", "Capability disabled during admission");
+        return;
+      }
+      if (frame.expires_at <= Date.now() / 1000) {
+        await this.refuse(id, "dispatch_expired", "Operation start deadline expired during admission");
+        return;
+      }
+      this.journal!.start(id, hash);
+      const operation: Running = {
+        controller: admission.controller,
+        capabilities: required,
+        session: frame.session_id,
+        client: frame.client_name ?? "MCP Agent",
+        task: Promise.resolve(),
+      };
+      this.operations.set(id, operation);
+      this.admissions.delete(id);
+      operation.task = this.execute(frame, operation);
+      void operation.task.catch(() => {});
+      await this.writeStatus();
+    } finally {
+      if (this.admissions.get(id) === admission) this.admissions.delete(id);
+    }
   }
   private async execute(frame: OperationFrame, operation: Running): Promise<void> {
     let status = "executed",
@@ -556,6 +595,7 @@ export class DeviceClient {
     });
   }
   async stopOperations(ids?: Set<string>): Promise<void> {
+    for (const [id, admission] of this.admissions) if (!ids || ids.has(id)) admission.controller.abort();
     const selected = [...this.operations].filter(([id]) => !ids || ids.has(id));
     for (const [, op] of selected) {
       op.controller.abort();
@@ -599,7 +639,7 @@ export class DeviceClient {
       if (!request.enabled) {
         await this.stopOperations(
           new Set(
-            [...this.operations]
+            [...this.operations, ...this.admissions]
               .filter(([, op]) => op.capabilities.has(request.capability as string))
               .map(([id]) => id),
           ),
