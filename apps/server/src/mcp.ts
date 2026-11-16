@@ -1,10 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
+  COMPUTER_WINDOW_PID_REQUIRED,
   VERSION,
   MAX_IMAGE_BYTES,
   capabilitySchema,
   computerActionSchema,
+  computerPidSchema,
+  computerWindowIdSchema,
   browserActionSchema,
   browserQuerySchema,
   browserReadSchema,
@@ -152,18 +155,31 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "computer_observe",
-    "Observe the selected window with native image by default. Observation references last 120s until an action. desktop=true selects the whole desktop.",
+    "Observe the selected window with native image by default. Pass pid alone to observe its only window; multiple windows return window_selection_required and no windows return window_unavailable. Use computer_windows(pid=...) then pass both pid and window_id to select a specific window. Omit both to reuse the session's selected window. Observation references last 120s until an action. desktop=true selects the whole desktop; capture does not require verified focus. Desktop results include focus_status (confirmed or unconfirmed). Unavailable or changing focus returns the observation with focus_status=unconfirmed and pixel_actions=false; desktop actions then refuse with focus_unavailable. Observe again once focus is verifiable, or use computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true.",
     {
       ...base,
-      pid: z.number().int().positive().optional(),
-      window_id: z.number().int().nonnegative().optional(),
+      pid: computerPidSchema
+        .optional()
+        .describe(
+          "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
+        ),
+      window_id: computerWindowIdSchema
+        .optional()
+        .describe("Specific window returned by computer_windows; requires pid. Omit to select by pid alone."),
       screenshot: z.boolean().default(true),
       query: z.string().max(200).optional(),
-      desktop: z.boolean().default(false),
+      desktop: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Select the whole desktop instead of a window; cannot be combined with pid or window_id. Capture proceeds even when focus cannot be verified. focus_status=confirmed requires exactly one verifiable active regular application and the same unambiguous on-screen ordinary front window before and after capture; otherwise focus_status=unconfirmed and pixel_actions=false. Desktop actions require confirmed focus. Observe again once focus is verifiable, or use computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true.",
+        ),
     },
     (a) => {
       if (a.desktop && (a.pid !== undefined || a.window_id !== undefined))
         throw new BridgeError("invalid_arguments", "Desktop observation cannot select a window", 422);
+      if (a.window_id !== undefined && a.pid === undefined)
+        throw new BridgeError("invalid_arguments", COMPUTER_WINDOW_PID_REQUIRED, 422);
       return exec("computer_observe", a);
     },
   );
@@ -176,7 +192,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   };
   register(
     "computer_act",
-    "Act once on a current desktop observation. Waits 2000ms by default before returning a fresh observation; configure wait_after_ms for the expected UI response time. Unknown or executed actions must never be blindly repeated.",
+    "Act once on a current desktop observation. Whole-desktop actions require focus_status=confirmed and recheck current focus before input: unavailable focus returns focus_unavailable and changed focus returns focus_changed. Observe again or select a window via computer_windows. Waits 2000ms by default before returning a fresh observation; configure wait_after_ms for the expected UI response time. Unknown or executed actions must never be blindly repeated.",
     {
       ...base,
       observation_id: z.string().regex(/^obs_[a-f0-9]{32}$/),

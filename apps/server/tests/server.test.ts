@@ -590,3 +590,79 @@ test("Device Token verification returns only its identity, rejects other credent
     await f.dispose();
   }
 });
+
+test("computer_observe accepts pid alone and rejects invalid window targets before dispatch", async () => {
+  const f = await fixture();
+  let socket: WebSocket | undefined;
+  const dispatches: JsonObject[] = [];
+  try {
+    const owner = await f.store.createUser("window-owner", "fixture-password-123");
+    const device = f.store.createDevice(owner.id, "Fixture Mac", ["screen"], "computer");
+    const grant = f.store.createGrant(owner.id, "Window fixture", {
+      mode: "all",
+      capabilities: ["screen"],
+      overrides: [],
+    });
+    ({ socket } = await connect(f, device.key, "computer", (frame, ws) => {
+      dispatches.push(frame);
+      ws.send(
+        JSON.stringify({
+          type: "result",
+          connection_epoch: frame.connection_epoch,
+          operation_id: frame.operation_id,
+          status: "executed",
+          result: { received: frame.arguments },
+        }),
+      );
+    }));
+    const opened = await rpc(f.url, grant.key, "session_open", {
+      device_id: device.device.id,
+      capabilities: ["screen"],
+    });
+    const session = opened.value.id as string;
+    const pidOnly = await rpc(f.url, grant.key, "computer_observe", { session_id: session, pid: 10 });
+    assert.equal(pidOnly.value.status, "executed");
+    assert.equal(pidOnly.value.result.received.pid, 10);
+    assert.equal(pidOnly.value.result.received.window_id, undefined);
+    const selected = await rpc(f.url, grant.key, "computer_observe", {
+      session_id: session,
+      pid: 10,
+      window_id: 20,
+    });
+    assert.equal(selected.value.result.received.window_id, 20);
+    const missingPid = await rpc(f.url, grant.key, "computer_observe", {
+      session_id: session,
+      window_id: 20,
+    });
+    assert.equal(missingPid.isError, true);
+    assert.equal(missingPid.value.error.code, "invalid_arguments");
+    assert.match(missingPid.value.error.message, /pid is required/);
+    for (const windowId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "20", null]) {
+      const response = await fetch(f.url + "/mcp", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer " + grant.key,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "computer_observe",
+            arguments: { session_id: session, pid: 10, window_id: windowId },
+          },
+        }),
+      });
+      assert.equal(response.status, 200);
+      const rejected = (await response.json()) as { result: { isError?: boolean; content: unknown } };
+      assert.equal(rejected.result.isError, true);
+      assert.match(JSON.stringify(rejected.result.content), /Provide a valid window_id/);
+    }
+    assert.equal(dispatches.length, 2, "Invalid targets must not reach the device");
+  } finally {
+    socket?.terminate();
+    await f.dispose();
+  }
+});

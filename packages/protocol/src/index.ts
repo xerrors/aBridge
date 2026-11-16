@@ -47,6 +47,21 @@ export type DeviceKind = "computer" | "browser";
 export const DESKTOP_CAPABILITIES = ["screen", "input", "shell", "files"] as const;
 export const OBSERVATION_SECONDS = 10;
 export const DESKTOP_OBSERVATION_SECONDS = 120;
+export type DesktopFocusStatus = "confirmed" | "unconfirmed";
+export const COMPUTER_WINDOW_PID_REQUIRED =
+  "pid is required when window_id is provided; call computer_apps to find the application PID";
+const invalidComputerPid = "Provide a valid pid from computer_apps or computer_windows";
+export const computerPidSchema = z
+  .number({ error: invalidComputerPid })
+  .int({ error: invalidComputerPid })
+  .min(1, { error: invalidComputerPid })
+  .max(2147483647, { error: invalidComputerPid });
+const invalidComputerWindowId = "Provide a valid window_id returned by computer_windows(pid=...)";
+export const computerWindowIdSchema = z
+  .number({ error: invalidComputerWindowId })
+  .int({ error: invalidComputerWindowId })
+  .min(1, { error: invalidComputerWindowId })
+  .max(Number.MAX_SAFE_INTEGER, { error: invalidComputerWindowId });
 export const DEFAULT_ACT_WAIT_AFTER_MS = 2000;
 export const MAX_ACT_WAIT_AFTER_MS = 10000;
 export const actWaitAfterSchema = z

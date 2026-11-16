@@ -1,9 +1,13 @@
 import {
+  COMPUTER_WINDOW_PID_REQUIRED,
   DESKTOP_OBSERVATION_SECONDS,
   MAX_IMAGE_BYTES,
   MAX_ACT_WAIT_AFTER_MS,
   actWaitAfterSchema,
   computerActionSchema,
+  computerPidSchema,
+  computerWindowIdSchema,
+  type DesktopFocusStatus,
 } from "@abridge/protocol";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -174,16 +178,20 @@ export class Computer {
   private assertOpen(session: string): void {
     if (this.closed.has(session)) throw new DesktopError("session_closed", "Desktop session has closed");
   }
-  private async focus(signal?: AbortSignal): Promise<string> {
-    const active = (await this.native.apps(signal)).filter((a) => a.active && a.running);
-    if (active.length !== 1)
-      throw new DesktopError("focus_unavailable", "Cannot verify the active application");
-    const windows = (await this.native.windows(active[0].pid, signal))
-      .filter((w) => w.is_on_screen && w.layer === 0 && w.z_index !== undefined)
-      .sort((a, b) => b.z_index! - a.z_index!);
-    if (!windows[0] || (windows[1] && windows[0].z_index === windows[1].z_index))
-      throw new DesktopError("focus_unavailable", "Cannot verify the front window");
-    return `${active[0].pid}:${windows[0].window_id}`;
+  private async focus(signal?: AbortSignal): Promise<string | undefined> {
+    try {
+      const active = (await this.native.apps(signal)).filter((a) => a.active && a.running);
+      if (active.length !== 1) return undefined;
+      const windows = (await this.native.windows(active[0].pid, signal))
+        .filter((w) => w.is_on_screen && w.layer === 0 && w.z_index !== undefined)
+        .sort((a, b) => b.z_index! - a.z_index!);
+      if (!windows[0] || (windows[1] && windows[0].z_index === windows[1].z_index)) return undefined;
+      return `${active[0].pid}:${windows[0].window_id}`;
+    } catch {
+      // Missing focus evidence permits observation, but never desktop input.
+      checkAbort(signal);
+      return undefined;
+    }
   }
   observe(
     session: string,
@@ -203,25 +211,58 @@ export class Computer {
     if (args.desktop !== undefined && typeof args.desktop !== "boolean") invalid("desktop must be a boolean");
     if (args.screenshot !== undefined && typeof args.screenshot !== "boolean")
       invalid("screenshot must be a boolean");
-    let target: Target;
-    if (args.pid !== undefined || args.window_id !== undefined) {
-      if (args.desktop === true) invalid("Select a window or desktop");
-      target = {
-        pid: integer(args.pid, "pid", 1, 2147483647),
-        window_id: integer(args.window_id, "window_id", 1, Number.MAX_SAFE_INTEGER),
-      };
-    } else if (args.desktop === true) target = { desktop: true };
-    else if (previous && "pid" in previous) target = previous;
-    else throw new DesktopError("target_required", "Select a window, or explicitly request desktop");
     const query = args.query;
     if (query !== undefined && (typeof query !== "string" || query.length > 200))
       invalid("query must be at most 200 characters");
-    const focus = "desktop" in target ? await this.focus(signal) : undefined;
+    let target: Target;
+    if (args.pid !== undefined || args.window_id !== undefined) {
+      if (args.desktop === true) invalid("Select a window or desktop");
+      if (args.pid === undefined) invalid(COMPUTER_WINDOW_PID_REQUIRED);
+      const pid = computerPidSchema.safeParse(args.pid);
+      if (!pid.success) invalid(pid.error.issues[0]!.message);
+      if (args.window_id !== undefined) {
+        const windowId = computerWindowIdSchema.safeParse(args.window_id);
+        if (!windowId.success) invalid(windowId.error.issues[0]!.message);
+        target = { pid: pid.data, window_id: windowId.data };
+      } else {
+        const windows = (
+          await this.native.windows(pid.data, signal).catch((error: unknown) => {
+            checkAbort(signal);
+            this.assertOpen(session);
+            throw error;
+          })
+        ).filter((w) => w.pid === pid.data && computerWindowIdSchema.safeParse(w.window_id).success);
+        checkAbort(signal);
+        this.assertOpen(session);
+        if (!windows.length)
+          throw new DesktopError(
+            "window_unavailable",
+            "No window is available for this pid; call computer_windows(pid=...) to refresh the window list",
+          );
+        if (windows.length > 1)
+          throw new DesktopError(
+            "window_selection_required",
+            "This application has multiple windows; call computer_windows(pid=...) and pass both pid and window_id to computer_observe to select one",
+          );
+        target = { pid: pid.data, window_id: windows[0]!.window_id };
+      }
+    } else if (args.desktop === true) target = { desktop: true };
+    else if (previous && "pid" in previous) target = previous;
+    else
+      throw new DesktopError(
+        "target_required",
+        "Provide pid to observe an application's only window, provide pid and window_id to select a window, or set desktop=true",
+      );
+    const before = "desktop" in target ? await this.focus(signal) : undefined;
+    checkAbort(signal);
+    this.assertOpen(session);
     const raw = await this.native.observe(session, target, args.screenshot !== false, signal);
     checkAbort(signal);
     this.assertOpen(session);
-    if (focus && focus !== (await this.focus(signal)))
-      throw new DesktopError("focus_changed", "The front window changed during observation");
+    const after = before ? await this.focus(signal) : undefined;
+    checkAbort(signal);
+    this.assertOpen(session);
+    const focus = before === after ? before : undefined;
     const observation: Observation = {
       id: `obs_${randomUUID().replaceAll("-", "")}`,
       created: this.now(),
@@ -238,13 +279,14 @@ export class Computer {
     return result;
   }
   private compact(raw: NativeObservation, observation: Observation, query?: string): Record<string, unknown> {
+    const focusStatus: DesktopFocusStatus = observation.focus ? "confirmed" : "unconfirmed";
     const result: Record<string, unknown> = {
       observation_id: observation.id,
       app_name: short(raw.app_name, 200),
       window_title: short(raw.window_title, 200),
       ...("pid" in observation.target
         ? { window: { pid: observation.target.pid, window_id: observation.target.window_id } }
-        : { desktop: true }),
+        : { desktop: true, focus_status: focusStatus }),
       elements: [],
     };
     const rows: Record<string, unknown>[] = [];
@@ -293,7 +335,7 @@ export class Computer {
       result.mime_type = raw.mime_type;
     }
     const pixel = Boolean(result.image_base64 && raw.width && raw.height && raw.frame_valid !== false);
-    result.pixel_actions = pixel;
+    result.pixel_actions = pixel && ("pid" in observation.target || focusStatus === "confirmed");
     if (pixel) {
       result.coordinate_space = "screenshot_pixels";
       result.geometry = { width: raw.width, height: raw.height };
@@ -341,6 +383,11 @@ export class Computer {
       invalid("screenshot requires observe_after=true");
     const waiting = actWaitAfterSchema.safeParse(outer.wait_after_ms);
     if (!waiting.success) invalid(`wait_after_ms must be an integer between 0 and ${MAX_ACT_WAIT_AFTER_MS}`);
+    if ("desktop" in observation.target && !observation.focus)
+      throw new DesktopError(
+        "focus_unavailable",
+        "Desktop observation has unconfirmed focus; observe the desktop again after focus is verifiable, or call computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true",
+      );
     const native: NativeAction = {
       action,
       target: observation.target,
@@ -428,8 +475,19 @@ export class Computer {
       );
     }
     checkAbort(signal);
-    if (observation.focus && observation.focus !== (await this.focus(signal)))
-      throw new DesktopError("focus_changed", "The front window changed; observe again");
+    if (observation.focus) {
+      const current = await this.focus(signal);
+      checkAbort(signal);
+      this.assertOpen(session);
+      if (!current)
+        throw new DesktopError(
+          "focus_unavailable",
+          "Cannot verify the current focus; observe the desktop again after focus is verifiable, or call computer_windows(pid=...) then computer_observe with the returned pid and window_id, omitting desktop=true",
+        );
+      if (observation.focus !== current)
+        throw new DesktopError("focus_changed", "The front window changed; observe again");
+    }
+    checkAbort(signal);
     this.assertOpen(session);
     this.observations.delete(session);
     const result = await this.native.act(session, native, signal);
