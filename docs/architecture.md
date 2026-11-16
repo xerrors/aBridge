@@ -43,6 +43,10 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 
 Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状态按请求隔离，设备操作会话由 `ControlService` 管理，二者不是同一个生命周期。管理台是预构建 Preact 11 静态产物，正常运行不启动前端开发服务器。
 
+管理台源码按职责收拢在 `apps/web/src/`：`app/` 负责入口、导航、工作区布局与跨功能弹窗编排，`components/` 提供公共控件，`features/` 按 auth、overview、devices、connections、activity、admin 放置页面及相关逻辑，`lib/` 放置请求、公共类型与展示标签。页面不作为其他模块的公共类型出口；连接权限计算集中在 connections 的 policy 模块。表单与弹窗共享提交状态，保留在同一组件文件中。
+
+样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
+
 持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
 
 ## 身份与授权

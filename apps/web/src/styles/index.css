@@ -1,0 +1,10 @@
+/* Shared foundations precede feature-specific rules. */
+@import "base.css";
+@import "../components/controls.css";
+@import "../app/layout.css";
+@import "../features/auth/styles.css";
+@import "../features/devices/styles.css";
+@import "../features/connections/styles.css";
+@import "../features/activity/styles.css";
+@import "../features/admin/styles.css";
+@import "../features/overview/styles.css";

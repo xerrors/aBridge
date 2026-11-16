@@ -43,8 +43,11 @@ for (const app of ["server", "desktop"] as const) {
   await writeFile(join(out, app, "cli.meta.json"), JSON.stringify(result.metafile, null, 2) + "\n");
 }
 await cp(join(root, "apps/web/public"), join(out, "server/web"), { recursive: true });
+await cp(join(root, "docs/assets/brand/platforms"), join(out, "server/web/icons/platforms"), {
+  recursive: true,
+});
 await build({
-  entryPoints: [join(root, "apps/web/src/app.tsx")],
+  entryPoints: [join(root, "apps/web/src/app/main.tsx")],
   outfile: join(out, "server/web/app.js"),
   bundle: true,
   plugins: [workspaceSources],
@@ -55,6 +58,13 @@ await build({
   jsx: "automatic",
   jsxImportSource: "preact",
   sourcemap: true,
+});
+await build({
+  entryPoints: [join(root, "apps/web/src/styles/index.css")],
+  outfile: join(out, "server/web/app.css"),
+  bundle: true,
+  external: ["/static/*"],
+  minify: true,
 });
 const extension = join(out, "browser");
 await cp(join(root, "apps/browser/public"), extension, { recursive: true });

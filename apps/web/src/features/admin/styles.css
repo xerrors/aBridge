@@ -1,0 +1,106 @@
+.instance-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0 0 30px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.instance-stats > div {
+  padding: 22px 24px;
+}
+.instance-stats > div + div {
+  border-left: 1px solid var(--line);
+}
+.instance-stats dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.instance-stats dd {
+  margin: 6px 0 0;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  font-variant-numeric: tabular-nums;
+}
+.instance-stats > div:first-child dd,
+.instance-online {
+  color: var(--blue);
+}
+.instance-list-heading {
+  padding: 22px 24px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.instance-list-heading h2 {
+  font-size: 18px;
+}
+.instance-user {
+  border-top: 1px solid var(--line);
+}
+.instance-user > summary {
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  cursor: pointer;
+  list-style: none;
+}
+.instance-user > summary::-webkit-details-marker {
+  display: none;
+}
+.instance-user > summary > .lucide {
+  color: var(--muted);
+}
+.instance-user[open] > summary > .lucide {
+  transform: rotate(180deg);
+}
+.instance-user > summary > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.instance-created {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.instance-user-counts {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.instance-user-counts strong {
+  font-weight: 600;
+  margin-left: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.instance-devices {
+  margin-bottom: 8px;
+}
+.instance-devices td:first-child {
+  overflow-wrap: anywhere;
+}
+.instance-devices th,
+.instance-devices td {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+.instance-devices td:nth-child(2),
+.instance-devices td:nth-child(3),
+.instance-devices td:nth-child(4) {
+  white-space: nowrap;
+}
+.instance-no-devices {
+  padding: 0 24px 24px;
+}
+.instance-loading {
+  padding: 32px 0;
+}

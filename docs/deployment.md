@@ -4,7 +4,7 @@
 
 当前为 0.4 开发候选。运行环境支持 Node 22.x（最低 22.13.0）、23.x（最低 23.4.0）及 24 以上版本；源码构建需要 npm。两个最低补丁版本均来自内置 `node:sqlite` 取消实验启动参数的版本，22.0–22.12 和 23.0–23.3 不在支持范围内。[Node 22 官方说明](https://nodejs.org/en/blog/release/v22.13.0) · [Node 23 官方说明](https://nodejs.org/en/blog/release/v23.4.0) macOS App 目标为 Apple Silicon、macOS 14+，原生编译另需 Xcode Command Line Tools。Server 不需要桌面 SDK、Chrome 或图形环境。
 
-Server、管理台和扩展从同一套 TypeScript 源码构建。用户运行预构建 JavaScript，管理台作为静态资源随 Server 提供，不启动 Vite 等开发服务器。候选 npm 包尚未公开发布，不能把示例包名当作已可执行的公共 `npx` 入口。
+Server、管理台和扩展从同一套 TypeScript 源码构建。用户运行预构建 JavaScript，管理台作为静态资源随 Server 提供，不启动 Vite 等开发服务器。管理台脚本入口为 `apps/web/src/app/main.tsx`，样式入口为 `apps/web/src/styles/index.css`；构建分别产出 `web/app.js` 和 `web/app.css`。候选 npm 包尚未公开发布，不能把示例包名当作已可执行的公共 `npx` 入口。
 
 ## 从源码运行 Server
 

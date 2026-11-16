@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { oidcLoginPath } from "../src/authentication.js";
-import { authorizationCallbackUrl } from "../src/device-authorization.js";
+import { oidcLoginPath } from "../src/features/auth/page.js";
+import { authorizationCallbackUrl } from "../src/features/devices/authorization.js";
 
 const state = "a".repeat(43);
 const extension = "a".repeat(32) + ".chromiumapp.org";

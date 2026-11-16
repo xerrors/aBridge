@@ -1,0 +1,295 @@
+.skip {
+  position: fixed;
+  top: -60px;
+  left: 16px;
+  background: white;
+  z-index: 10;
+  padding: 12px;
+}
+.skip:focus {
+  top: 12px;
+}
+.account {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.account-name {
+  font-size: 13px;
+}
+.page-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 30px;
+  min-height: 40px;
+}
+#notice {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: white;
+  padding: 11px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 6px 24px #00000014;
+  max-width: calc(100vw - 32px);
+  z-index: 20;
+}
+#notice:empty {
+  display: none;
+}
+.instance-admin-label {
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
+}
+.device-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  text-decoration: none;
+  font-size: 13px;
+}
+.device-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.device-title h1 {
+  margin: 0;
+  font-size: 26px;
+  overflow-wrap: anywhere;
+}
+.console-layout {
+  min-width: 900px;
+  min-height: 100vh;
+}
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 216px;
+  background: white;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 26px 16px 20px;
+  z-index: 3;
+}
+.sidebar .brand-home {
+  padding: 0 10px;
+}
+.sidebar .brand {
+  gap: 10px;
+}
+.sidebar .brand-symbol {
+  width: 26px;
+  height: 26px;
+}
+.sidebar .brand-wordmark {
+  width: 99px;
+}
+.side-nav {
+  display: grid;
+  gap: 5px;
+  margin-top: 42px;
+}
+.side-nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  color: var(--muted);
+  text-decoration: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.side-nav svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.side-nav a:hover {
+  background: var(--canvas);
+  color: var(--ink);
+}
+.side-nav a[aria-current="page"] {
+  background: #f0f0f0;
+  color: var(--ink);
+}
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 20px 12px 0;
+  display: grid;
+  gap: 6px;
+}
+.server-host {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace {
+  margin-left: 216px;
+}
+.workspace-header {
+  height: 65px;
+  padding: 0 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  background: white;
+  color: var(--muted);
+  font-size: 13px;
+}
+.workspace-header .account {
+  gap: 12px;
+}
+.workspace-header .connection-menu summary {
+  font-size: 0;
+  text-align: center;
+  width: 32px;
+  min-height: 32px;
+}
+.workspace-content {
+  max-width: 1320px;
+  padding: 42px 48px 80px;
+  margin: 0 auto;
+  outline: none;
+}
+.page-title h1 {
+  line-height: 1.25;
+}
+.page-title > div > p {
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 32px 0 18px;
+}
+.section-heading h2 {
+  font-size: 17px;
+}
+.section-heading p {
+  margin-top: 6px;
+  font-size: 13px;
+}
+.section-heading a {
+  font-size: 13px;
+  text-decoration: none;
+}
+.subnav {
+  display: flex;
+  gap: 28px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 28px;
+}
+.subnav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 0 0 13px;
+  border-bottom: 2px solid transparent;
+}
+.subnav a[aria-current="page"] {
+  color: var(--ink);
+  border-color: var(--ink);
+  font-weight: 500;
+}
+.list-heading {
+  padding: 12px 24px;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 12px;
+  display: grid;
+  gap: 24px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-section + .settings-section {
+  border-top: 1px solid var(--line);
+}
+.settings-section p {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 60ch;
+}
+.settings-section button {
+  flex: none;
+}
+.settings-section code {
+  display: block;
+  margin-top: 8px;
+}
+.settings-section {
+  display: flex;
+  gap: 32px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 26px 0;
+}
+.settings-section h2 {
+  font-size: 14px;
+  margin-bottom: 7px;
+  font-weight: 500;
+}
+.status-banner,
+.connection-expired-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  color: var(--muted);
+  border-left: 2px solid #bd8a33;
+  padding: 4px 0 4px 14px;
+  margin-bottom: 32px;
+  font-size: 13px;
+}
+.task-page {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.task-page .page-title {
+  margin-bottom: 32px;
+}
+.task-page .device-back {
+  margin-bottom: 18px;
+}
+.setup-panel {
+  padding: 8px 0;
+}
+.setup-panel .section-heading:first-child {
+  margin-top: 0;
+}
+.settings-panel {
+  max-width: 900px;
+}
+@media (max-width: 1100px) {
+  .sidebar {
+    width: 184px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .workspace {
+    margin-left: 184px;
+  }
+  .workspace-content {
+    padding: 32px 28px 64px;
+  }
+  .workspace-header {
+    padding: 0 28px;
+  }
+}

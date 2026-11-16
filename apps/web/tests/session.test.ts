@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setImmediate } from "node:timers/promises";
 import { build } from "esbuild";
-import type { useUserSession } from "../src/session.js";
+import type { useUserSession } from "../src/features/auth/session.js";
 
 type Session = ReturnType<typeof useUserSession>;
 type Slot = { value?: unknown; dependencies?: unknown[]; cleanup?: () => void };
@@ -57,7 +57,7 @@ async function fixture(handler: Handler = (path) => response(path), management =
   const output = join(directory, "session.mjs");
   const key = "__abridgeSessionTestHooks";
   await build({
-    entryPoints: [fileURLToPath(new URL("../src/session.ts", import.meta.url))],
+    entryPoints: [fileURLToPath(new URL("../src/features/auth/session.ts", import.meta.url))],
     outfile: output,
     bundle: true,
     format: "esm",

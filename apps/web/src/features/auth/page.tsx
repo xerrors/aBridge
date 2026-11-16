@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
-import { Brand, Field, Form } from "./components.js";
+import { Brand } from "../../components/brand.js";
+import { Field, Form } from "../../components/forms.js";
 import type { AuthPhase } from "./session.js";
 /** 保留设备绑定入口，不转发其他查询中的凭据或外部返回地址。 */
 export function oidcLoginPath(search: string, hash: string): string {
@@ -38,12 +39,15 @@ export function Authentication({
 }) {
   if (phase === "loading")
     return (
-      <main class="login-wrap">
-        <Brand />
+      <main class="login-wrap" id="main" tabIndex={-1}>
+        <div class="login-loading" role="status">
+          <Brand />
+          <p class="muted">正在加载管理台…</p>
+        </div>
       </main>
     );
   return (
-    <main class="login-wrap" id="main">
+    <main class="login-wrap" id="main" tabIndex={-1}>
       <div class="login-panel">
         <Brand />
         <h1>登录管理台</h1>
@@ -52,7 +56,11 @@ export function Authentication({
           <Field name="username" label="账户" />
           <Field name="password" label="密码" type="password" minLength={1} passwordPurpose="current" />
         </Form>
-        {notice && <p role="alert">{notice}</p>}
+        {notice && (
+          <p class="error" role="alert">
+            {notice}
+          </p>
+        )}
       </div>
     </main>
   );
