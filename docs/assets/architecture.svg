@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="400" viewBox="0 0 1120 400" role="img" aria-labelledby="title desc">
+  <title id="title">aBridge：连接 Agent 与用户设备</title>
+  <desc id="desc">Agent 通过带授权的 MCP 接口调用 aBridge Server。macOS App 和浏览器扩展各自直接连接 Server，分别提供本机能力与当前 Profile 的网页能力，互不依赖。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#0066DD"/></marker>
+  </defs>
+  <rect width="1120" height="400" rx="20" fill="#F7F9FC"/>
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+    <text x="40" y="46" font-size="22" font-weight="700" fill="#18283F">一个入口，连接你授权的设备</text>
+    <text x="40" y="73" font-size="14" fill="#5A6B82">Agent 调用 MCP；两种客户端各自直接连接 Server</text>
+    <rect x="40" y="157" width="224" height="124" rx="14" fill="#FFFFFF" stroke="#D8E0EB"/>
+    <text x="64" y="190" font-size="20" font-weight="700" fill="#18283F">你的 Agent</text>
+    <text x="64" y="218" font-size="14" fill="#5A6B82">Codex · OpenCode · ZCode</text>
+    <text x="64" y="248" font-size="13" fill="#5A6B82">支持 Streamable HTTP 的客户端</text>
+    <path d="M264 219H410" stroke="#0066DD" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="337" y="193" text-anchor="middle" font-size="14" font-weight="600" fill="#0066DD">MCP</text>
+    <text x="337" y="248" text-anchor="middle" font-size="12" fill="#5A6B82">授权设备与能力</text>
+    <rect x="424" y="141" width="264" height="156" rx="14" fill="#EDF4FF" stroke="#0066DD" stroke-width="1.5"/>
+    <text x="448" y="179" font-size="22" font-weight="700" fill="#0066DD">aBridge Server</text>
+    <text x="448" y="211" font-size="14" fill="#344B69">账户 · 授权 · 会话 · 操作状态</text>
+    <line x1="448" y1="231" x2="664" y2="231" stroke="#CCDDF6"/>
+    <text x="448" y="259" font-size="13" fill="#5A6B82">管理台随 Server 提供</text>
+    <path d="M688 195H738V156H793" fill="none" stroke="#0066DD" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <path d="M688 243H738V296H793" fill="none" stroke="#0066DD" stroke-width="2.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text x="716" y="117" text-anchor="middle" font-size="12" fill="#5A6B82">WebSocket</text>
+    <rect x="808" y="100" width="272" height="112" rx="14" fill="#FFFFFF" stroke="#D8E0EB"/>
+    <text x="832" y="134" font-size="19" font-weight="700" fill="#18283F">macOS App</text>
+    <text x="832" y="163" font-size="14" fill="#5A6B82">屏幕 · 键鼠 · Shell · 文件</text>
+    <text x="832" y="188" font-size="12" fill="#5A6B82">在已授权的电脑上执行</text>
+    <rect x="808" y="240" width="272" height="112" rx="14" fill="#FFFFFF" stroke="#D8E0EB"/>
+    <text x="832" y="274" font-size="19" font-weight="700" fill="#18283F">浏览器扩展</text>
+    <text x="832" y="303" font-size="14" fill="#5A6B82">网页观察 · 导航 · 点击 · 填表</text>
+    <text x="832" y="328" font-size="12" fill="#5A6B82">复用当前 Profile 登录态</text>
+    <text x="40" y="366" font-size="13" fill="#5A6B82">独立安装与授权；浏览器操作不依赖 App，不经 App 转发。</text>
+  </g>
+</svg>

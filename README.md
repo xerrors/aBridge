@@ -1,36 +1,56 @@
-<img src="docs/assets/overview.png" width="100%" alt="aBridge connects agents to macOS and browsers through MCP; Windows and Android are planned." />
+<img src="docs/assets/overview.png" width="100%" alt="aBridge 通过 MCP 连接 Agent 与用户的 macOS 和浏览器；Windows 与 Android 客户端为规划能力。" />
 
-aBridge 希望解决的是我们的云端Agent 所面临的用户 Profile 缺失的问题，希望通过这个工具可以接入用户的多台设备、浏览器（操作OA系统、填写表单、复用登录状态）。
+# aBridge
 
-aBridge 本身分为**服务端和客户端**，服务端负责连接安装在用户设备上的客户端，**同时对外暴露 MCP 服务**，MCP服务的鉴权分为 Token 和 OAuth 两种。可以接入 Codex、OpenCode、Zcode。
+**通过 MCP，让云端 Agent 使用用户授权的电脑和浏览器，复用本机应用、网站登录态与工作环境。**
 
-aBridge 可以和 [Yuxi](https://github.com/xerrors/Yuxi)一起部署，使用 **Yuxi 的账户体系**认证，同时不需要对外暴露额外的 IP 和端口，Yuxi 和 aBridge 使用**容器内网络通信**。
+[快速开始](#快速开始) · [Yuxi 集成](#与-yuxi-一起使用) · [下载](https://github.com/xerrors/aBridge/releases) · [文档](#文档)
 
-| 客户端                  | 能力                       | 运行环境                   |
-| ----------------------- | -------------------------- | -------------------------- |
-| **aBridge App**         | 屏幕、键鼠、Shell、文件    | Apple Silicon，macOS 14+   |
-| **aBridge for Browser** | 网页观察、导航、点击和填充 | Chromium 扩展，Chrome 116+ |
+## 解决什么问题
 
-[GitHub Releases](https://github.com/xerrors/aBridge/releases) 提供 Server tarball、浏览器 ZIP 和 macOS 包。
+云端 Agent 可以推理和调用工具，却通常无法直接访问用户电脑上的应用、文件，以及已经登录的浏览器 Profile。aBridge 将这些设备能力接入 MCP，让 Agent 在用户授权的范围内完成工作：
 
-## 部署 Server
+- **操作 OA 与业务系统**：使用浏览器现有登录态，查找信息、填写表单、执行网页操作。
+- **处理本地工作**：查看应用和窗口、操作桌面、运行 Shell、读写文件。
+- **连接多台设备**：同一账户管理多台电脑与多个浏览器 Profile，按 Agent 分配设备和能力。
 
-### Docker（推荐）
+## 工作方式
+
+![Agent 经 MCP 调用 aBridge Server；macOS App 和浏览器扩展分别通过 WebSocket 直接连接 Server。](docs/assets/architecture.svg)
+
+Server 提供 MCP 接口、账户管理和授权控制。App 与浏览器扩展**独立安装、独立授权、直接连接 Server**；浏览器操作不依赖 App，也不经 App 转发。
+
+| 客户端                  | 能力                                       | 当前支持                   |
+| ----------------------- | ------------------------------------------ | -------------------------- |
+| **aBridge App**         | 屏幕观察、键鼠操作、Shell、UTF-8 文件读写  | Apple Silicon，macOS 14+   |
+| **aBridge for Browser** | 网页观察、导航、点击、填表与浏览器代码执行 | Chromium 扩展，Chrome 116+ |
+
+浏览器扩展复用当前 Profile 的登录态，并为任务创建独立标签页。每个 Profile 注册为独立设备；浏览器退出后设备离线，扩展不能自行启动浏览器。Windows 与 Android 原生客户端仍在规划中。
+
+## 快速开始
+
+独立使用按以下四步完成：**部署 Server → 创建账户 → 连接设备 → 配置 Agent**。已有 Yuxi 的用户可先看 [Yuxi 集成](#与-yuxi-一起使用)。
+
+### 1. 部署 Server
+
+推荐使用 Docker。下面的示例供本机使用，数据保存在持久卷中：
 
 ```sh
-docker run -d \
-  -p 8765:8765 \
+docker run -d --name abridge --restart unless-stopped \
+  -p 127.0.0.1:8765:8765 \
   -v abridge-data:/data \
+  -e ABRIDGE_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
   ghcr.io/xerrors/abridge:0.4.12
 ```
 
-本机访问 [http://127.0.0.1:8765](http://127.0.0.1:8765)。数据和管理员凭据保存在 `abridge-data` 命名卷中，重建容器时复用该卷。
+打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)。镜像支持 Linux amd64 / arm64，仅包含 Server 和管理台，无需在服务器安装桌面驱动或浏览器。
 
-远程部署需设置 `ABRIDGE_PUBLIC_ORIGIN`，推荐通过 HTTPS/WSS 反向代理访问。首次管理员登录、创建账户及升级步骤见 [Docker 部署](docs/deployment.md#docker-镜像)；更新时保留数据卷。
+跨机器使用时，客户端必须能访问 Server。请配置对外的 `ABRIDGE_PUBLIC_ORIGIN`、端口映射及 HTTPS/WSS 反向代理；更新容器时复用数据卷。详见 [Docker 部署](docs/deployment.md#docker-镜像)。
 
-### npx
+<details>
+<summary>不使用 Docker：通过 Node.js 运行</summary>
 
-需要 Node.js 22.13.0+ 与 npm，无需 Docker。公共 npm 包尚未发布，目前直接使用 GitHub Release tarball：
+需要 Node.js 22.x（最低 22.13.0）、23.x（最低 23.4.0）或 24 以上版本，以及 npm。公开 npm 包尚未发布，使用 GitHub Release 中的实际 tarball：
 
 ```sh
 npx --yes \
@@ -38,27 +58,40 @@ npx --yes \
   abridge --web
 ```
 
-默认监听 `127.0.0.1:8765`；`--web` 打开本机管理员链接。数据保存在系统用户数据目录，可用 `--data-dir` 指定持久目录。
+默认监听 `127.0.0.1:8765`，`--web` 打开本机管理员链接；状态保存在系统用户数据目录，可用 `--data-dir` 指定持久目录。运行环境、源码安装和无图形环境配置见 [安装与维护](docs/deployment.md)。
 
-状态目录、端口、管理员 API、HTTPS 反向代理和无图形环境配置见 [安装与维护](docs/deployment.md)。
+</details>
 
-## 安装客户端
+### 2. 创建账户
 
-### 浏览器扩展
+首次启动会生成实例管理员 Token。使用上面的 Docker 示例时，在本机终端获取管理员链接：
 
-推荐从 [Chrome 应用商店安装 aBridge for Browser](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc)。安装扩展后仍需连接自己的 aBridge Server。
+```sh
+docker exec abridge node -e '
+const fs = require("node:fs");
+const token = fs.readFileSync("/data/server.db.admin-token", "utf8").trim();
+console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComponent(token));
+'
+```
 
-点击扩展图标，填写 Server 地址并完成授权，再在管理台将设备加入 Agent 连接。每个 Profile 独立注册；浏览器退出时设备离线，扩展不能自行启动浏览器。源码加载与使用说明见 [浏览器客户端](docs/browser-profile-design.md)。
+该链接包含管理员凭据，请勿分享。打开链接，在“实例管理”中创建普通账户，再以普通账户登录管理台，管理自己的设备和 Agent 连接。**实例管理员身份不代替普通账户，也不授予设备操作权限。**
 
-### macOS App
+### 3. 连接设备
 
-从 [GitHub Releases](https://github.com/xerrors/aBridge/releases) 下载 Apple Silicon 包。当前使用 ad hoc 签名且未公证；源码构建与安装见 [安装与维护](docs/deployment.md#macos-app)。
+按需安装一种或两种客户端，填写客户端可以访问的 Server 地址，在浏览器中登录普通账户并确认授权：
 
-填写 Server 地址并完成授权后，启用所需能力。屏幕与键鼠操作还需为实际安装的 App 授予录屏和辅助功能权限。
+| 客户端         | 安装与连接                                                                                                                                                               |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **浏览器扩展** | 从 [Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) 安装，点击扩展图标填写 Server 地址，完成浏览器授权。 |
+| **macOS App**  | 从 [GitHub Releases](https://github.com/xerrors/aBridge/releases) 下载 Apple Silicon 包，填写 Server 地址并完成授权，启用所需能力。                                      |
 
-## MCP 接入
+屏幕与键鼠操作还需为实际安装的 App 授予录屏和辅助功能权限。当前 macOS 下载包为 ad hoc 签名、未公证；安装说明见 [macOS App](docs/deployment.md#macos-app)。扩展源码加载方式见 [浏览器客户端](docs/browser-profile-design.md)。
 
-在管理台创建 Agent 连接并授权设备与能力，将生成的 Agent Key 填入支持 Streamable HTTP 的 MCP 客户端：
+### 4. 配置 Agent
+
+在管理台创建 **Agent 连接**，选择允许访问的设备、能力与有效期。将生成的 **Agent Key** 配入支持 Streamable HTTP 的 MCP 客户端；Codex、OpenCode、ZCode 等客户端的具体配置入口以各自文档为准。
+
+以下是 MCP 连接参数；不同客户端的外层配置格式可能不同：
 
 ```json
 {
@@ -67,14 +100,36 @@ npx --yes \
 }
 ```
 
-按 `devices_list` → `session_open` → 工具操作 → `session_close` 使用。Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不可互换；实际可用能力仍受设备授权、本机开关和系统权限限制。
+云端 Agent 需将示例地址换成它可以访问的 Server 地址。连接后按 `devices_list` → `session_open` → 工具操作 → `session_close` 使用。
 
-| 范围       | 工具                                                                                             |
-| ---------- | ------------------------------------------------------------------------------------------------ |
-| 设备与会话 | `devices_list`、`device_get`、`session_open`、`session_close`                                    |
-| 桌面       | `computer_open`、`computer_apps`、`computer_windows`、`computer_observe`、`computer_act`         |
-| 浏览器     | `browser_open`、`browser_observe`、`browser_act`、`browser_read`、`browser_wait`、`browser_exec` |
-| Shell      | `command_execute`、`command_status`、`command_cancel`                                            |
-| 文件       | `files_list`、`file_read`、`file_write`                                                          |
+## 与 Yuxi 一起使用
 
-导航和动作返回下一步可使用的观察；短命令直接返回输出，长命令才需继续等待。接口时效、分页和失败语义见 [架构与执行契约](docs/architecture.md)。
+aBridge 可以与 [Yuxi](https://github.com/xerrors/Yuxi) 一起部署，复用 Yuxi 的账户体系；通过 Yuxi 的对外入口及容器内部网络集成，无需为 aBridge 单独开放公网端口。设备仍连接到部署中为 aBridge 配置的可达地址。
+
+两种接入路径的区别：
+
+| 路径          | 账户登录           | MCP 调用认证                               |
+| ------------- | ------------------ | ------------------------------------------ |
+| **独立使用**  | 管理员创建本地账户 | 管理台生成的 Agent Key                     |
+| **Yuxi 集成** | OIDC 单点登录      | 显式启用平台委托后，由平台签发短期委托令牌 |
+
+OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接作为 MCP 访问令牌。平台连接仍受用户设备授权、本机开关与系统权限限制。部署参数、回调地址及容器内认证请求配置见 [OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)。
+
+## 授权与安全边界
+
+- **设备与能力显式授权**：每个 Agent 连接可选择设备、能力和有效期；设备本机可以暂停或关闭能力，自动重连不会解除这些限制。
+- **凭据各司其职**：Admin Token 用于实例管理，Device Key 用于设备连接，Agent Key 用于 MCP 调用，三者不能互换。
+- **沿用用户的执行环境**：浏览器脚本具有当前站点登录用户的页面权限；Shell 与文件工具在已授权设备上执行。请按任务分配所需能力。
+- **未知操作不盲目重放**：断连或超时可能发生在副作用之后；应查询原操作状态、重新观察，再决定下一步。撤销权限不能回滚已执行的操作。
+
+## 文档
+
+| 文档                                           | 内容                                             |
+| ---------------------------------------------- | ------------------------------------------------ |
+| [安装与维护](docs/deployment.md)               | Docker、Node.js、App、反向代理、升级与 OIDC 配置 |
+| [架构与执行契约](docs/architecture.md)         | 模块职责、工具接口、会话、去重、取消与结果语义   |
+| [浏览器客户端](docs/browser-profile-design.md) | Profile 授权、任务标签、网页工具及浏览器代码接口 |
+| [Server API](apps/server/README.md)            | 管理员接口、Server 运行方式与分发说明            |
+| [贡献指南](.github/CONTRIBUTING.md)            | 开发环境、检查命令与提交规范                     |
+
+[下载发布产物](https://github.com/xerrors/aBridge/releases) · [报告问题](https://github.com/xerrors/aBridge/issues) · [Apache-2.0 许可证](LICENSE)
