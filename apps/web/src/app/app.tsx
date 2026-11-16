@@ -2,7 +2,7 @@ import { LayoutDashboard, Monitor, Link2, ListFilter, ShieldCheck } from "lucide
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api, objectResultSchema } from "../lib/api.js";
 import { Authentication, ExternalLogin } from "../features/auth/page.js";
-import { ActionMenu } from "../components/actions.js";
+import { ActionButton, ActionMenu } from "../components/actions.js";
 import { Brand } from "../components/brand.js";
 import { Field, Form, Modal } from "../components/forms.js";
 import { ManagementModal, type ManagementDialog } from "./dialogs.js";
@@ -41,7 +41,8 @@ function NavIcon({ name }: { name: Tab }) {
 function ManagementApp() {
   const [notice, setNotice] = useState("");
   const notify = useCallback((message: string) => setNotice(message), []);
-  const { user, phase, data, identityRevision, refresh, authenticate, logout } = useUserSession(notify);
+  const { user, phase, data, dataReady, identityRevision, refresh, authenticate, logout } =
+    useUserSession(notify);
   const admin = useInstanceAdminSession(notify);
   const [hash, setHash] = useState(location.hash);
   useEffect(() => {
@@ -165,14 +166,23 @@ function ManagementApp() {
             ) : visibleTab === "overview" ? (
               <OverviewPage data={data} />
             ) : visibleTab === "devices" && route.id === "new" ? (
-              <DeviceSetupPage
-                key={identityRevision}
-                devices={data.devices}
-                initialKind={route.section}
-                refresh={refresh}
-                run={run}
-                notify={notify}
-              />
+              dataReady ? (
+                <DeviceSetupPage
+                  key={identityRevision}
+                  devices={data.devices}
+                  initialKind={route.section}
+                  refresh={refresh}
+                  run={run}
+                  notify={notify}
+                />
+              ) : (
+                <section class="surface empty">
+                  <p role="status">正在加载设备列表…</p>
+                  <ActionButton action={refresh} run={run} busyLabel="刷新中…">
+                    刷新设备列表
+                  </ActionButton>
+                </section>
+              )
             ) : visibleTab === "devices" && route.id ? (
               <DevicePage
                 key={route.id}

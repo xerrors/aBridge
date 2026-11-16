@@ -193,6 +193,7 @@ test("poll failures invalidate realtime state, preserve metadata, recover, and s
       f.tick();
       await f.settle();
       assert.equal(f.state.phase, "ready");
+      assert.equal(f.state.dataReady, true, "A later poll failure must preserve the setup baseline");
       assert.equal(f.state.data.devices[0]?.status, "unknown");
       assert.equal(f.state.data.devices[0]?.available, undefined);
       assert.equal(f.state.data.devices[0]?.paused, undefined);
@@ -209,7 +210,87 @@ test("poll failures invalidate realtime state, preserve metadata, recover, and s
     await f.settle();
     assert.equal(f.state.phase, "login");
     assert.equal(f.state.user, null);
+    assert.equal(f.state.dataReady, false);
     assert.deepEqual(f.state.data, { devices: [], grants: [] });
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("inventory readiness waits for a successful first load after a recoverable failure", async () => {
+  let failing = true;
+  const f = await fixture((path) => {
+    if (failing && path === "/api/devices") throw new Error("Fixture device list unavailable");
+    return response(path);
+  });
+  try {
+    await f.settle();
+    assert.equal(f.state.phase, "ready");
+    assert.equal(f.state.user?.id, "A");
+    assert.equal(f.state.dataReady, false);
+    assert.deepEqual(f.state.data.devices, []);
+    assert.ok(f.snapshots.every((snapshot) => !snapshot.dataReady));
+    failing = false;
+    await f.state.refresh();
+    await f.settle();
+    assert.equal(f.state.dataReady, true);
+    const firstReady = f.snapshots.find((snapshot) => snapshot.dataReady)!;
+    assert.equal(firstReady.data.devices[0]?.id, "device-A", "Setup must mount with existing inventory");
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("an identity switch invalidates inventory readiness until the new account list has loaded", async () => {
+  let owner = "A",
+    holdDevices = false;
+  const devices = deferred<Response>();
+  const f = await fixture((path) =>
+    holdDevices && path === "/api/devices" ? devices.promise : response(path, owner),
+  );
+  try {
+    await f.settle();
+    assert.equal(f.state.dataReady, true);
+    owner = "B";
+    holdDevices = true;
+    const switching = f.state.refresh();
+    await f.settle();
+    assert.equal(f.state.user?.id, "B");
+    assert.equal(f.state.phase, "ready");
+    assert.equal(f.state.dataReady, false, "The temporary empty list is not a setup baseline");
+    assert.deepEqual(f.state.data.devices, []);
+    devices.resolve(response("/api/devices", "B"));
+    await switching;
+    await f.settle();
+    const ready = f.snapshots.filter((snapshot) => snapshot.user?.id === "B" && snapshot.dataReady);
+    assert.ok(ready.length);
+    assert.ok(ready.every((snapshot) => snapshot.data.devices[0]?.id === "device-B"));
+  } finally {
+    devices.resolve(response("/api/devices", "B"));
+    await f.dispose();
+  }
+});
+
+test("a confirmed empty inventory remains ready when the first device connects", async () => {
+  let connected = false;
+  const f = await fixture((path) =>
+    path === "/api/devices" && !connected ? Response.json({ devices: [] }) : response(path),
+  );
+  try {
+    await f.settle();
+    assert.equal(f.state.dataReady, true);
+    assert.equal(f.state.data.devices.length, 0);
+    const baseline = f.snapshots.findIndex((snapshot) => snapshot.dataReady);
+    const revision = f.state.identityRevision;
+    connected = true;
+    await f.state.refresh();
+    await f.settle();
+    assert.equal(f.state.data.devices[0]?.id, "device-A");
+    assert.equal(f.state.identityRevision, revision);
+    assert.ok(
+      f.snapshots.slice(baseline).every((snapshot) => snapshot.dataReady),
+      "Polling must keep the setup page mounted so it can detect a genuinely new device",
+    );
   } finally {
     await f.dispose();
   }
@@ -292,6 +373,7 @@ test("a late refresh cannot replace a newer account or restore a signed-out sess
     await f.settle();
     assert.equal(f.state.user, null);
     assert.equal(f.state.phase, "login");
+    assert.equal(f.state.dataReady, false);
     assert.deepEqual(f.state.data, { devices: [], grants: [] });
   } finally {
     await f.dispose();
@@ -316,6 +398,10 @@ test("binding identity reload clears the previous identity and never reads manag
     assert.equal(f.state.phase, "ready");
     assert.ok(f.state.identityRevision > revision);
     assert.ok(f.snapshots.some((state) => state.user === null && state.phase === "loading"));
+    assert.ok(
+      f.snapshots.every((state) => !state.dataReady),
+      "Binding-only reads never load inventory",
+    );
     assert.equal(paths.length, 2);
   } finally {
     await f.dispose();
