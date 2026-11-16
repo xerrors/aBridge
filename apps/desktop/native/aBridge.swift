@@ -111,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         stateDirectory = URL(fileURLWithPath: state, isDirectory: true)
         logURL = stateDirectory.appendingPathComponent("logs/client.log")
+        buildEditingMenu()
         buildMenu()
         buildWindow()
         loadConfig()
@@ -178,6 +179,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func buildEditingMenu() {
+        let mainMenu = NSMenu()
+        mainMenu.addItem(NSMenuItem())
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "编辑")
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
+    }
+
     private func buildMenu() {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let image = NSImage(named: "StatusIcon") {
@@ -203,10 +222,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         stopItem = menu.addItem(withTitle: "停止当前执行", action: #selector(stop), keyEquivalent: "")
         stopItem.image = NSImage(systemSymbolName: "stop.circle", accessibilityDescription: nil)
         let accessItem = menu.addItem(withTitle: "本机能力", action: nil, keyEquivalent: "")
+        accessItem.image = NSImage(systemSymbolName: "slider.horizontal.3", accessibilityDescription: nil)
         let accessMenu = NSMenu()
         accessMenu.autoenablesItems = false
-        for (key, label) in [("screen", "屏幕截图"), ("input", "键鼠操作"), ("shell", "Shell 命令"), ("files", "文件访问")] {
+        for (key, label, symbol) in [("screen", "屏幕截图", "viewfinder"), ("input", "键鼠操作", "cursorarrow"), ("shell", "Shell 命令", "terminal"), ("files", "文件访问", "folder")] {
             let entry = accessMenu.addItem(withTitle: label, action: #selector(menuCapabilityChanged(_:)), keyEquivalent: "")
+            entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             entry.representedObject = key
             entry.target = self
             menuCapabilities[key] = entry
@@ -215,13 +236,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(.separator())
         reconnectItem = menu.addItem(withTitle: "重新连接", action: #selector(reconnectFromMenu), keyEquivalent: "")
         reconnectItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
-        menu.addItem(withTitle: "重新检查运行环境", action: #selector(checkEnvironment), keyEquivalent: "")
+        let environment = menu.addItem(withTitle: "重新检查运行环境", action: #selector(checkEnvironment), keyEquivalent: "")
+        environment.image = NSImage(systemSymbolName: "stethoscope", accessibilityDescription: nil)
         updateItem = menu.addItem(withTitle: "检查更新…", action: #selector(updateAction), keyEquivalent: "")
-        menu.addItem(withTitle: "查看运行日志", action: #selector(openLogs), keyEquivalent: "")
+        updateItem.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+        let logs = menu.addItem(withTitle: "查看运行日志", action: #selector(openLogs), keyEquivalent: "")
+        logs.image = NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil)
         let settings = menu.addItem(withTitle: "设置…", action: #selector(showWindow), keyEquivalent: ",")
         settings.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 aBridge", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = menu.addItem(withTitle: "退出 aBridge", action: #selector(quit), keyEquivalent: "q")
+        quitItem.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right", accessibilityDescription: nil)
         for entry in menu.items where entry.action != nil { entry.target = self }
         item.menu = menu
         renderMenu()
