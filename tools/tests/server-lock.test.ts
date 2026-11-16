@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { serverShrinkwrap, type PackageLock } from "../lib/server-lock.js";
+import { serverPackageLock, type PackageLock } from "../lib/server-lock.js";
 
 const manifest = { name: "@example/server", version: "1.0.0", dependencies: { a: "1.0.0" } };
-test("Server shrinkwrap preserves hoisted, nested, cyclic, optional and peer resolutions", () => {
+test("Server production lock preserves hoisted, nested, cyclic, optional and peer resolutions", () => {
   const lock: PackageLock = {
     packages: {
       "apps/server": { dependencies: manifest.dependencies },
@@ -23,7 +23,7 @@ test("Server shrinkwrap preserves hoisted, nested, cyclic, optional and peer res
       "node_modules/@trycua/cua-driver": { version: "1.0.0", optional: true },
     },
   };
-  const projected = serverShrinkwrap(lock, manifest);
+  const projected = serverPackageLock(lock, manifest);
   assert.deepEqual(Object.keys(projected.packages).sort(), [
     "",
     "node_modules/a",
@@ -37,13 +37,13 @@ test("Server shrinkwrap preserves hoisted, nested, cyclic, optional and peer res
   assert.equal(projected.packages["node_modules/peer"]!.dev, undefined);
   assert.equal(projected.packages["node_modules/peer"]!.devOptional, undefined);
   assert.equal(lock.packages["node_modules/peer"]!.dev, true, "Do not modify the source lock");
-  assert.deepEqual(serverShrinkwrap(lock, manifest), projected);
+  assert.deepEqual(serverPackageLock(lock, manifest), projected);
 });
 
-test("Server shrinkwrap refuses missing production dependencies and workspace links", () => {
-  assert.throws(() => serverShrinkwrap({ packages: {} }, manifest), /Production lock omits a/);
+test("Server production lock refuses missing production dependencies and workspace links", () => {
+  assert.throws(() => serverPackageLock({ packages: {} }, manifest), /Production lock omits a/);
   assert.throws(
-    () => serverShrinkwrap({ packages: { "node_modules/a": { link: true } } }, manifest),
+    () => serverPackageLock({ packages: { "node_modules/a": { link: true } } }, manifest),
     /requires a registry dependency/,
   );
 });

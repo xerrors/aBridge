@@ -76,7 +76,7 @@ npm run package
 npm run package:check
 ```
 
-分发构建只包含 Server 所需的预构建 CLI、管理台和依赖声明，剥离桌面 SDK。版本由根 `package.json` 生成。使用构建工具生成的本地 tarball 验证安装，再决定是否发布到 npm。
+分发构建包含 Server 所需的预构建 CLI、管理台，以及通过 `bundleDependencies` 随包携带的生产依赖闭包，剥离桌面 SDK。从根 `package-lock.json` 提取 Server 生产依赖锁，通过 `npm ci` 安装已测试的固定依赖；分发检查根据根锁核验 tarball 中的依赖路径与版本，不依赖 npm 12 已移除的 `shrinkwrap` 命令或 `npm-shrinkwrap.json` 支持。版本由根 `package.json` 生成。使用构建工具生成的本地 tarball 验证安装，再决定是否发布到 npm。
 
 `npm exec --package <本地tgz路径> -- abridge --web` 的 package 参数必须指向实际生成的文件，不能替换为尚未发布的候选包名。npx/npm exec 的临时包目录仅用于运行程序；数据库仍由 `--data-dir` 或 `--db` 指向持久位置。
 

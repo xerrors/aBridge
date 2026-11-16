@@ -4,7 +4,7 @@ import { join, resolve, relative } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { zipSync } from "fflate";
-import { serverShrinkwrap, type PackageLock } from "./lib/server-lock.js";
+import { serverPackageLock, type PackageLock } from "./lib/server-lock.js";
 const { values } = parseArgs({ options: { public: { type: "boolean" } } });
 const publish = values.public ?? false;
 const root = resolve(import.meta.dirname, ".."),
@@ -47,11 +47,12 @@ await writeFile(
       description: "aBridge MCP and device gateway",
       engines: metadata.engines,
       bin: { abridge: "cli.js" },
-      files: ["cli.js", "web", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "npm-shrinkwrap.json"],
+      files: ["cli.js", "web", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md"],
       license: metadata.license ?? "UNLICENSED",
       repository: { type: "git", url: "git+https://github.com/xerrors/aBridge.git" },
       ...(publish ? { publishConfig: { access: "public" } } : {}),
       dependencies,
+      bundleDependencies: Object.keys(dependencies),
     },
     null,
     2,
@@ -59,19 +60,21 @@ await writeFile(
 );
 const sourceLock = JSON.parse(await readFile(join(root, "package-lock.json"), "utf8")) as PackageLock;
 await writeFile(
-  join(stage, "npm-shrinkwrap.json"),
+  join(stage, "package-lock.json"),
   JSON.stringify(
-    serverShrinkwrap(sourceLock, { name: packageName, version: metadata.version, dependencies }),
+    serverPackageLock(sourceLock, { name: packageName, version: metadata.version, dependencies }),
     null,
     2,
   ) + "\n",
 );
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const packed = spawnSync(npm, ["pack", "--ignore-scripts", "--pack-destination", dist], {
-  cwd: stage,
-  stdio: "inherit",
-});
-if (packed.status !== 0) throw new Error("npm pack failed");
+for (const args of [
+  ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retry-mintimeout=1000"],
+  ["pack", "--ignore-scripts", "--pack-destination", dist],
+]) {
+  const result = spawnSync(npm, args, { cwd: stage, stdio: "inherit" });
+  if (result.status !== 0) throw new Error(`npm ${args[0]} failed`);
+}
 const archive: Record<string, Uint8Array> = {};
 async function collect(directory: string): Promise<void> {
   for (const item of await readdir(directory, { withFileTypes: true })) {

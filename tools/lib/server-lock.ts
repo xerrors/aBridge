@@ -17,7 +17,7 @@ export type DistributionManifest = {
   version: string;
   dependencies: Record<string, string>;
 };
-export function serverShrinkwrap(lock: PackageLock, manifest: DistributionManifest) {
+export function serverPackageLock(lock: PackageLock, manifest: DistributionManifest) {
   const packages: Record<string, LockedPackage> = {
     "": { name: manifest.name, version: manifest.version, dependencies: manifest.dependencies },
   };
