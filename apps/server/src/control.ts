@@ -9,6 +9,7 @@ import {
   browserExecSchema,
   browserQuerySchema,
   browserErrorSchema,
+  deviceErrorSchema,
   type BrowserError,
   type SessionInfo,
   type ConnectionLoss,
@@ -994,7 +995,7 @@ export class ControlService {
       const boundedError = baseError
         ? { code: baseError.code.slice(0, 100), message: baseError.message.slice(0, 2000) }
         : undefined;
-      const parsedError = browserErrorSchema.safeParse(
+      const parsedError = deviceErrorSchema.safeParse(
         boundedError ? { ...(message.error as JsonObject), ...boundedError } : undefined,
       );
       const error = parsedError.success ? parsedError.data : boundedError;

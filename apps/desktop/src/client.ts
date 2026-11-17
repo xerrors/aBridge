@@ -67,7 +67,11 @@ function canonical(value: unknown): string {
 function executionCause(cause: unknown, cancelled: boolean): NonNullable<BrowserError["cause"]> {
   if (cancelled || (cause instanceof DesktopError && cause.code === "operation_cancelled"))
     return { code: "operation_cancelled", message: "Execution was interrupted by cancellation" };
-  if (cause instanceof Error && cause.name === "TimeoutError")
+  if (
+    cause instanceof Error &&
+    (cause.name === "TimeoutError" ||
+      (cause.name === "AbortError" && cause.cause instanceof Error && cause.cause.name === "TimeoutError"))
+  )
     return { code: "execution_timeout", message: "A device execution deadline elapsed" };
   if (cause instanceof Error && cause.name === "AbortError")
     return { code: "execution_aborted", message: "Device execution was aborted" };

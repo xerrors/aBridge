@@ -358,6 +358,8 @@ export const browserErrorSchema = browserErrorDetailSchema.extend({
     })
     .optional(),
 });
+// Disconnect diagnostics are server-owned, never accepted from device receipts.
+export const deviceErrorSchema = browserErrorSchema.omit({ connection: true });
 export type BrowserError = z.infer<typeof browserErrorSchema>;
 export const browserStepFailureSchema = z.object({
   operation_id: z.string().min(1).max(100),

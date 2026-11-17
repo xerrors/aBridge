@@ -87,7 +87,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 | `session_server_restarted`    | Server 重启；新建会话            |
 | `device_paused`               | 本机暂停；由操作者在客户端恢复   |
 
-重新连接后必须取得新观察，不能盲目重放结果未知的动作。执行结果未知时可附安全的 `cause` 分类，区分超时、中止与未确认执行，不返回原始异常正文。连接中断的操作错误附 `connection`，设备详情的 `last_disconnect` 保留当前 Server 进程最近一次断连分类、时间、连接代次、心跳间隔及可用的关闭码；不保存远端关闭文本、命令或输入内容。
+重新连接后必须取得新观察，不能盲目重放结果未知的动作。执行结果未知时可附安全的 `cause` 分类，区分超时、中止与未确认执行，不返回原始异常正文。连接中断的操作错误附 `connection`，该字段仅由 Server 生成，设备回执中的同名字段会被忽略。设备详情的 `last_disconnect` 保留当前 Server 进程最近一次断连分类、时间、连接代次、心跳间隔及可用的关闭码；不保存远端关闭文本、命令或输入内容。
 
 ## 桌面操作
 

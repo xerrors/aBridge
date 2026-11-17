@@ -275,6 +275,38 @@ test("unknown execution receipts distinguish deadlines and exceptions without le
   }
 });
 
+test("Node API timeout wrappers remain deadlines without replaying the operation", async () => {
+  const f = await fixture();
+  let executions = 0;
+  try {
+    f.client.executor.execute = async () => {
+      executions++;
+      try {
+        await delay(1000, undefined, { signal: AbortSignal.timeout(1) });
+      } catch (error) {
+        assert.ok(error instanceof Error);
+        assert.equal(error.name, "AbortError");
+        assert.ok(error.cause instanceof Error);
+        assert.equal(error.cause.name, "TimeoutError");
+        throw error;
+      }
+      assert.fail("The device API must time out");
+    };
+    const frame = f.frame("wrapped_timeout");
+    f.send(frame);
+    const receipt = await f.result("wrapped_timeout");
+    assert.equal(receipt.status, "outcome_unknown");
+    assert.equal((receipt.error as { cause: { code: string } }).cause.code, "execution_timeout");
+    f.send(frame);
+    await until(
+      () => f.messages.filter((message) => message.operation_id === "wrapped_timeout").length === 2,
+    );
+    assert.equal(executions, 1);
+  } finally {
+    await f.close();
+  }
+});
+
 test("cancellation remains the primary diagnosis when an in-flight operation throws", async () => {
   const f = await fixture();
   const entered = deferred();

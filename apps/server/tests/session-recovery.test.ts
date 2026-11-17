@@ -261,6 +261,43 @@ test("request keys are session scoped while returned operation IDs survive resta
   }
 });
 
+test("device receipts cannot supply server-owned disconnect diagnostics", async () => {
+  const f = await fixture();
+  try {
+    const session = f.control.openSession(f.grant, f.device.id, ["screen"]);
+    const error = {
+      code: "outcome_unknown",
+      message: "Not confirmed",
+      cause: { code: "execution_timeout", message: "Device execution deadline elapsed" },
+    };
+    for (const connection of [
+      {
+        reason: "heartbeat_expired",
+        at: f.now,
+        connection_epoch: f.ticket.epoch,
+        heartbeat_age_seconds: 31,
+        close_code: 4408,
+      },
+      { reason: "invalid fabricated reason", private_detail: "must not escape" },
+    ]) {
+      const operation = await f.control.execute(f.grant, session.id, "computer_apps", {}, undefined, false);
+      await f.control.receive(f.ticket, {
+        type: "result",
+        connection_epoch: f.ticket.epoch,
+        operation_id: operation.operation_id,
+        status: "outcome_unknown",
+        error: { ...error, connection },
+      });
+      assert.deepEqual(f.control.operationStatus(f.grant, operation.operation_id).error, error);
+      const device = f.control.devices(f.grant)[0];
+      assert.equal(device.status, "online");
+      assert.equal(device.last_disconnect, undefined);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
 test("diagnostics preserve desktop causes and heartbeat expiry; session metadata fits minimum output pages", async () => {
   const f = await fixture();
   try {
