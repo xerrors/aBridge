@@ -70,7 +70,10 @@ export function prepareInput(this: HTMLElement | Document | Text, action?: strin
     if (frame.ownerDocument.elementFromPoint(x, y) !== frame) throw new Error("Frame is obscured");
     current = frame.ownerDocument.defaultView!;
   }
-  if (!rootKey) element.focus({ preventScroll: true });
+  // Pointer input must keep native mouseDown → focus → mouseUp → click ordering.
+  // Pre-focusing a menu/combobox option can blur its trigger and destroy the target.
+  // Fill focuses in prepareFill; only element-directed key input needs focus here.
+  if (action === "press" && !rootKey) element.focus({ preventScroll: true });
   return { x, y };
 }
 export function selectValues(this: HTMLSelectElement, values: string[]) {

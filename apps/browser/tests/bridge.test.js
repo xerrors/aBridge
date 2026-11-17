@@ -1710,3 +1710,29 @@ test("references tolerate model latency within 60s while expiry still refuses be
   );
   assert.equal(f.calls.slice(before).filter((c) => c[0].startsWith("Input.")).length, 0);
 });
+
+test("pointer preparation preserves native focus ordering; targeted key input still focuses", () => {
+  let focused = 0;
+  const win = {
+    innerWidth: 100,
+    innerHeight: 100,
+    getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+  };
+  win.top = win;
+  const target = {
+    isConnected: true,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    matches: () => false,
+    closest: () => null,
+    contains: () => false,
+    focus() {
+      focused++;
+    },
+  };
+  target.ownerDocument = { defaultView: win, elementFromPoint: () => target };
+  for (const action of ["click", "hover", "scroll", "fill"]) prepareInput.call(target, action);
+  assert.equal(focused, 0);
+  prepareInput.call(target, "press");
+  assert.equal(focused, 1);
+});

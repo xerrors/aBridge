@@ -5,6 +5,7 @@ import manifest from "./bench/miniwob-agent-source.json" with { type: "json" };
 import { createBenchmarkEnvironment } from "./bench/environment.js";
 
 const baseline = process.argv.includes("--baseline");
+const focusBaseline = process.argv.includes("--focus-baseline");
 const fixture = createServer((_request, response) => {
   response.setHeader("content-type", "text/html; charset=utf-8");
   response.end(`<!doctype html><meta charset="utf-8"><title>Native input regression</title>
@@ -12,7 +13,9 @@ const fixture = createServer((_request, response) => {
   <span id="plain" onclick="document.querySelector('#result').innerText='Native click confirmed'">Open detail</span>
   <div id="mixed" style="position:relative;width:800px;height:60px" onclick="if(event.target===this)document.querySelector('#result').innerText='Exact text confirmed'">Exact text target<button style="position:absolute;left:45%;top:0" onclick="document.querySelector('#result').innerText='Wrong action'">Other action</button></div>
   <input id="readonly" aria-label="Choose date" readonly value="unchanged">
-  <input id="editable" aria-label="Editable name"><button>Continue</button><p id="result">Waiting</p>`);
+  <input id="editable" aria-label="Editable name"><button>Continue</button><p id="result">Waiting</p>
+  <input aria-label="Picker trigger" onfocus="document.querySelector('#popup').style.display='block'" onblur="document.querySelector('#popup').style.display='none'">
+  <div id="popup" style="display:none" onmousedown="event.preventDefault()"><a href="#" tabindex="-1" onclick="event.preventDefault();document.querySelector('#result').innerText='Choice confirmed'">Choice Alpha</a></div>`);
 });
 await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
 const address = fixture.address();
@@ -162,8 +165,52 @@ try {
   );
   passed++;
   await env.call("session_close", { session_id: id });
+  if (!baseline) {
+    id = await session();
+    obs = await observe(id);
+    const trigger = obs.elements.find((e) => e.name === "Picker trigger");
+    assert.ok(trigger);
+    assert.equal(
+      (
+        await callAct({
+          session_id: id,
+          observation_id: obs.observation_id,
+          action: { type: "click", element_ref: trigger.element_ref },
+          wait_after_ms: 0,
+        })
+      ).status,
+      "executed",
+    );
+    obs = await observe(id, "Choice Alpha");
+    const choice = obs.elements.find((e) => e.name === "Choice Alpha");
+    assert.ok(choice);
+    const selected = await callAct({
+      session_id: id,
+      observation_id: obs.observation_id,
+      action: { type: "click", element_ref: choice.element_ref },
+      wait_after_ms: 0,
+    });
+    if (focusBaseline) assert.equal(selected.status, "outcome_unknown");
+    else {
+      assert.equal(selected.status, "executed");
+      assert.equal(
+        (
+          await env.runCode(
+            id,
+            "return await page.evaluate(() => document.querySelector('#result').innerText);",
+          )
+        ).value,
+        "Choice confirmed",
+      );
+    }
+    console.log(
+      `PASS popup selection ${focusBaseline ? "pre-focus closes popup reproduced" : "native mouse event order"}`,
+    );
+    passed++;
+    await env.call("session_close", { session_id: id });
+  }
   console.log(
-    `${passed}/3 native regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
+    `${passed}/${baseline ? 3 : 4} native regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
   );
 } finally {
   await env.close();
