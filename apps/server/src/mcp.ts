@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import {
   VERSION,
+  OBSERVATION_SECONDS,
   MAX_IMAGE_BYTES,
   capabilitySchema,
   computerActionSchema,
@@ -197,7 +198,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_observe",
-    "Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after 10s and actions/navigation.",
+    `Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after ${OBSERVATION_SECONDS}s and actions/navigation.`,
     { ...base, screenshot: z.boolean().default(false), query: browserQuerySchema.optional() },
     (a) => exec("browser_observe", a),
   );

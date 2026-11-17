@@ -226,7 +226,9 @@ try {
       result.failure = interrupted.signal.aborted
         ? "interrupted"
         : result.elapsedMs !== null && message.includes('"code":"task_tab_missing"')
-          ? "task_tab_lost"
+          ? result.timedOut
+            ? "time_budget"
+            : "task_tab_lost"
           : "setup_or_grading_error";
       await writeFile(join(caseDir, "error.txt"), error instanceof Error ? error.message : String(error));
     } finally {

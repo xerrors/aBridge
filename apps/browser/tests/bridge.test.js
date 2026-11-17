@@ -90,8 +90,8 @@ function fixture() {
     removed,
     tabs,
     request,
-    advance: () => {
-      now += 10000;
+    advance: (milliseconds = 61000) => {
+      now += milliseconds;
     },
     rejectWrite: () => {
       rejectWrite = true;
@@ -1679,4 +1679,34 @@ test("text references target glyph bounds rather than a mixed container's center
     validateInput.call({ nodeType: 3, parentElement: { isContentEditable: true } }, "fill"),
     /文本引用/,
   );
+});
+
+test("references tolerate model latency within 60s while expiry still refuses before writing", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  let obs = (await f.request("observe")).result;
+  assert.equal(obs.expires_in, 60);
+  f.advance(30000);
+  assert.equal(
+    (
+      await f.request("act", "s1", {
+        observation_id: obs.observation_id,
+        action: { type: "click", element_ref: "e1" },
+      })
+    ).result.executed,
+    true,
+  );
+  obs = (await f.request("observe")).result;
+  f.advance(61000);
+  const before = f.calls.length;
+  assert.equal(
+    (
+      await f.request("act", "s1", {
+        observation_id: obs.observation_id,
+        action: { type: "click", element_ref: "e1" },
+      })
+    ).error.code,
+    "stale_observation",
+  );
+  assert.equal(f.calls.slice(before).filter((c) => c[0].startsWith("Input.")).length, 0);
 });
