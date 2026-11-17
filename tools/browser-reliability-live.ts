@@ -7,6 +7,7 @@ import { createBenchmarkEnvironment } from "./bench/environment.js";
 const baseline = process.argv.includes("--baseline");
 const focusBaseline = process.argv.includes("--focus-baseline");
 const visualBaseline = process.argv.includes("--visual-baseline");
+const clippingBaseline = process.argv.includes("--clipping-baseline");
 const blueIcon = Buffer.from(
   `<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26"><circle cx="13" cy="13" r="11" fill="blue"/></svg>`,
 ).toString("base64");
@@ -30,7 +31,7 @@ const fixture = createServer((_request, response) => {
   <input id="editable" aria-label="Editable name"><button>Continue</button><p id="result">Waiting</p>
   <input aria-label="Picker trigger" onfocus="document.querySelector('#popup').style.display='block'" onblur="document.querySelector('#popup').style.display='none'">
   <div id="popup" style="display:none" onmousedown="event.preventDefault()"><a href="#" tabindex="-1" onclick="event.preventDefault();document.querySelector('#result').innerText='Choice confirmed'">Choice Alpha</a></div>
-  <div id="scroll-list" role="region" aria-label="Scrollable list" tabindex="0" style="height:160px;width:300px;overflow:auto;border:1px solid">${Array.from({ length: 100 }, (_, i) => `<div style="height:25px">Item ${i}</div>`).join("")}</div>
+  <div id="scroll-list" role="region" aria-label="Scrollable list" tabindex="0" style="height:160px;width:300px;overflow:auto;border:1px solid">${Array.from({ length: 100 }, (_, i) => `<div style="height:25px">${i === 8 ? `<button id="nested-action" style="margin:0;height:25px" onclick="document.querySelector('#result').innerText='Nested action confirmed'">Nested action</button>` : `Item ${i}`}</div>`).join("")}</div>
   <script>window.fixtureWheels=0;document.querySelector('#scroll-list').addEventListener('wheel',()=>window.fixtureWheels++);</script>
 `);
 });
@@ -394,8 +395,47 @@ try {
     passed++;
     await env.call("session_close", { session_id: id });
   }
+  if (!baseline && !focusBaseline && !visualBaseline) {
+    id = await session();
+    await env
+      .runCode(
+        id,
+        "return await page.evaluate(() => {const box=document.querySelector('#scroll-list');box.style.cssText='position:fixed;left:200px;top:40px;width:300px;height:160px;overflow:auto;z-index:20';const r=document.querySelector('#nested-action').getBoundingClientRect();return {center:r.y+r.height/2,viewport:innerHeight,bottom:box.getBoundingClientRect().bottom};});",
+      )
+      .then((result) => {
+        const r = result.value as { center: number; viewport: number; bottom: number };
+        assert.ok(r.center < r.viewport && r.center > r.bottom);
+      });
+    obs = await observe(id, "Nested action");
+    const nested = obs.elements.find((e) => e.role === "button" && e.name === "Nested action");
+    assert.ok(nested);
+    const clicked = await callAct({
+      session_id: id,
+      observation_id: obs.observation_id,
+      action: { type: "click", element_ref: nested.element_ref },
+      wait_after_ms: 0,
+    });
+    if (clippingBaseline) assert.equal((clicked.error as { code: string }).code, "invalid_action");
+    else {
+      assert.equal(clicked.status, "executed");
+      assert.equal(
+        (
+          await env.runCode(
+            id,
+            "return await page.evaluate(() => document.querySelector('#result').innerText);",
+          )
+        ).value,
+        "Nested action confirmed",
+      );
+    }
+    console.log(
+      `PASS nested clipping ${clippingBaseline ? "false occlusion reproduced" : "target auto-revealed and native click"}`,
+    );
+    passed++;
+    await env.call("session_close", { session_id: id });
+  }
   console.log(
-    `${passed}/${baseline ? 3 : focusBaseline ? 4 : visualBaseline ? 6 : 7} real Chrome regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
+    `${passed}/${baseline ? 3 : focusBaseline ? 4 : visualBaseline ? 6 : 8} real Chrome regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
   );
 } finally {
   await env.close();

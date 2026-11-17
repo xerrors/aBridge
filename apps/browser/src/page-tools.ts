@@ -142,13 +142,33 @@ export function validateInput(this: Node, action: string): string | null {
     rect = range.getBoundingClientRect();
   }
   if (rect.width <= 0 || rect.height <= 0) return "目标不可见，请重新观察";
+  if (action === "scroll") return null; // DOM offsets do not require a pointer hit on the descendant.
   const x = rect.x + rect.width / 2,
     y = rect.y + rect.height / 2;
   // Only reject current in-viewport occlusion here: no scroll/focus/input has happened.
   if (x >= 0 && y >= 0 && x < win.innerWidth && y < win.innerHeight) {
     const hit = doc.elementFromPoint(x, y);
-    if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit)))
+    if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit))) {
+      // A point can be inside the page viewport but outside a nested scrollport.
+      // Let native preparation reveal that original target, then perform its final hit test.
+      const canReveal = ["click", "fill", "hover", "press"].includes(action);
+      for (let parent = canReveal ? element.parentElement : null; parent; parent = parent.parentElement) {
+        const style = win.getComputedStyle(parent);
+        const clipsX = /^(auto|scroll|hidden|overlay)$/.test(style.overflowX);
+        const clipsY = /^(auto|scroll|hidden|overlay)$/.test(style.overflowY);
+        if (!clipsX && !clipsY) continue;
+        if (style.transform && style.transform !== "none") return null;
+        const p = parent.getBoundingClientRect();
+        const left = p.left + (parent.clientLeft || 0),
+          top = p.top + (parent.clientTop || 0);
+        if (
+          (clipsX && (x < left || x >= left + parent.clientWidth)) ||
+          (clipsY && (y < top || y >= top + parent.clientHeight))
+        )
+          return null;
+      }
       return "目标被覆盖，未执行输入；请先处理覆盖层并重新观察";
+    }
   }
   return null;
 }

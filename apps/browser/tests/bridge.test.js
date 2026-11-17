@@ -1882,3 +1882,32 @@ test("a semantic scroll failure is unknown and never falls back to a second whee
     0,
   );
 });
+
+test("nested scrollport clipping is allowed to reveal, while a real overlay stays a pure refusal", () => {
+  const port = {
+    clientLeft: 0,
+    clientTop: 0,
+    clientWidth: 100,
+    clientHeight: 100,
+    parentElement: null,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+  };
+  const win = {
+    innerWidth: 500,
+    innerHeight: 500,
+    getComputedStyle: () => ({ overflowX: "hidden", overflowY: "auto", transform: "none" }),
+  };
+  const target = {
+    nodeType: 1,
+    isConnected: true,
+    parentElement: port,
+    contains: () => false,
+    getBoundingClientRect: () => ({ x: 10, y: 150, width: 20, height: 20 }),
+    ownerDocument: { defaultView: win, elementFromPoint: () => ({}) },
+  };
+  assert.equal(validateInput.call(target, "click"), null);
+  assert.match(validateInput.call(target, "select"), /覆盖/);
+  target.getBoundingClientRect = () => ({ x: 10, y: 20, width: 20, height: 20 });
+  assert.match(validateInput.call(target, "click"), /覆盖/);
+  assert.equal(validateInput.call(target, "scroll"), null);
+});
