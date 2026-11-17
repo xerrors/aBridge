@@ -10,6 +10,8 @@ import {
   browserQuerySchema,
   browserErrorSchema,
   type BrowserError,
+  type SessionInfo,
+  type ConnectionLoss,
   type BrowserStepFailure,
   browserReadSchema,
   browserWaitSchema,
@@ -85,6 +87,7 @@ export class ControlService {
   private readonly browserExecutions = new Map<string, string>();
   private readonly connections = new Map<string, AttachedDevice>();
   private readonly pending = new Map<string, Pending>();
+  private readonly lastDisconnect = new Map<string, ConnectionLoss>();
   // Retain the last local policy across disconnects; offline status does not revoke completed results.
   private readonly localAccess = new Map<string, Pick<AttachedDevice, "capabilities" | "paused">>();
   private readonly cache = new Map<string, Cached>();
@@ -155,6 +158,8 @@ export class ControlService {
       version: connection?.version ?? null,
       last_seen: device.last_seen,
       created_at: device.created_at,
+      ...(current ? { sessions: this.activeSessions(current, device.id) } : {}),
+      ...(this.lastDisconnect.has(device.id) ? { last_disconnect: this.lastDisconnect.get(device.id) } : {}),
       active_operations: [...this.pending.values()]
         .filter((p) => p.operation.device_id === device.id && (!grant || p.operation.grant_id === grant.id))
         .map((p) => p.operation.id),
@@ -192,18 +197,95 @@ export class ControlService {
     const connection = this.readyConnection(deviceId);
     if (capabilities.some((cap) => !connection.capabilities[cap]))
       throw new BridgeError("capability_unavailable", "Local capability is disabled or unavailable");
-    if (
-      capabilities.includes("input") &&
-      this.store
-        .sessions(deviceId)
-        .some((session) => session.lease_until > this.now() && session.capabilities.includes("input"))
-    )
-      throw new BridgeError("desktop_busy", "Desktop input belongs to another session");
+    const occupied = this.store
+      .sessions(deviceId)
+      .filter((session) => session.lease_until > this.now() && session.capabilities.includes("input"));
+    if (capabilities.includes("input") && occupied.length)
+      throw new BridgeError(
+        "desktop_busy",
+        "Desktop input is occupied; reuse your active session or close it before opening another",
+        409,
+        {
+          sessions: occupied
+            .filter((session) => session.grant_id === current.id)
+            .map((session) => this.sessionInfo(session)),
+        },
+      );
     return this.store.createSession(
       current,
       deviceId,
       capabilities,
       sessionDeadline(current, this.now() + SESSION_IDLE_SECONDS),
+    );
+  }
+  sessionInfo(session: ControlSession): SessionInfo {
+    return {
+      id: session.id,
+      device_id: session.device_id,
+      capabilities: session.capabilities,
+      status: session.status === "active" && session.lease_until <= this.now() ? "expired" : session.status,
+      lease_until: session.lease_until,
+      server_time: this.now(),
+    };
+  }
+  private activeSessions(grant: Grant, deviceId: string): SessionInfo[] {
+    return this.store
+      .sessions(deviceId)
+      .filter((session) => session.grant_id === grant.id && session.lease_until > this.now())
+      .map((session) => this.sessionInfo(session));
+  }
+  /** Only authorized activity renews a live session; retained results never revive ended sessions. */
+  private renewSession(grant: Grant, sessionId: string): void {
+    const session = this.store.session(sessionId),
+      device = session && this.store.device(session.device_id),
+      connection = device && this.connections.get(device.id);
+    if (
+      !session ||
+      session.grant_id !== grant.id ||
+      session.status !== "active" ||
+      (session.lease_until <= this.now() &&
+        ![...this.pending.values()].some((p) => p.operation.session_id === sessionId)) ||
+      grant.revoked_at !== null ||
+      grantExpired(grant, this.now()) ||
+      !device ||
+      !connection ||
+      connection.paused ||
+      this.mono() - connection.heartbeatAt > 30 ||
+      session.capabilities.some(
+        (cap) => !deviceAccess(grant, device).capabilities.includes(cap) || !connection.capabilities[cap],
+      )
+    )
+      return;
+    this.store.renewSession(sessionId, sessionDeadline(grant, this.now() + SESSION_IDLE_SECONDS));
+  }
+  private operationResponse(
+    grant: Grant,
+    operation: Operation,
+    response: OperationResponse,
+  ): OperationResponse {
+    this.renewSession(this.currentGrant(grant), operation.session_id);
+    const session = this.store.session(operation.session_id)!;
+    return { ...response, session: this.sessionInfo(session) };
+  }
+  private executionId(grant: Grant, sessionId: string, requested?: string): string {
+    if (requested === undefined) return identifier("op");
+    if (!safeId.test(requested))
+      throw new BridgeError("invalid_operation_id", "Invalid operation identifier", 422);
+    const previous = this.store.operation(requested);
+    if (previous) {
+      this.authorizedOperation(grant, requested);
+      if (previous.session_id !== sessionId)
+        throw new BridgeError(
+          "operation_conflict",
+          "A returned operation_id belongs to its original session; query its status before continuing",
+        );
+      return requested;
+    }
+    return (
+      "op_" +
+      createHash("sha256")
+        .update(JSON.stringify([grant.id, sessionId, requested]))
+        .digest("base64url")
     );
   }
   private authorizedSession(grant: Grant, id: string): ControlSession {
@@ -212,7 +294,9 @@ export class ControlService {
     if (!session || session.grant_id !== grant.id)
       throw new BridgeError("not_found", "Session does not exist or is not granted", 404);
     if (session.status === "expired" || (session.status === "active" && session.lease_until <= this.now()))
-      throw new BridgeError("session_expired", "Idle session expired; open a new session");
+      throw new BridgeError("session_expired", "Idle session expired; open a new session", 409, {
+        session: this.sessionInfo(session),
+      });
     if (session.status !== "active") {
       if (this.connections.get(session.device_id)?.paused)
         throw new BridgeError("device_paused", "Resume access locally and open a new session");
@@ -225,6 +309,8 @@ export class ControlService {
       throw new BridgeError(
         reasons[session.status] ?? "session_stopped",
         "Session ended; open a new session and observe before continuing. Never replay an unknown side effect",
+        409,
+        { session: this.sessionInfo(session) },
       );
     }
     return session;
@@ -274,7 +360,7 @@ export class ControlService {
       cached = this.cache.get(id);
     if (cached) {
       this.authorizeResultAccess(grant, operation, cached.required);
-      return cached.response;
+      return this.operationResponse(grant, operation, cached.response);
     }
     const response: OperationResponse = { operation_id: id, status: operation.status },
       pending = this.pending.get(id);
@@ -287,7 +373,7 @@ export class ControlService {
       response.result_available = false;
       response.message = "Temporary result expired; the operation will not be executed again";
     }
-    return response;
+    return this.operationResponse(grant, operation, response);
   }
   async waitOperation(grant: Grant, id: string, waitSeconds = 15): Promise<OperationResponse> {
     if (!Number.isFinite(waitSeconds) || waitSeconds < 0 || waitSeconds > 30)
@@ -310,7 +396,9 @@ export class ControlService {
       // This is the single access seam for both synchronous and yielding tools.
       const currentOperation = this.authorizedOperation(grant, id);
       if (required) this.authorizeResultAccess(grant, currentOperation, required);
-      return result ?? this.operationStatus(grant, id);
+      return result
+        ? this.operationResponse(grant, currentOperation, result)
+        : this.operationStatus(grant, id);
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -346,8 +434,7 @@ export class ControlService {
     const requestHash = createHash("sha256")
         .update(sortedJson({ tool, arguments: args, session_id: sessionId }))
         .digest("hex"),
-      id = operationId ?? identifier("op");
-    if (!safeId.test(id)) throw new BridgeError("invalid_operation_id", "Invalid operation identifier", 422);
+      id = this.executionId(current, sessionId, operationId);
     const previous = this.store.operation(id);
     if (previous) {
       this.authorizedOperation(current, id);
@@ -399,7 +486,7 @@ export class ControlService {
       starts: { stdout: 0, stderr: 0 },
       parentId,
     });
-    this.store.renewSession(sessionId, sessionDeadline(current, this.now() + SESSION_IDLE_SECONDS));
+    this.renewSession(current, sessionId);
     if (tool === "browser_exec") {
       this.browserExecutions.set(sessionId, id);
       const abort = new AbortController();
@@ -442,9 +529,10 @@ export class ControlService {
             if (abort.signal.aborted || !this.pending.has(id)) throw new Error("Browser execution cancelled");
             const allowed = ["open", "observe", "read", "wait", "evaluate", "locate_act"] as const;
             if (!allowed.some((name) => name === method)) throw new Error("Unknown browser runtime method");
-            const step = `step_${createHash("sha256")
+            const stepKey = `step_${createHash("sha256")
               .update(id + ":" + String(++stepIndex))
               .digest("hex")}`;
+            const step = this.executionId(current, sessionId, stepKey);
             let response: OperationResponse;
             inFlightStep = { operation_id: step, method };
             try {
@@ -453,7 +541,7 @@ export class ControlService {
                 sessionId,
                 `browser_${method}` as DeviceTool,
                 callArgs,
-                step,
+                stepKey,
                 true,
                 id,
               );
@@ -795,14 +883,29 @@ export class ControlService {
       if (this.attachQueues.get(initial.id) === attaching) this.attachQueues.delete(initial.id);
     }
   }
-  dropConnection(ticket: AttachedDevice, reason = "connection_lost"): void {
+  dropConnection(
+    ticket: AttachedDevice,
+    reason: ConnectionLoss["reason"] = "connection_lost",
+    closeCode?: number,
+  ): void {
+    const diagnostic: ConnectionLoss = {
+      reason,
+      at: this.now(),
+      connection_epoch: ticket.epoch,
+      heartbeat_age_seconds: Math.max(0, this.mono() - ticket.heartbeatAt),
+      ...(closeCode === undefined ? {} : { close_code: closeCode }),
+    };
     const current = this.connections.get(ticket.deviceId) === ticket;
-    if (current) this.connections.delete(ticket.deviceId);
+    if (current) {
+      this.connections.delete(ticket.deviceId);
+      this.lastDisconnect.set(ticket.deviceId, diagnostic);
+    }
     for (const { operation: o } of [...this.pending.values()])
       if (o.device_id === ticket.deviceId && o.epoch === ticket.epoch)
         this.finish(o.id, "outcome_unknown", undefined, {
           code: "connection_lost",
           message: "Connection ended; operation will not be replayed",
+          connection: diagnostic,
         });
     if (current)
       for (const session of this.store.sessions(ticket.deviceId)) {
@@ -891,14 +994,10 @@ export class ControlService {
       const boundedError = baseError
         ? { code: baseError.code.slice(0, 100), message: baseError.message.slice(0, 2000) }
         : undefined;
-      const parsedError =
-        device.kind === "browser"
-          ? browserErrorSchema.safeParse(
-              boundedError ? { ...(message.error as JsonObject), ...boundedError } : undefined,
-            )
-          : undefined;
-      const error =
-        device.kind === "browser" ? (parsedError?.success ? parsedError.data : boundedError) : baseError;
+      const parsedError = browserErrorSchema.safeParse(
+        boundedError ? { ...(message.error as JsonObject), ...boundedError } : undefined,
+      );
+      const error = parsedError.success ? parsedError.data : boundedError;
       this.finish(message.operation_id, message.status as OperationState, message.result, error);
     }
   }
@@ -914,6 +1013,8 @@ export class ControlService {
             operationId: child.operation.id,
           });
     }
+    const grant = this.store.grant(pending.operation.grant_id);
+    if (grant) this.renewSession(grant, pending.operation.session_id);
     this.store.finishOperation(id, status);
     const response: OperationResponse = { operation_id: id, status };
     if (result !== undefined) response.result = result;
@@ -936,7 +1037,7 @@ export class ControlService {
       await ticket.transport.send(frame);
       return true;
     } catch {
-      this.dropConnection(ticket);
+      this.dropConnection(ticket, "send_failed");
       await ticket.transport.close(1011, "Device transport failed").catch(() => {});
       return false;
     }
@@ -949,7 +1050,7 @@ export class ControlService {
       work.push(
         this.maintain(ticket)
           .catch(() => {
-            this.dropConnection(ticket);
+            this.dropConnection(ticket, "maintenance_failed");
           })
           .finally(() => this.maintaining.delete(ticket.deviceId)),
       );
@@ -964,7 +1065,7 @@ export class ControlService {
   private async maintain(ticket: AttachedDevice): Promise<void> {
     if (this.connections.get(ticket.deviceId) !== ticket) return;
     if (this.mono() - ticket.heartbeatAt > 30) {
-      this.dropConnection(ticket);
+      this.dropConnection(ticket, "heartbeat_expired", 4408);
       await ticket.transport.close(4408, "Heartbeat expired").catch(() => {});
       return;
     }

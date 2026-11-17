@@ -202,8 +202,9 @@ test(
       assert.ok(Number(frame.grant_version) > 0);
     }
     assert.equal(
-      worker.incoming.filter((frame) => frame.type === "dispatch" && frame.operation_id === "wire-fill")
-        .length,
+      worker.incoming.filter(
+        (frame) => frame.type === "dispatch" && frame.operation_id === filled.value.operation_id,
+      ).length,
       1,
     );
     await tool("session_close", { session_id: a.id });

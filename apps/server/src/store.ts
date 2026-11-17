@@ -406,7 +406,9 @@ export class Store {
     capabilities: Capability[],
     leaseUntil: number,
   ): ControlSession {
-    const id = identifier("ses");
+    let id: string;
+    do id = "ses_" + randomBytes(6).toString("base64url");
+    while (this.session(id));
     this.transaction(() => {
       this.run(
         "INSERT INTO control_sessions VALUES(?,?,?,?,?,'active',?)",

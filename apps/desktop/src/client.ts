@@ -22,6 +22,7 @@ import {
   MAX_DEVICE_OPERATIONS,
   DEVICE_LEASE_SECONDS,
   type OperationFrame,
+  type BrowserError,
 } from "@abridge/protocol";
 import { LocalExecutor } from "./executor.js";
 import { DesktopError, record } from "./errors.js";
@@ -62,6 +63,18 @@ function canonical(value: unknown): string {
       .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
       .join(",")}}`;
   return JSON.stringify(value);
+}
+function executionCause(cause: unknown, cancelled: boolean): NonNullable<BrowserError["cause"]> {
+  if (cancelled || (cause instanceof DesktopError && cause.code === "operation_cancelled"))
+    return { code: "operation_cancelled", message: "Execution was interrupted by cancellation" };
+  if (cause instanceof Error && cause.name === "TimeoutError")
+    return { code: "execution_timeout", message: "A device execution deadline elapsed" };
+  if (cause instanceof Error && cause.name === "AbortError")
+    return { code: "execution_aborted", message: "Device execution was aborted" };
+  if (cause instanceof DesktopError && cause.code === "outcome_unknown")
+    return { code: "execution_unconfirmed", message: "The device could not confirm execution" };
+  // Raw exception text may contain commands, paths or credentials.
+  return { code: "execution_error", message: "An unexpected device execution error occurred" };
 }
 export class DeviceClient {
   readonly executor: LocalExecutor;
@@ -540,7 +553,7 @@ export class DeviceClient {
   private async execute(frame: OperationFrame, operation: Running): Promise<void> {
     let status = "executed",
       result: Record<string, unknown> = {},
-      error: Record<string, unknown> | undefined;
+      error: BrowserError | undefined;
     try {
       operation.controller.signal.throwIfAborted();
       result = await this.executor.execute(
@@ -563,6 +576,7 @@ export class DeviceClient {
         error = {
           code: operation.controller.signal.aborted ? "operation_cancelled" : "outcome_unknown",
           message: "Execution result is unknown; the operation will not be replayed",
+          cause: executionCause(cause, operation.controller.signal.aborted),
         };
       } else {
         status = cause.outcome;

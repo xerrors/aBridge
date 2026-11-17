@@ -1,4 +1,4 @@
-import type { BrowserError } from "@abridge/protocol";
+import type { BrowserError, SessionInfo, SessionErrorDetails, SessionState } from "@abridge/protocol";
 import type { Capability, DeviceKind, ConnectionPolicy } from "@abridge/protocol";
 
 export type JsonObject = Record<string, unknown>;
@@ -31,14 +31,7 @@ export interface Grant {
   created_at: number;
   last_used: number | null;
 }
-export type SessionState =
-  | "active"
-  | "stopped"
-  | "expired"
-  | "revoked"
-  | "connection_lost"
-  | "connection_replaced"
-  | "server_restarted";
+export type { SessionState } from "@abridge/protocol";
 export interface ControlSession {
   id: string;
   grant_id: string;
@@ -68,6 +61,7 @@ export interface OperationResponse extends JsonObject {
   status: OperationState | "cancel_requested";
   result?: unknown;
   error?: BrowserError;
+  session?: SessionInfo;
   output?: { stdout: string; stderr: string };
 }
 
@@ -95,6 +89,7 @@ export class BridgeError extends Error {
     public readonly code: string,
     message: string,
     public readonly status = 409,
+    public readonly details: SessionErrorDetails = {},
   ) {
     super(message);
     this.name = "BridgeError";

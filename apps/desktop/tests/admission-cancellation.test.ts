@@ -11,6 +11,7 @@ import { LocalExecutor } from "../src/executor.js";
 import type { NativeDriver } from "../src/native.js";
 import { configureClient } from "../src/runtime.js";
 import { localControl } from "../src/local-control.js";
+import { DesktopError } from "../src/errors.js";
 
 async function until(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt++) {
@@ -240,6 +241,61 @@ test("pending admissions count toward the device operation limit", async () => {
     for (const gate of gates) gate.release();
     await Promise.all(gates.map((_, index) => f.result(`pending_${index}`)));
     assert.deepEqual(f.effects, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("unknown execution receipts distinguish deadlines and exceptions without leaking or replaying", async () => {
+  const f = await fixture();
+  try {
+    for (const [failure, code] of [
+      [new DOMException("private timeout detail", "TimeoutError"), "execution_timeout"],
+      [new DOMException("private abort detail", "AbortError"), "execution_aborted"],
+      [new DesktopError("outcome_unknown", "private driver detail"), "execution_unconfirmed"],
+      [new Error("private command and credential"), "execution_error"],
+    ] as const) {
+      let executions = 0;
+      f.client.executor.execute = async () => {
+        executions++;
+        throw failure;
+      };
+      const frame = f.frame(code);
+      f.send(frame);
+      const receipt = await f.result(code);
+      assert.equal(receipt.status, "outcome_unknown");
+      assert.equal((receipt.error as { cause: { code: string } }).cause.code, code);
+      assert.equal(JSON.stringify(receipt).includes("private"), false);
+      f.send(frame);
+      await until(() => f.messages.filter((message) => message.operation_id === code).length === 2);
+      assert.equal(executions, 1, "An uncertain effect must not be replayed");
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("cancellation remains the primary diagnosis when an in-flight operation throws", async () => {
+  const f = await fixture();
+  const entered = deferred();
+  try {
+    f.client.executor.execute = async (_id, _tool, _args, _session, signal) => {
+      entered.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        signal!.addEventListener("abort", () => reject(new Error("private cancellation detail")), {
+          once: true,
+        });
+      });
+      return {};
+    };
+    f.send(f.frame("cancelled_execution"));
+    await entered.promise;
+    f.send({ type: "cancel", operation_ids: ["cancelled_execution"] });
+    const receipt = await f.result("cancelled_execution");
+    assert.equal(receipt.status, "outcome_unknown");
+    assert.equal((receipt.error as { code: string }).code, "operation_cancelled");
+    assert.equal((receipt.error as { cause: { code: string } }).cause.code, "operation_cancelled");
+    assert.equal(JSON.stringify(receipt).includes("private"), false);
   } finally {
     await f.close();
   }

@@ -21,7 +21,14 @@ import { commandOutputPage } from "./command-output.js";
 import { BridgeError, object, type Grant, type JsonObject } from "./types.js";
 
 const id = z.string().min(1).max(100);
-const base = { session_id: id, operation_id: id.optional() };
+const base = {
+  session_id: id.describe("Copy the session ID exactly from session_open or device_get.sessions."),
+  operation_id: id
+    .optional()
+    .describe(
+      "Usually omit for a new operation. For retrying the same request in the same session, reuse the original key or returned operation_id. Keys are scoped to the session; query/cancel with the returned operation_id. Never replay an unknown side effect in a new session.",
+    ),
+};
 const path = z
   .string()
   .min(1)
@@ -87,7 +94,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
         } catch (error) {
           if (error instanceof BridgeError)
             return {
-              ...contentResponse({ error: { code: error.code, message: error.message } }),
+              ...contentResponse({ error: { code: error.code, message: error.message, ...error.details } }),
               isError: true,
             };
           throw error;
@@ -99,24 +106,30 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
     const { session_id, operation_id, ...arguments_ } = args;
     return control.execute(grant, session_id as string, tool, arguments_, operation_id as string | undefined);
   };
-  register("devices_list", "List granted devices and currently available capabilities.", {}, () => ({
-    connection: control.connectionInfo(grant),
-    devices: control.devices(grant),
-  }));
+  register(
+    "devices_list",
+    "List granted devices, available capabilities and your active sessions. Discovery does not renew sessions.",
+    {},
+    () => ({
+      connection: control.connectionInfo(grant),
+      devices: control.devices(grant),
+    }),
+  );
   register(
     "device_get",
-    "Read one granted device. Offline devices are never substituted.",
+    "Read one granted device and your active sessions. Reuse a listed session or explicitly close it to release input; discovery does not renew leases.",
     { device_id: id },
     (a) => control.deviceView(control.authorizedDevice(grant, a.device_id), grant),
   );
   register(
     "session_open",
-    "Open a capability-scoped session on an explicit online device. Returns the session and device details including name, kind and platform. Close it when finished.",
+    "Open a capability-scoped session on an explicit online device. Returns the session and device details including name, kind and platform. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
     { device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) },
     (a) => {
       const session = control.openSession(grant, a.device_id, a.capabilities);
       return {
         ...session,
+        server_time: control.sessionInfo(session).server_time,
         device: control.deviceView(control.authorizedDevice(grant, session.device_id), grant),
       };
     },

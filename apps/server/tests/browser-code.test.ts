@@ -103,7 +103,9 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       "state.count += 3; const result = await page.read(); return {count: state.count, text: result.text};",
       "code-second",
     );
-    assert.deepEqual(replay, second);
+    assert.deepEqual({ ...replay, session: undefined }, { ...second, session: undefined });
+    assert.equal(replay.session!.id, session.id);
+    assert.ok(replay.session!.lease_until >= second.session!.lease_until);
     assert.equal(messages.filter((frame) => frame.type === "dispatch").length, 1);
     await assert.rejects(run("return 9;", "code-second"), /different arguments/);
     for (const completed of [0, 1]) {
@@ -118,7 +120,11 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       const step = result.failed_step as JsonObject;
       assert.equal(step.method, "evaluate");
       assert.equal(step.status, "refused");
-      assert.match(step.operation_id as string, /step/);
+      assert.equal(
+        server.store.operation(String(step.operation_id)),
+        undefined,
+        "Invalid step was never dispatched",
+      );
       assert.ok((step.error as JsonObject).code);
       assert.equal(messages.filter((frame) => frame.type === "dispatch").length, before + completed);
     }
@@ -291,8 +297,8 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
         "No queued step may run",
       );
       assert.deepEqual(
-        control.operationStatus(grant, started.operation_id),
-        result,
+        { ...control.operationStatus(grant, started.operation_id), session: undefined },
+        { ...result, session: undefined },
         "Late runtime completion cannot replace diagnostics",
       );
     } finally {

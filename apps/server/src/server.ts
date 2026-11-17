@@ -543,10 +543,10 @@ export async function createServer(config: ServerConfig) {
           void transport.close(4408, "Hello deadline exceeded");
         }, 10000);
         socket.on("error", () => {});
-        socket.on("close", () => {
+        socket.on("close", (code) => {
           closed = true;
           clearTimeout(timer);
-          if (ticket) control.dropConnection(ticket);
+          if (ticket) control.dropConnection(ticket, "connection_lost", code);
         });
         let queuedFrames = 0,
           queuedBytes = 0;
@@ -558,7 +558,7 @@ export async function createServer(config: ServerConfig) {
           if (++queuedFrames > 64 || (queuedBytes += bytes) > 16 * 1024 * 1024) {
             closed = true;
             clearTimeout(timer);
-            if (ticket) control.dropConnection(ticket);
+            if (ticket) control.dropConnection(ticket, "receive_queue_exceeded", 4408);
             void transport.close(4408, "Device receive queue exceeded");
             return;
           }
@@ -586,7 +586,7 @@ export async function createServer(config: ServerConfig) {
             .catch(async () => {
               closed = true;
               clearTimeout(timer);
-              if (ticket) control.dropConnection(ticket);
+              if (ticket) control.dropConnection(ticket, "invalid_message", 4400);
               await transport.close(4400, "Invalid or stale device message");
             })
             .finally(() => {

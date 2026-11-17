@@ -70,6 +70,47 @@ export const actWaitAfterSchema = z
   .min(0)
   .max(MAX_ACT_WAIT_AFTER_MS)
   .default(DEFAULT_ACT_WAIT_AFTER_MS);
+export const sessionStateSchema = z.enum([
+  "active",
+  "stopped",
+  "expired",
+  "revoked",
+  "connection_lost",
+  "connection_replaced",
+  "server_restarted",
+]);
+export type SessionState = z.infer<typeof sessionStateSchema>;
+export const sessionInfoSchema = z.object({
+  id: z.string(),
+  device_id: z.string(),
+  capabilities: z.array(z.enum(CAPABILITIES)),
+  status: sessionStateSchema,
+  lease_until: z.number(),
+  server_time: z.number(),
+});
+export type SessionInfo = z.infer<typeof sessionInfoSchema>;
+export interface SessionErrorDetails {
+  session?: SessionInfo;
+  sessions?: SessionInfo[];
+}
+export const connectionLossSchema = z.object({
+  reason: z.enum([
+    "connection_lost",
+    "connection_replaced",
+    "server_restarted",
+    "revoked",
+    "heartbeat_expired",
+    "send_failed",
+    "receive_queue_exceeded",
+    "invalid_message",
+    "maintenance_failed",
+  ]),
+  at: z.number(),
+  connection_epoch: z.number(),
+  heartbeat_age_seconds: z.number(),
+  close_code: z.number().int().optional(),
+});
+export type ConnectionLoss = z.infer<typeof connectionLossSchema>;
 export const SESSION_IDLE_SECONDS = 300;
 export const DEVICE_LEASE_SECONDS = 30;
 export const CONNECTION_LEASE_SECONDS = DEVICE_LEASE_SECONDS;
@@ -308,6 +349,7 @@ export const computerActionSchema = z.discriminatedUnion("type", [
 const browserErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
 export const browserErrorSchema = browserErrorDetailSchema.extend({
   cause: browserErrorDetailSchema.optional(),
+  connection: connectionLossSchema.optional(),
   cleanup_error: browserErrorDetailSchema.optional(),
   recovery: z
     .object({

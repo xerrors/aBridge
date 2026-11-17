@@ -390,7 +390,7 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
       });
       const isError = status === "cancelled" ? undefined : true;
       assert.equal(receipt.value.status, status);
-      assert.equal(receipt.value.operation_id, "op_error_" + status);
+      assert.equal(f.store.operation(receipt.value.operation_id)?.session_id, opened.value.id);
       assert.equal(receipt.isError, isError);
       if (isError) assert.equal(receipt.value.error.code, "fixture_" + status);
       const retained = await rpc(f.url, grant.key, "command_status", {
@@ -398,7 +398,9 @@ test("real MCP marks failed device receipts as tool errors without rejecting exe
         wait_seconds: 0,
       });
       assert.equal(retained.isError, isError);
-      assert.deepEqual(retained.value, receipt.value);
+      assert.deepEqual({ ...retained.value, session: undefined }, { ...receipt.value, session: undefined });
+      assert.equal(retained.value.session.id, opened.value.id);
+      assert.ok(retained.value.session.lease_until >= receipt.value.session.lease_until);
     }
     const action = await rpc(f.url, grant.key, "computer_act", {
       session_id: opened.value.id,
@@ -445,13 +447,60 @@ test("session_open includes the same device details as device_get and devices_li
         assert.equal(opened.value.device.platform, platform);
         const detail = await rpc(f.url, grant.key, "device_get", { device_id: device.id });
         const listed = await rpc(f.url, grant.key, "devices_list");
-        assert.deepEqual(opened.value.device, detail.value);
-        assert.deepEqual(listed.value.devices, [opened.value.device]);
+        const stableDevice = (value: JsonObject) => ({
+          ...value,
+          sessions: (value.sessions as JsonObject[]).map(({ server_time, ...session }) => {
+            assert.equal(typeof server_time, "number");
+            assert.equal(session.id, opened.value.id);
+            return session;
+          }),
+        });
+        assert.deepEqual(stableDevice(opened.value.device), stableDevice(detail.value));
+        assert.deepEqual(listed.value.devices.map(stableDevice), [stableDevice(opened.value.device)]);
         await rpc(f.url, grant.key, "session_close", { session_id: opened.value.id });
       } finally {
         socket.close();
       }
     }
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("MCP input occupancy exposes only this connection's recoverable sessions", async () => {
+  const f = await fixture();
+  try {
+    const user = await f.store.createUser("recovery-fixture", "synthetic-fixture-password");
+    const device = f.store.createDevice(user.id, "Fixture desktop", ["input", "screen"]);
+    const policy = {
+      mode: "all" as const,
+      capabilities: ["input" as const, "screen" as const],
+      overrides: [],
+    };
+    const own = f.store.createGrant(user.id, "First", policy);
+    const other = f.store.createGrant(user.id, "Second", policy);
+    await f.control.attachConnection(
+      device.key,
+      "computer",
+      { capabilities: { input: true, screen: true } },
+      { async send() {}, async close() {} },
+    );
+    const args = { device_id: device.device.id, capabilities: ["input", "screen"] };
+    const opened = await rpc(f.url, own.key, "session_open", args);
+    assert.match(opened.value.id, /^ses_[A-Za-z0-9_-]{8}$/);
+    assert.equal(typeof opened.value.server_time, "number");
+    const busy = await rpc(f.url, own.key, "session_open", args);
+    assert.equal(busy.value.error.code, "desktop_busy");
+    assert.equal(busy.value.error.sessions[0].id, opened.value.id);
+    const hidden = await rpc(f.url, other.key, "session_open", args);
+    assert.equal(hidden.value.error.code, "desktop_busy");
+    assert.deepEqual(hidden.value.error.sessions, []);
+    const detail = await rpc(f.url, own.key, "device_get", { device_id: device.device.id });
+    assert.equal(detail.value.sessions[0].id, opened.value.id);
+    assert.equal(detail.value.sessions[0].lease_until, opened.value.lease_until);
+    await rpc(f.url, own.key, "session_close", { session_id: detail.value.sessions[0].id });
+    const fresh = await rpc(f.url, other.key, "session_open", args);
+    assert.equal(fresh.value.status, "active");
   } finally {
     await f.dispose();
   }
