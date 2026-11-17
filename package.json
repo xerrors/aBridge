@@ -28,7 +28,8 @@
     "benchmark:miniwob": "npm run build && node --import tsx tools/bench/agent-run.ts",
     "benchmark:report": "node --import tsx tools/bench-report.ts",
     "benchmark:report:check": "node --import tsx tools/bench-report.ts --check",
-    "benchmark:smoke": "npm run build && node --import tsx tools/bench/run.ts"
+    "benchmark:smoke": "npm run build && node --import tsx tools/bench/run.ts",
+    "test:browser:reliability:live": "npm run build && node --import tsx tools/browser-reliability-live.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",

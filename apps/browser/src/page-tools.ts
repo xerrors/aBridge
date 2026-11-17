@@ -1,18 +1,55 @@
 // Page-local functions are serialized explicitly; no extension globals enter the page.
-export function prepareInput(this: HTMLElement) {
-  if (!this.isConnected) throw new Error("Element detached");
-  this.scrollIntoView({ block: "center", inline: "center" });
-  const doc = this.ownerDocument;
+/** Pure validation runs before focus/scroll or native input, so a known refusal keeps the task tab. */
+export function validateInput(this: Node, action: string): string | null {
+  if (this.nodeType === 9)
+    return action === "press" || action === "scroll" ? null : "页面根节点只支持按键或滚动，请选择具体元素";
+  if (this.nodeType === 3 && (action === "fill" || action === "select"))
+    return "文本引用只用于定位文字，请选择可编辑输入框或下拉控件";
+  const node = this.nodeType === 3 ? this.parentElement : this;
+  if (!node || node.nodeType !== 1) return "目标不是可操作元素，请重新观察";
+  const element = node as HTMLElement;
+  if (action === "fill") {
+    const input = element as HTMLInputElement;
+    if (input.readOnly) return "目标为只读字段，不能 fill；请点击控件并使用页面提供的选择界面";
+    if (input.disabled || element.closest("[inert]")) return "目标已禁用，不能 fill";
+    if (
+      !element.isContentEditable &&
+      (!["INPUT", "TEXTAREA"].includes(element.tagName) ||
+        ["file", "checkbox", "radio", "button", "submit", "reset", "hidden"].includes(input.type))
+    )
+      return "目标不是可编辑文本字段；请重新观察并选择文本输入框";
+  }
+  return null;
+}
+
+export function prepareInput(this: HTMLElement | Document | Text, action?: string) {
+  const rootKey = this.nodeType === 9 && action === "press";
+  const element =
+    this.nodeType === 9
+      ? (this as Document).body
+      : this.nodeType === 3
+        ? this.parentElement
+        : (this as HTMLElement);
+  if (!element) throw new Error("Element detached");
+  if (!element.isConnected) throw new Error("Element detached");
+  element.scrollIntoView({ block: "center", inline: "center" });
+  const doc = element.ownerDocument;
   const win = doc.defaultView!;
-  const rect = this.getBoundingClientRect();
-  const style = win.getComputedStyle(this);
+  let rect = element.getBoundingClientRect();
+  if (this.nodeType === 3) {
+    const range = doc.createRange();
+    range.selectNodeContents(this);
+    rect = range.getBoundingClientRect();
+  }
+  const style = win.getComputedStyle(element);
   if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none")
     throw new Error("Element is not visible");
-  if (this.matches(":disabled") || this.closest("[inert]")) throw new Error("Element is disabled");
+  if (element.matches(":disabled") || element.closest("[inert]")) throw new Error("Element is disabled");
   let x = Math.max(0, Math.min(win.innerWidth - 1, rect.x + rect.width / 2));
   let y = Math.max(0, Math.min(win.innerHeight - 1, rect.y + rect.height / 2));
   const hit = doc.elementFromPoint(x, y);
-  if (!hit || (hit !== this && !this.contains(hit))) throw new Error("Element is obscured");
+  if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit)))
+    throw new Error("Element is obscured");
   let current = win;
   while (current !== current.top) {
     const frame = current.frameElement as HTMLElement | null;
@@ -33,7 +70,7 @@ export function prepareInput(this: HTMLElement) {
     if (frame.ownerDocument.elementFromPoint(x, y) !== frame) throw new Error("Frame is obscured");
     current = frame.ownerDocument.defaultView!;
   }
-  this.focus({ preventScroll: true });
+  if (!rootKey) element.focus({ preventScroll: true });
   return { x, y };
 }
 export function selectValues(this: HTMLSelectElement, values: string[]) {

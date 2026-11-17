@@ -1,4 +1,11 @@
-import { prepareInput, prepareFill, selectValues, captureContent, checkCondition } from "./page-tools.js";
+import {
+  validateInput,
+  prepareInput,
+  prepareFill,
+  selectValues,
+  captureContent,
+  checkCondition,
+} from "./page-tools.js";
 // Browser execution is restricted to task-owned tabs; raw CDP stays internal.
 import {
   OBSERVATION_SECONDS,
@@ -52,6 +59,8 @@ interface ElementResult {
   name: string;
   description?: string;
   value?: string;
+  read_only?: boolean;
+  input_type?: string;
   url?: string;
   target?: string;
   url_truncated?: boolean;
@@ -816,7 +825,13 @@ export class BrowserBridge {
     const seenNodes = new Set<number>();
     let matches = 0,
       truncated = page.truncated === true || page.text.length > MAX_PAGE_SCAN;
-    for (const node of nodes) {
+    // Controls stay ahead of textual fallbacks, so long documents cannot hide real buttons.
+    // StaticText supplies targets for non-semantic, event-bound spans/divs; inline boxes are redundant.
+    const orderedNodes = [
+      ...nodes.filter((n) => String(n.role?.value).toLowerCase() !== "statictext"),
+      ...nodes.filter((n) => String(n.role?.value).toLowerCase() === "statictext"),
+    ];
+    for (const node of orderedNodes) {
       if (node.ignored || !node.backendDOMNodeId || seenNodes.has(node.backendDOMNodeId)) continue;
       const role = String(node.role?.value || "").toLowerCase();
       const properties = Object.fromEntries(
@@ -832,6 +847,7 @@ export class BrowserBridge {
               source.value?.value,
           ));
       if (
+        role !== "statictext" &&
         !INTERACTIVE_ROLES.has(role) &&
         properties.focusable !== true &&
         !properties.editable &&
@@ -908,7 +924,8 @@ export class BrowserBridge {
     for (let offset = 0; offset < selected.length; offset += LINK_CONCURRENCY) {
       await Promise.all(
         selected.slice(offset, offset + LINK_CONCURRENCY).map(async (candidate) => {
-          if (candidate.item.role !== "link") return;
+          if (!["link", "textbox", "searchbox", "combobox", "spinbutton"].includes(candidate.item.role))
+            return;
           const { node: domNode } = await this.command(
             session,
             "DOM.describeNode",
@@ -916,6 +933,12 @@ export class BrowserBridge {
             deadline,
           );
           const attributes = domNode?.attributes || [];
+          if (candidate.item.role !== "link") {
+            candidate.item.read_only = attributes.some((name, i) => i % 2 === 0 && name === "readonly");
+            const typeIndex = attributes.findIndex((name, i) => i % 2 === 0 && name === "type");
+            if (typeIndex >= 0) candidate.item.input_type = attributes[typeIndex + 1];
+            return;
+          }
           const targetIndex = attributes.findIndex((name, i) => i % 2 === 0 && name === "target");
           if (targetIndex >= 0) candidate.item.target = attributes[targetIndex + 1].slice(0, 200);
           const index = attributes.findIndex((name, i) => i % 2 === 0 && name === "href");
@@ -1355,12 +1378,22 @@ export class BrowserBridge {
       const native = ["click", "fill", "hover", "press", "scroll"].includes(action.type!);
       let point: { x: number; y: number } | undefined;
       let preparedSideEffects = false;
+      // A pure preflight can reject a readonly/wrong-kind target without losing the task.
+      const validation = await this.command(session, "Runtime.callFunctionOn", {
+        objectId: object.objectId,
+        functionDeclaration: validateInput.toString(),
+        arguments: [{ value: action.type }],
+        returnByValue: true,
+      });
+      if (validation.exceptionDetails) throw fail("invalid_action", "无法验证目标，请重新观察");
+      if (typeof validation.result?.value === "string") throw fail("invalid_action", validation.result.value);
       try {
         if (native) {
           preparedSideEffects = true;
           const prepared = await this.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
             functionDeclaration: prepareInput.toString(),
+            arguments: [{ value: action.type }],
             returnByValue: true,
           });
           if (prepared.exceptionDetails)
@@ -1388,6 +1421,7 @@ export class BrowserBridge {
           const refreshed = await this.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
             functionDeclaration: prepareInput.toString(),
+            arguments: [{ value: action.type }],
             returnByValue: true,
           });
           point = refreshed.result?.value as { x: number; y: number } | undefined;

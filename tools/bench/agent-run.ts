@@ -16,7 +16,12 @@ function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 const { values } = parseArgs({
-  options: { out: { type: "string" }, chrome: { type: "string" }, preflight: { type: "boolean" } },
+  options: {
+    out: { type: "string" },
+    chrome: { type: "string" },
+    preflight: { type: "boolean" },
+    holdout: { type: "boolean" },
+  },
 });
 const root = resolve(import.meta.dirname, "../..");
 const interrupted = new AbortController();
@@ -68,13 +73,17 @@ try {
       .update(await readFile(join(root, "tools/bench", name)))
       .digest("hex");
   const taskNames = values.preflight ? ["click-test"] : suite.tasks;
-  const seeds = values.preflight ? [0] : suite.seeds;
+  const seeds = values.preflight ? [0] : values.holdout ? [2] : suite.seeds;
   const plan = seeds.flatMap((seed) => taskNames.map((task) => ({ task, seed })));
   const protocol = {
     ...suite,
     tasks: taskNames,
     seeds,
-    mode: values.preflight ? "agent-preflight-not-scored" : "real-agent-public-task-subset",
+    mode: values.preflight
+      ? "agent-preflight-not-scored"
+      : values.holdout
+        ? "real-agent-holdout"
+        : "real-agent-public-task-subset",
     actions:
       "rendered DOM and native screenshots; only observe/read/act/wait; no executable JS, source access or hidden grader",
     officialLimitsOverridden: true,

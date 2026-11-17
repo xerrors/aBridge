@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserBridge } from "../src/bridge.ts";
-import { prepareInput } from "../src/page-tools.ts";
+import { prepareInput, validateInput } from "../src/page-tools.ts";
 function fixture() {
   const event = () => ({
     listeners: [],
@@ -122,7 +122,9 @@ test("refs resolve backend node handles and click uses native CDP input", async 
   });
   assert.equal(act.result.route, "cdp_input");
   assert.equal(f.calls.find((c) => c[0] === "DOM.resolveNode")[2].backendNodeId, 99);
-  const write = f.calls.find((c) => c[0] === "Runtime.callFunctionOn")[2];
+  const write = f.calls.find(
+    (c) => c[0] === "Runtime.callFunctionOn" && c[2].functionDeclaration.includes("elementFromPoint"),
+  )[2];
   assert.equal(write.objectId, "internal-node-99");
   assert.match(write.functionDeclaration, /elementFromPoint/);
   assert.equal(
@@ -491,8 +493,9 @@ test("observation keeps visible text once, actionable refs, link destinations an
   };
   const { result } = await f.request("observe");
   assert.equal(result.text, "Unread\nNotification title");
-  assert.equal(result.elements.length, 4);
-  assert.equal(result.truncated, false);
+  assert.ok(result.elements.length > 4);
+  assert.equal(result.truncated, true);
+  assert.equal(result.elements[4].role, "statictext");
   assert.equal(result.elements[0].url, "https://github.example/notifications?query=is%3Aunread");
   assert.equal(result.elements[0].selected, true);
   assert.equal(result.elements[1].checked, "mixed");
@@ -1590,4 +1593,90 @@ test("cancelled open during tab creation removes the late tab and does not navig
   assert.deepEqual(f.removed, [2]);
   assert.equal(f.bridge.sessions.size, 0);
   assert.equal(f.calls.filter((entry) => entry[0] === "Accessibility.getFullAXTree").length, 0);
+});
+
+test("visible non-semantic text has a reference and query can focus its click target", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: [
+          { backendDOMNodeId: 401, role: { value: "StaticText" }, name: { value: "Open detail" } },
+          { backendDOMNodeId: 402, role: { value: "InlineTextBox" }, name: { value: "Open detail" } },
+        ],
+      };
+    return send(target, method, params);
+  };
+  const observation = (await f.request("observe", "s1", { query: "Open detail" })).result;
+  assert.equal(observation.elements.length, 1);
+  assert.equal(observation.elements[0].name, "Open detail");
+  const action = await f.request("act", "s1", {
+    observation_id: observation.observation_id,
+    action: { type: "click", element_ref: observation.elements[0].element_ref },
+  });
+  assert.equal(action.result.executed, true);
+  assert.equal(f.calls.find((c) => c[0] === "DOM.resolveNode")[2].backendNodeId, 401);
+});
+
+test("readonly validation refuses before focus or input and keeps the session available", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const observation = (await f.request("observe")).result;
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("validateInput"))
+      return { result: { value: "Readonly: use the page picker" } };
+    return send(target, method, params);
+  };
+  const before = f.calls.length;
+  const result = await f.request("act", "s1", {
+    observation_id: observation.observation_id,
+    action: { type: "fill", element_ref: "e2", text: "2020-01-01" },
+  });
+  assert.equal(result.error.code, "invalid_action");
+  assert.equal(f.removed.length, 0);
+  assert.equal(f.calls.slice(before).filter((c) => c[0].startsWith("Input.")).length, 0);
+  assert.ok((await f.request("observe")).result.observation_id);
+});
+
+test("pure validation accepts root keyboard actions and rejects readonly without focusing", () => {
+  assert.equal(validateInput.call({ nodeType: 9 }, "press"), null);
+  assert.match(validateInput.call({ nodeType: 9 }, "click"), /根节点/);
+  assert.match(validateInput.call({ nodeType: 1, readOnly: true }, "fill"), /只读/);
+});
+
+test("text references target glyph bounds rather than a mixed container's center", () => {
+  const win = {
+    innerWidth: 1000,
+    innerHeight: 1000,
+    getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+  };
+  win.top = win;
+  const parent = {
+    isConnected: true,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 0, y: 0, width: 400, height: 100 }),
+    matches: () => false,
+    closest: () => null,
+    contains: () => true,
+    focus() {},
+  };
+  const text = { nodeType: 3, parentElement: parent };
+  parent.ownerDocument = {
+    defaultView: win,
+    elementFromPoint: () => parent,
+    createRange: () => ({
+      selectNodeContents(node) {
+        assert.equal(node, text);
+      },
+      getBoundingClientRect: () => ({ x: 10, y: 20, width: 30, height: 10 }),
+    }),
+  };
+  assert.deepEqual(prepareInput.call(text, "click"), { x: 25, y: 25 });
+  assert.match(
+    validateInput.call({ nodeType: 3, parentElement: { isContentEditable: true } }, "fill"),
+    /文本引用/,
+  );
 });
