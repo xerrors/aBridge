@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { BrowserBridge } from "../src/bridge.ts";
-import { prepareInput, validateInput } from "../src/page-tools.ts";
+import { prepareInput, validateInput, scrollElement } from "../src/page-tools.ts";
 function fixture() {
   const event = () => ({
     listeners: [],
@@ -1144,7 +1144,7 @@ test("press, select, scroll and hover expose distinct native or semantic routes"
   );
   assert.equal(
     f.calls.filter((call) => call[0] === "Input.dispatchMouseEvent" && call[2].type === "mouseWheel").length,
-    1,
+    0,
   );
 });
 
@@ -1810,4 +1810,75 @@ test("current visible occlusion is rejected without scroll, focus or native inpu
   };
   assert.match(validateInput.call(el, "fill"), /覆盖/);
   assert.equal(mutations, 0);
+});
+
+test("DOM scroll chooses the nearest scroll container, reports actual delta and does not center the page", () => {
+  const calls = [];
+  const page = {
+    scrollTop: 0,
+    scrollLeft: 0,
+    scrollBy(options) {
+      calls.push([this, options]);
+      this.scrollTop += options.top;
+      this.scrollLeft += options.left;
+    },
+  };
+  const box = {
+    parentElement: page,
+    scrollHeight: 2000,
+    clientHeight: 160,
+    scrollWidth: 300,
+    clientWidth: 300,
+    scrollTop: 0,
+    scrollLeft: 0,
+    scrollBy: page.scrollBy,
+  };
+  const doc = {
+    scrollingElement: page,
+    documentElement: page,
+    defaultView: {
+      getComputedStyle: (el) =>
+        el === box
+          ? { overflowY: "auto", overflowX: "hidden" }
+          : { overflowY: "visible", overflowX: "visible" },
+    },
+  };
+  const leaf = { nodeType: 1, ownerDocument: doc, parentElement: box, scrollHeight: 20, clientHeight: 20 };
+  const result = scrollElement.call(leaf, 0, 650);
+  assert.deepEqual(result, {
+    target: "element",
+    before: { x: 0, y: 0 },
+    after: { x: 0, y: 650 },
+    delta: { x: 0, y: 650 },
+  });
+  assert.equal(page.scrollTop, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].behavior, "instant");
+  assert.equal(scrollElement.call({ ...doc, nodeType: 9 }, 0, 100).delta.y, 100);
+  assert.equal(page.scrollTop, 100);
+});
+
+test("a semantic scroll failure is unknown and never falls back to a second wheel or scroll", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const obs = (await f.request("observe")).result;
+  const send = f.chrome.debugger.sendCommand;
+  let attempts = 0;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("scrollElement")) {
+      attempts++;
+      return { exceptionDetails: { text: "execution interrupted" } };
+    }
+    return send(target, method, params);
+  };
+  const result = await f.request("act", "s1", {
+    observation_id: obs.observation_id,
+    action: { type: "scroll", element_ref: "e1", delta_y: 650 },
+  });
+  assert.equal(result.error.code, "outcome_unknown");
+  assert.equal(attempts, 1);
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mouseWheel").length,
+    0,
+  );
 });

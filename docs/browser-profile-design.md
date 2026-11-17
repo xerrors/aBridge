@@ -32,7 +32,7 @@ Agent 通过 `devices_list` 选择设备 ID，再创建仅含 `browser` 的会�
 
 观察返回可见文本、交互元素、链接和明确截断标记。`query` 可为整段子串或1–20项字符串数组，不区分大小写；数组任一项匹配即可，正文与控件遵循同一规则。每项非空且最多200字符，数组总长最多2000字符。结果去重并保持原预算，零结果仅表示本次已加载正文与控件扫描未匹配。链接的 `target` 是 DOM 声明，不是实际打开事件。引用按会话与文档版本绑定，最长有效 60 秒，动作和导航后失效。截图需显式请求，通过原生 MCP 图片块返回。具体预算与恢复语义见 [执行契约](architecture.md)。
 
-扩展通过固定 Chrome debugger 通道执行授权的操作。点击、按键、悬停和滚动使用 CDP Input；填充使用浏览器文本输入，原生 select 使用 DOM 语义事件。原始 CDP 不对 Agent 开放。代码模式的 `page.evaluate` 在任务页执行 JavaScript，具有该页登录用户权限，固定观察中的密码过滤不能约束脚本读取。原生动作已自动滚动并检查目标，不必先用 evaluate 模拟滚动或点击。页面可拒绝操作，执行回执不能代替实际业务效果确认；点击成功也不表示已导航。所有工具及代码中的 `page` 固定操作当前任务页，链接产生的新标签不会自动接管；访问已观察链接可将其 URL 传给 `browser_open` 或 `page.goto`。批量操作与自定义数据提取可用 `browser_exec`。
+扩展通过固定 Chrome debugger 通道执行授权的操作。点击、按键和悬停使用 CDP Input；填充使用浏览器文本输入，原生 select 使用 DOM 语义事件。滚动使用即时 DOM scrollBy，返回实际前后偏移与位移；不发送滚轮事件，不以未知滚轮结果作为补滚依据。原始 CDP 不对 Agent 开放。代码模式的 `page.evaluate` 在任务页执行 JavaScript，具有该页登录用户权限，固定观察中的密码过滤不能约束脚本读取。原生动作已自动滚动并检查目标，不必先用 evaluate 模拟滚动或点击。页面可拒绝操作，执行回执不能代替实际业务效果确认；点击成功也不表示已导航。所有工具及代码中的 `page` 固定操作当前任务页，链接产生的新标签不会自动接管；访问已观察链接可将其 URL 传给 `browser_open` 或 `page.goto`。批量操作与自定义数据提取可用 `browser_exec`。
 
 ## 连接与本机控制
 
@@ -81,7 +81,7 @@ return { completed: state.completed };
 | `page.evaluate(expressionOrFunction, argument?)` | 执行页面 JavaScript 并返回 JSON，函数参数需可序列化                           |
 | `page.frameLocator(css)`                         | 显式选择单层同源 iframe 后使用 locator/read/wait/evaluate                     |
 
-按键支持 Enter、Tab、Escape、方向键等命名键和单字符，暂不接受修饰键组合；`select(valueOrValues)` 按原生选项 value 选择；`scroll(deltaY, deltaX?)` 发送滚轮输入。frame 支持当前同源文档，跨源 frame 明确拒绝，不回退到主文档；嵌套 frame、文件传输和原生文件对话框尚无专门接口。`evaluate` 可处理 DOM 数据与特定页面逻辑，但不能把它当成任意 frame 的通用替代。
+按键支持 Enter、Tab、Escape、方向键等命名键和单字符，暂不接受修饰键组合；`select(valueOrValues)` 按原生选项 value 选择；`scroll(deltaY, deltaX?)` 对目标或其最近滚动容器执行即时 DOM 滚动，不触发 wheel 事件；边界可返回零位移，不能作为 canvas 滚轮手势。frame 支持当前同源文档，跨源 frame 明确拒绝，不回退到主文档；嵌套 frame、文件传输和原生文件对话框尚无专门接口。`evaluate` 可处理 DOM 数据与特定页面逻辑，但不能把它当成任意 frame 的通用替代。
 
 代码默认限20秒，`timeout_ms` 可设至120秒；`wait_seconds` 默认15秒，等待返回后原操作可能仍在执行，应使用同一 `operation_id` 查询 `command_status`，或 `command_cancel` 取消。每段最多1000个浏览器步骤，QuickJS内存16MiB，连续纯计算有中断限额。日志最多100条/12000字符，状态和内部序列化结果最多1MiB；最终 value 超24000字符返回明确截断预览，建议在脚本内汇总或用快照分页。完整 JSON state 在正常序列化后保存；取消、超时或执行失败不能保证 state 包含最后一步进度，恢复应核对回执与实际页面。
 

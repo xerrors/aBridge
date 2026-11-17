@@ -77,6 +77,40 @@ export function pointerTargetDetails(this: HTMLElement) {
     bounds: { x, y, width, height },
   };
 }
+/** Scroll offsets directly: background compositor wheel acknowledgement does not prove movement. */
+export function scrollElement(this: Node, deltaX: number, deltaY: number) {
+  const doc = this.nodeType === 9 ? (this as Document) : this.ownerDocument!;
+  const win = doc.defaultView!;
+  let candidate =
+    this.nodeType === 9 ? doc.scrollingElement : this.nodeType === 3 ? this.parentElement : (this as Element);
+  let target: Element | null = null;
+  while (candidate && candidate !== doc.scrollingElement) {
+    const style = win.getComputedStyle(candidate);
+    const vertical =
+      deltaY !== 0 &&
+      /^(auto|scroll|overlay)$/.test(style.overflowY) &&
+      candidate.scrollHeight > candidate.clientHeight;
+    const horizontal =
+      deltaX !== 0 &&
+      /^(auto|scroll|overlay)$/.test(style.overflowX) &&
+      candidate.scrollWidth > candidate.clientWidth;
+    if (vertical || horizontal) {
+      target = candidate;
+      break;
+    }
+    candidate = candidate.parentElement;
+  }
+  target ||= doc.scrollingElement || doc.documentElement;
+  const before = { x: target.scrollLeft, y: target.scrollTop };
+  target.scrollBy({ left: deltaX, top: deltaY, behavior: "instant" });
+  const after = { x: target.scrollLeft, y: target.scrollTop };
+  return {
+    target: target === doc.scrollingElement ? "page" : "element",
+    before,
+    after,
+    delta: { x: after.x - before.x, y: after.y - before.y },
+  };
+}
 // Page-local functions are serialized explicitly; no extension globals enter the page.
 /** Pure validation runs before focus/scroll or native input, so a known refusal keeps the task tab. */
 export function validateInput(this: Node, action: string): string | null {
@@ -129,6 +163,7 @@ export function prepareInput(this: HTMLElement | Document | Text, action?: strin
         : (this as HTMLElement);
   if (!element) throw new Error("Element detached");
   if (!element.isConnected) throw new Error("Element detached");
+  if (rootKey) return { x: 0, y: 0 };
   element.scrollIntoView({ block: "center", inline: "center" });
   const doc = element.ownerDocument;
   const win = doc.defaultView!;

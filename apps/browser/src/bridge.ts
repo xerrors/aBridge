@@ -1,6 +1,7 @@
 import {
   capturePointerTargets,
   pointerTargetDetails,
+  scrollElement,
   validateInput,
   prepareInput,
   prepareFill,
@@ -1486,7 +1487,7 @@ export class BrowserBridge {
     try {
       if (session.revision !== observation.revision) throw fail("stale_observation", "页面已导航");
       let response: CdpResults["Runtime.callFunctionOn"] = {};
-      const native = ["click", "fill", "hover", "press", "scroll"].includes(action.type!);
+      const native = ["click", "fill", "hover", "press"].includes(action.type!);
       let point: { x: number; y: number } | undefined;
       let preparedSideEffects = false;
       // A pure preflight can reject a readonly/wrong-kind target without losing the task.
@@ -1552,7 +1553,14 @@ export class BrowserBridge {
         await assertCurrentDocument();
         session.observation = null;
         preparedSideEffects = true;
-        if (action.type === "click" || action.type === "hover" || action.type === "scroll") {
+        if (action.type === "scroll") {
+          response = await this.command(session, "Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: scrollElement.toString(),
+            arguments: [{ value: action.delta_x || 0 }, { value: action.delta_y || 0 }],
+            returnByValue: true,
+          });
+        } else if (action.type === "click" || action.type === "hover") {
           await this.command(session, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
           await assertCurrentDocument();
           if (action.type === "click") {
@@ -1579,13 +1587,6 @@ export class BrowserBridge {
                 clickCount: 1,
               });
             }
-          } else if (action.type === "scroll") {
-            await this.command(session, "Input.dispatchMouseEvent", {
-              type: "mouseWheel",
-              ...point,
-              deltaX: action.delta_x || 0,
-              deltaY: action.delta_y || 0,
-            });
           }
         } else if (action.type === "press") {
           const key = action.key || "";
@@ -1685,7 +1686,15 @@ export class BrowserBridge {
         params,
         {
           executed: true,
-          route: native ? "cdp_input" : action.type === "select" ? "select_value" : "replace_value",
+          route:
+            action.type === "scroll"
+              ? "dom_scroll"
+              : native
+                ? "cdp_input"
+                : action.type === "select"
+                  ? "select_value"
+                  : "replace_value",
+          ...(action.type === "scroll" ? { scroll: response.result?.value } : {}),
         },
         true,
         performance.now() + this.navigationTimeout,

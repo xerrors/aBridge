@@ -29,7 +29,10 @@ const fixture = createServer((_request, response) => {
   <input id="readonly" aria-label="Choose date" readonly value="unchanged">
   <input id="editable" aria-label="Editable name"><button>Continue</button><p id="result">Waiting</p>
   <input aria-label="Picker trigger" onfocus="document.querySelector('#popup').style.display='block'" onblur="document.querySelector('#popup').style.display='none'">
-  <div id="popup" style="display:none" onmousedown="event.preventDefault()"><a href="#" tabindex="-1" onclick="event.preventDefault();document.querySelector('#result').innerText='Choice confirmed'">Choice Alpha</a></div>`);
+  <div id="popup" style="display:none" onmousedown="event.preventDefault()"><a href="#" tabindex="-1" onclick="event.preventDefault();document.querySelector('#result').innerText='Choice confirmed'">Choice Alpha</a></div>
+  <div id="scroll-list" role="region" aria-label="Scrollable list" tabindex="0" style="height:160px;width:300px;overflow:auto;border:1px solid">${Array.from({ length: 100 }, (_, i) => `<div style="height:25px">Item ${i}</div>`).join("")}</div>
+  <script>window.fixtureWheels=0;document.querySelector('#scroll-list').addEventListener('wheel',()=>window.fixtureWheels++);</script>
+`);
 });
 await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
 const address = fixture.address();
@@ -364,8 +367,35 @@ try {
     passed++;
     await env.call("session_close", { session_id: id });
   }
+  if (!baseline && !focusBaseline && !visualBaseline) {
+    id = await session();
+    obs = await observe(id);
+    const list = obs.elements.find((e) => e.name === "Scrollable list");
+    assert.ok(list);
+    const scrolled = await callAct({
+      session_id: id,
+      observation_id: obs.observation_id,
+      action: { type: "scroll", element_ref: list.element_ref, delta_y: 650 },
+      wait_after_ms: 0,
+      screenshot: true,
+    });
+    assert.equal(scrolled.status, "executed");
+    assert.equal((scrolled.result as { route: string }).route, "dom_scroll");
+    const moved = (
+      await env.runCode(
+        id,
+        "return await page.evaluate(() => ({top:document.querySelector('#scroll-list').scrollTop,wheels:window.fixtureWheels,hidden:document.visibilityState}));",
+      )
+    ).value as { top: number; wheels: number; hidden: string };
+    assert.equal(moved.top, 650);
+    assert.equal(moved.wheels, 0);
+    assert.equal(moved.hidden, "hidden");
+    console.log("PASS background scrolling immediate DOM delta, no wheel replay");
+    passed++;
+    await env.call("session_close", { session_id: id });
+  }
   console.log(
-    `${passed}/${baseline ? 3 : focusBaseline ? 4 : 6} native regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
+    `${passed}/${baseline ? 3 : focusBaseline ? 4 : visualBaseline ? 6 : 7} real Chrome regression checks passed (${baseline ? "baseline reproduction" : "fixed"})`,
   );
 } finally {
   await env.close();
