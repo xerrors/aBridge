@@ -22,7 +22,8 @@ npm run benchmark:miniwob -- --preflight
 生成新的完整结果并更新 README：
 
 ```sh
-npm run benchmark:miniwob -- --out docs/benchmarks/miniwob-agent-results.json
+npm run benchmark:miniwob -- --out docs/benchmarks/miniwob-tools-results.json
+npm run benchmark:miniwob -- --holdout --out docs/benchmarks/miniwob-tools-holdout.json
 npm run benchmark:report
 npm run check
 ```
@@ -69,7 +70,7 @@ Agent 只拿到可见任务指令、当前会话 ID 和四个工具：`browser_o
 
 ## 证据与局限
 
-[逐次结果](miniwob-agent-results.json) 保存每例判分、失败原因、耗时、工具数、用量及环境；README 自动生成，不手填成绩。运行前冻结协议和 benchmark 文件哈希，运行后确认文件未变。结果包含扩展 worker SHA-256 和产品基线提交；新增 benchmark 尚未提交时，其准确版本由文件哈希描述。
+[原始基线](miniwob-agent-results.json)、[通用工具修复后逐次结果](miniwob-tools-results.json) 与 [seed=2 验证](miniwob-tools-holdout.json) 保存每例判分、失败原因、耗时、工具数、用量及环境；README 自动生成，不手填成绩。运行前冻结协议和 benchmark 文件哈希，运行后确认文件未变。结果包含扩展 worker SHA-256 和产品基线提交；新增 benchmark 尚未提交时，其准确版本由文件哈希描述。
 
 原始 CLI JSONL（含截图）、stderr、网关轨迹、隔离 Profile、临时凭据和数据库只保留在忽略的 `.local/bench/runs/agent-*/`，不公开上传。正常结束和 SIGINT/SIGTERM 都清理本次服务与浏览器，证据文件保留。公开快照不含原始提示回复、会话 ID 或凭据。
 
@@ -87,3 +88,5 @@ npm run benchmark:smoke -- --episodes 1 --negative-controls
 ```
 
 [负对照结果](miniwob-controls.json) 分别验证不操作导致超时、错误文本、错误表格答案会被上游拒绝。人为制造的错误仅验证判分器，绝不混入真实 Agent 失败率。
+
+本轮通用工具问题的根因、边界与前后对照见[可靠性验证报告](browser-reliability.md)。

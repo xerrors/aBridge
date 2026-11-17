@@ -20,7 +20,7 @@
 
 ## 浏览器 Benchmark
 
-`npm run benchmark:miniwob` 使用固定模型的真实 Codex Agent，通过 MCP、Server、WebSocket 和实际扩展完成冻结的 MiniWoB++ 任务（6 类 × 2 个种子）。需要已登录的 Codex CLI 和 Chrome for Testing；入口为 `tools/bench/agent-run.ts`。`benchmark:smoke` 单独运行固定策略冒烟测试。真实评测不纳入 CI；CI 只核验已提交结果与 README 一致。[方法、评分与复现](../docs/benchmarks/miniwob.md)。
+`npm run benchmark:miniwob` 使用固定模型的真实 Codex Agent，通过 MCP、Server、WebSocket 和实际扩展完成冻结的 MiniWoB++ 任务（6 类 × 2 个种子）。需要已登录的 Codex CLI 和 Chrome for Testing；入口为 `tools/bench/agent-run.ts`。`benchmark:smoke` 单独运行固定策略冒烟测试。`test:browser:reliability:live` 用独立页面和真实扩展验证文字目标、页面按键、只读/遮挡拒绝后的恢复、弹出选择器的鼠标事件顺序、无语义图标引用、后台DOM滚动和嵌套容器裁切后的自动露出点击；`benchmark:miniwob -- --holdout` 单独运行 seed=2 验证。真实评测不纳入 CI；CI 只核验已提交结果与 README 一致。[方法、评分与复现](../docs/benchmarks/miniwob.md)。
 
 ## macOS 构建、安装与发布
 

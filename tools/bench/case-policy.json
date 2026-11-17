@@ -1,0 +1,27 @@
+{
+  "version": "task-validity-v1",
+  "exclusionReasons": [
+    {
+      "id": "source_integrity_violation",
+      "definition": "任务源码或依赖不符合固定上游哈希，无法视为既定任务"
+    },
+    { "id": "task_not_initialized", "definition": "有独立证据证明任务未按约定种子、模式或初始状态启动" },
+    {
+      "id": "undeclared_external_prerequisite",
+      "definition": "任务实际依赖评测约定未提供的外部账号、服务或数据"
+    },
+    {
+      "id": "outside_declared_task_scope",
+      "definition": "任务本身要求声明范围之外的操作，须有独立任务契约证据；工具实现缺陷不属于此类"
+    }
+  ],
+  "neverExcludeFor": [
+    "任务失败",
+    "超时或调用超预算",
+    "模型未完成任务",
+    "当前工具缺少可操作目标",
+    "工具输入错误",
+    "仅为提高成功率"
+  ],
+  "exclusions": []
+}
