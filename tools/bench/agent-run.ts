@@ -181,6 +181,12 @@ try {
           2,
         ),
       );
+      // A timed-out actor can leave an in-flight operation. It already fails the strict budget;
+      // do not race that operation with a grader or replay input just to recover diagnostics.
+      if (result.timedOut || result.budgetExceeded) {
+        result.failure = result.timedOut ? "time_budget" : "tool_budget";
+        return;
+      }
       const graded = (
         await env.runCode(
           session,
