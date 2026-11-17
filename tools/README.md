@@ -13,10 +13,14 @@
 | [browser-live.ts](browser-live.ts)             | 通过 ego-browser 在真实引擎上验收代码执行与输入 | `test:browser:live`（需本机 ego-browser） |
 | [check-architecture.ts](check-architecture.ts) | 校验生产导入、运行依赖归属与 workspace 接口     | `architecture:check`                      |
 | [package-release.ts](package-release.ts)       | 生成 Server tarball 与扩展 ZIP                  | `package`；发布 CI 使用公开分发参数       |
-| [check-package.ts](check-package.ts)           | 校验分发内容、版本与依赖边界                    | `package:check`                           |
+| [check-package.ts](check-package.ts)           | 校验分发边界及候选包离线安装、CLI/HTTP/WASM     | `package:check`                           |
 | [check-release.ts](check-release.ts)           | 校验发布标签、版本及 main 历史                  | 发布 CI                                   |
 
 `check` 串联格式、架构、类型、测试和分发检查；发布流程见 [发布说明](../docs/releasing.md)。
+
+源码测试可能借用工作区的依赖和资源，因此分发检查还需验证用户实际安装的候选包。`package:check` 通过 [check-installed-package.ts](lib/check-installed-package.ts) 在工作区外、空缓存下离线安装 tarball，再核对安装后的 CLI 版本、HTTP、管理台资源及 QuickJS/WASM 初始化。安装脚本禁用，使用隔离配置与本机临时端口，结束后停止进程并清理目录；此检查随 `check` 在现有 Linux/macOS CI 中运行。
+
+[package-consumer.test.ts](tests/package-consumer.test.ts) 使用受控进程验证检查器会拒绝缺失资源及提前异常退出、保留验证与关闭的双重错误，并关闭进程；由 `test` 自动发现，无需预先打包。实际依赖和 WASM 仍由候选包检查验证。分发方式、CLI 或脚本运行时调整时，同步维护对应探针和测试，不把当前依赖布局当成永久契约。
 
 ## 浏览器 Benchmark
 

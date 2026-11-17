@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { unzipSync } from "fflate";
 import { serverPackageLock, type PackageLock } from "./lib/server-lock.js";
+import { checkInstalledPackage } from "./lib/check-installed-package.js";
 const root = resolve(import.meta.dirname, ".."),
   dist = join(root, "dist/releases");
 const files = await readdir(dist),
@@ -67,6 +68,7 @@ try {
     };
     assert.equal(bundled.version, lock.packages[name]!.version, `Bundled version differs from lock: ${name}`);
   }
+  await checkInstalledPackage(tarball, pkg.name, metadata.version);
 } finally {
   await rm(extracted, { recursive: true, force: true });
 }
@@ -81,4 +83,6 @@ for (const name of Object.keys(archive)) {
   if (name.includes("..") || /\.local|node_modules|tests\/|\.ts$|\.map$/.test(name))
     throw new Error(`Unexpected extension entry: ${name}`);
 }
-console.log(`Verified Server tarball (${entries.length} files) and extension ZIP`);
+console.log(
+  `Verified Server tarball (${entries.length} files), offline installation, CLI, HTTP, WASM and extension ZIP`,
+);
