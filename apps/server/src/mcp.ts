@@ -198,7 +198,7 @@ export function createMcpServer(control: ControlService, grant: Grant): McpServe
   );
   register(
     "browser_observe",
-    `Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. References expire after ${OBSERVATION_SECONDS}s and actions/navigation.`,
+    `Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Link target is the declared attribute, not evidence of an opened tab. Unlabelled visual targets include viewport bounds; use a screenshot to identify their purpose. References expire after ${OBSERVATION_SECONDS}s and actions/navigation.`,
     { ...base, screenshot: z.boolean().default(false), query: browserQuerySchema.optional() },
     (a) => exec("browser_observe", a),
   );

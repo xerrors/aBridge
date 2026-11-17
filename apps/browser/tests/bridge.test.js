@@ -1736,3 +1736,78 @@ test("pointer preparation preserves native focus ordering; targeted key input st
   prepareInput.call(target, "press");
   assert.equal(focused, 1);
 });
+
+test("neutral visual targets keep original DOM identity and reject malformed geometry", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.expression.includes("capturePointerTargets"))
+      return { result: { objectId: "pointer-root" } };
+    if (method === "Runtime.getProperties")
+      return params.objectId === "pointer-root"
+        ? { result: [{ name: "targets", value: { objectId: "pointer-array" } }] }
+        : {
+            result: [
+              { name: "0", value: { objectId: "original-icon" } },
+              { name: "1", value: { objectId: "bad-icon" } },
+              { name: "2", value: { objectId: "duplicate-icon" } },
+            ],
+          };
+    if (method === "Runtime.callFunctionOn" && params.functionDeclaration.includes("pointerTargetDetails"))
+      return {
+        result: {
+          value:
+            params.objectId === "bad-icon"
+              ? { name: "invalid", bounds: { x: -1, y: 0, width: 0, height: 10 } }
+              : { name: "Unlabelled clickable target", bounds: { x: 10, y: 20, width: 24, height: 24 } },
+        },
+      };
+    if (method === "DOM.describeNode" && params.objectId) return { node: { backendNodeId: 701 } };
+    if (method === "DOM.getNodeForLocation") throw Error("Must never rebind by coordinates");
+    return send(target, method, params);
+  };
+  const obs = (await f.request("observe")).result;
+  assert.equal(obs.elements[0].role, "button");
+  const visual = obs.elements.filter((e) => e.role === "visualtarget");
+  assert.equal(visual.length, 1);
+  assert.deepEqual(visual[0].bounds, { x: 10, y: 20, width: 24, height: 24 });
+  assert.equal(f.bridge.sessions.get("s1").observation.refs.get(visual[0].element_ref), 701);
+  assert.equal(
+    (
+      await f.request("act", "s1", {
+        observation_id: obs.observation_id,
+        action: { type: "click", element_ref: visual[0].element_ref },
+      })
+    ).result.executed,
+    true,
+  );
+  assert.equal(f.calls.filter((c) => c[0] === "DOM.resolveNode").at(-1)[2].backendNodeId, 701);
+  assert.ok(
+    f.calls.some(
+      (c) => c[0] === "Runtime.releaseObjectGroup" && c[2].objectGroup.startsWith("abridge-pointer-"),
+    ),
+  );
+});
+
+test("current visible occlusion is rejected without scroll, focus or native input", () => {
+  let mutations = 0;
+  const el = {
+    nodeType: 1,
+    isConnected: true,
+    tagName: "INPUT",
+    type: "text",
+    closest: () => null,
+    getBoundingClientRect: () => ({ x: 5, y: 5, width: 20, height: 20 }),
+    contains: () => false,
+    focus() {
+      mutations++;
+    },
+    scrollIntoView() {
+      mutations++;
+    },
+    ownerDocument: { defaultView: { innerWidth: 100, innerHeight: 100 }, elementFromPoint: () => ({}) },
+  };
+  assert.match(validateInput.call(el, "fill"), /覆盖/);
+  assert.equal(mutations, 0);
+});

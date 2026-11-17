@@ -1,4 +1,6 @@
 import {
+  capturePointerTargets,
+  pointerTargetDetails,
   validateInput,
   prepareInput,
   prepareFill,
@@ -20,6 +22,34 @@ import {
   type BrowserStepFailure,
 } from "@abridge/protocol";
 import { fail, errorDetails } from "./types.js";
+type PointerTarget = NonNullable<ReturnType<typeof pointerTargetDetails>>;
+function pointerTarget(value: unknown): PointerTarget | undefined {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("name" in value) ||
+    typeof value.name !== "string" ||
+    !("bounds" in value)
+  )
+    return;
+  if (!value.bounds || typeof value.bounds !== "object") return;
+  const bounds = value.bounds as Record<string, unknown>;
+  const { x, y, width, height } = bounds;
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    ![x, y, width, height].every(Number.isFinite) ||
+    x < 0 ||
+    y < 0 ||
+    width < 2 ||
+    height < 2 ||
+    [x, y, width, height].some((n) => n > 1e6)
+  )
+    return;
+  return { name: value.name.slice(0, 240), bounds: { x, y, width, height } };
+}
 interface AXValue {
   sources?: { attribute?: string; superseded?: boolean; value?: { value?: unknown } }[];
   value?: unknown;
@@ -40,6 +70,7 @@ interface CdpResults {
     exceptionDetails?: unknown;
   };
   "DOM.describeNode": { node?: { attributes?: string[]; backendNodeId?: number; frameId?: string } };
+  "Runtime.getProperties": { result?: { name: string; value?: { value?: unknown; objectId?: string } }[] };
   "DOM.getDocument": { root: { nodeId: number } };
   "DOM.querySelectorAll": { nodeIds: number[] };
   "DOM.resolveNode": { object?: { objectId?: string } };
@@ -59,6 +90,7 @@ interface ElementResult {
   name: string;
   description?: string;
   value?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
   read_only?: boolean;
   input_type?: string;
   url?: string;
@@ -818,7 +850,12 @@ export class BrowserBridge {
       deadline,
     );
     const page = visible.result?.value as
-      { text?: unknown; truncated?: boolean; base_uri?: string } | undefined;
+      | {
+          text?: unknown;
+          truncated?: boolean;
+          base_uri?: string;
+        }
+      | undefined;
     if (visible.exceptionDetails || !page || typeof page.text !== "string")
       throw fail("observation_failed", "无法读取页面可见内容，请重新观察");
     const candidates: { item: ElementResult; backendNodeId: number }[] = [];
@@ -884,6 +921,80 @@ export class BrowserBridge {
       }
       candidates.push({ item, backendNodeId: node.backendDOMNodeId });
     }
+    let visualIndex = candidates.findIndex((c) => c.item.role === "statictext");
+    if (visualIndex < 0) visualIndex = candidates.length;
+    const pointerGroup = `abridge-pointer-${this.uuid()}`;
+    // Keep real DOM handles throughout discovery: coordinate re-hit-testing could silently
+    // bind an old screenshot target to an unrelated replacement in a dynamic document.
+    try {
+      const discovery = await this.command(
+        session,
+        "Runtime.evaluate",
+        {
+          expression: `(${capturePointerTargets.toString()})()`,
+          returnByValue: false,
+          objectGroup: pointerGroup,
+        },
+        deadline,
+      );
+      if (discovery.exceptionDetails) truncated = true;
+      if (discovery.result?.objectId) {
+        const root = await this.command(
+          session,
+          "Runtime.getProperties",
+          { objectId: discovery.result.objectId, ownProperties: true },
+          deadline,
+        );
+        if (root.result?.find((p) => p.name === "truncated")?.value?.value === true) truncated = true;
+        const arrayId = root.result?.find((p) => p.name === "targets")?.value?.objectId;
+        if (arrayId) {
+          const array = await this.command(
+            session,
+            "Runtime.getProperties",
+            { objectId: arrayId, ownProperties: true },
+            deadline,
+          );
+          const elements = (array.result || []).filter((p) => /^\d+$/.test(p.name) && p.value?.objectId);
+          if (elements.length > 16) truncated = true;
+          for (const property of elements.slice(0, 16)) {
+            const objectId = property.value!.objectId!;
+            const details = await this.command(
+              session,
+              "Runtime.callFunctionOn",
+              { objectId, functionDeclaration: pointerTargetDetails.toString(), returnByValue: true },
+              deadline,
+            );
+            const target = pointerTarget(details.result?.value);
+            if (!target) continue;
+            if (terms.length && !terms.some((term) => target.name.toLowerCase().includes(term))) continue;
+            const { node } = await this.command(
+              session,
+              "DOM.describeNode",
+              { objectId, depth: 0 },
+              deadline,
+            );
+            if (!node?.backendNodeId || seenNodes.has(node.backendNodeId)) continue;
+            seenNodes.add(node.backendNodeId);
+            matches++;
+            candidates.splice(visualIndex++, 0, {
+              backendNodeId: node.backendNodeId,
+              item: { element_ref: "", role: "visualtarget", name: target.name, bounds: target.bounds },
+            });
+          }
+        }
+      }
+    } finally {
+      await this.command(session, "Runtime.releaseObjectGroup", {
+        objectGroup: pointerGroup,
+      }).catch(() => {});
+    }
+    if (candidates.length > MAX_ELEMENTS) {
+      candidates.length = MAX_ELEMENTS;
+      truncated = true;
+    }
+    candidates.forEach((candidate, i) => {
+      candidate.item.element_ref = `e${i + 1}`;
+    });
     const tab = await this.valid(session, deadline);
     const selectedText = excerpt(page.text.slice(0, MAX_PAGE_SCAN), terms);
     const result: Result & { elements: ElementResult[] } = {

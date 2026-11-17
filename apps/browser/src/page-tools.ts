@@ -1,3 +1,82 @@
+/** Bounded, read-only discovery of visible pointer affordances absent from semantic AX controls. */
+export function capturePointerTargets() {
+  const targets: HTMLElement[] = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+  let scanned = 0,
+    truncated = false;
+  while (walker.nextNode()) {
+    if (++scanned > 4000) {
+      truncated = true;
+      break;
+    }
+    const el = walker.currentNode as HTMLElement;
+    if (["SCRIPT", "STYLE", "NOSCRIPT", "IFRAME", "CANVAS", "OBJECT", "EMBED"].includes(el.tagName)) continue;
+    if (el.closest("button,a,input,select,textarea,[role='button'],[role='link']")) continue;
+    const style = getComputedStyle(el);
+    if (
+      style.cursor !== "pointer" ||
+      style.visibility !== "visible" ||
+      style.display === "none" ||
+      Number(style.opacity) === 0
+    )
+      continue;
+    let transparent = false;
+    for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (Number(getComputedStyle(ancestor).opacity) === 0) {
+        transparent = true;
+        break;
+      }
+    }
+    if (transparent) continue;
+    // Visible text already has AX text references; this fallback supplies unnamed visual affordances.
+    if ((el.innerText || "").trim()) continue;
+    if (
+      [...el.children].some(
+        (child) => getComputedStyle(child).cursor === "pointer" && child.getClientRects().length,
+      )
+    )
+      continue;
+    const r = el.getBoundingClientRect();
+    const x = Math.max(0, r.left),
+      y = Math.max(0, r.top);
+    const width = Math.min(innerWidth, r.right) - x,
+      height = Math.min(innerHeight, r.bottom) - y;
+    if (width < 2 || height < 2) continue;
+    const hit = document.elementFromPoint(x + width / 2, y + height / 2);
+    if (!hit || (hit !== el && !el.contains(hit))) continue;
+    if (targets.length >= 16) {
+      truncated = true;
+      break;
+    }
+    targets.push(el);
+  }
+  return { targets, truncated };
+}
+/** Metadata is read from the same element handle later bound to the action reference. */
+export function pointerTargetDetails(this: HTMLElement) {
+  if (!this.isConnected) return null;
+  const style = getComputedStyle(this);
+  if (style.cursor !== "pointer" || style.visibility !== "visible" || style.display === "none") return null;
+  for (let ancestor: HTMLElement | null = this; ancestor; ancestor = ancestor.parentElement)
+    if (Number(getComputedStyle(ancestor).opacity) === 0) return null;
+  const r = this.getBoundingClientRect();
+  const x = Math.max(0, r.left),
+    y = Math.max(0, r.top),
+    width = Math.min(innerWidth, r.right) - x,
+    height = Math.min(innerHeight, r.bottom) - y;
+  if (width < 2 || height < 2) return null;
+  const hit = document.elementFromPoint(x + width / 2, y + height / 2);
+  if (!hit || (hit !== this && !this.contains(hit))) return null;
+  return {
+    name: (
+      this.getAttribute("aria-label") ||
+      this.getAttribute("title") ||
+      this.getAttribute("alt") ||
+      "Unlabelled clickable target"
+    ).slice(0, 240),
+    bounds: { x, y, width, height },
+  };
+}
 // Page-local functions are serialized explicitly; no extension globals enter the page.
 /** Pure validation runs before focus/scroll or native input, so a known refusal keeps the task tab. */
 export function validateInput(this: Node, action: string): string | null {
@@ -18,6 +97,24 @@ export function validateInput(this: Node, action: string): string | null {
         ["file", "checkbox", "radio", "button", "submit", "reset", "hidden"].includes(input.type))
     )
       return "目标不是可编辑文本字段；请重新观察并选择文本输入框";
+  }
+  if (!element.isConnected) return "目标已离开页面，请重新观察";
+  let rect = element.getBoundingClientRect();
+  const doc = element.ownerDocument,
+    win = doc.defaultView!;
+  if (this.nodeType === 3) {
+    const range = doc.createRange();
+    range.selectNodeContents(this);
+    rect = range.getBoundingClientRect();
+  }
+  if (rect.width <= 0 || rect.height <= 0) return "目标不可见，请重新观察";
+  const x = rect.x + rect.width / 2,
+    y = rect.y + rect.height / 2;
+  // Only reject current in-viewport occlusion here: no scroll/focus/input has happened.
+  if (x >= 0 && y >= 0 && x < win.innerWidth && y < win.innerHeight) {
+    const hit = doc.elementFromPoint(x, y);
+    if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit)))
+      return "目标被覆盖，未执行输入；请先处理覆盖层并重新观察";
   }
   return null;
 }
