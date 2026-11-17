@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
+async function waitUntil(predicate, message) {
+  const deadline = performance.now() + 2000;
+  while (!(await predicate()) && performance.now() < deadline) await delay(5);
+  assert.ok(await predicate(), message);
+}
 const event = () => ({
   listeners: [],
   addListener(fn) {
@@ -486,25 +491,37 @@ test("recovery alarm replaces a stale apparently-open socket only after async ta
 test("alarm reconnect during CLOSING completes old task cleanup before replacing the socket", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
     h = harness(local, {}, { deferredClose: true });
-  t.after(() => {
-    local.device.revoked = true;
-    for (const s of h.sockets) {
-      s.close();
-      s.finishClose?.();
+  t.after(async () => {
+    const unbinding = globalThis.chrome === h.chrome ? h.popup({ type: "unbind" }) : Promise.resolve();
+    for (const socket of h.sockets) {
+      socket.close();
+      socket.finishClose?.();
+    }
+    try {
+      await unbinding;
+    } finally {
+      if (globalThis.chrome === h.chrome) {
+        delete globalThis.chrome;
+        delete globalThis.WebSocket;
+      }
     }
   });
   await import("../src/worker.ts?closing-socket-alarm");
-  await delay(10);
+  await waitUntil(() => h.sockets.length === 1, "initial socket is ready");
   h.sockets[0].receive(h.dispatch("before-closing"));
-  await delay(10);
+  await waitUntil(() => h.tabs.size === 2, "dispatch has created its task tab");
   assert.equal(h.tabs.size, 2);
   const old = h.sockets[0];
   old.close();
   assert.equal(old.readyState, 2);
   h.chrome.alarms.onAlarm.emit([...h.alarms.values()][0]);
-  await delay(20);
+  await waitUntil(() => h.sockets.length === 2, "reconnect completes after old task cleanup");
   assert.equal(h.sockets.length, 2);
   assert.deepEqual(h.tabsAtConnect[1], [1], "CLOSING old socket cannot skip task cleanup");
+  await waitUntil(
+    async () => (await h.popup({ type: "status" })).connected,
+    "replacement socket authenticated",
+  );
   old.finishClose();
   await delay(10);
   assert.equal(
