@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { api, objectResultSchema, ApiError, loadData, userSchema, type User } from "./api.js";
+import { api, objectResultSchema, ApiError, loadData, userSchema, type User } from "../../lib/api.js";
 
-export type ManagementData = Awaited<ReturnType<typeof loadData>>;
+import type { ManagementData } from "../../lib/types.js";
 export const emptyData: ManagementData = { devices: [], grants: [] };
 export type AuthPhase = "loading" | "login" | "ready";
 export function useUserSession(notify: (message: string) => void, management = true) {
   const [user, setUser] = useState<User | null>(null);
   const [phase, setPhase] = useState<AuthPhase>("loading");
   const [data, setData] = useState<ManagementData>(emptyData);
+  const [dataReady, setDataReady] = useState(false);
   const [identityRevision, setIdentityRevision] = useState(0);
   const [reloadRevision, setReloadRevision] = useState(0);
   const identity = useRef<User | null>(null);
@@ -18,6 +19,7 @@ export function useUserSession(notify: (message: string) => void, management = t
   const updateIdentity = useCallback((me: User | null) => {
     if (identity.current?.id !== me?.id) {
       setData(emptyData);
+      setDataReady(false);
       setIdentityRevision((value) => value + 1);
     }
     identity.current = me;
@@ -27,12 +29,14 @@ export function useUserSession(notify: (message: string) => void, management = t
     revision.current++;
     updateIdentity(null);
     setData(emptyData);
+    setDataReady(false);
     setPhase("login");
   }, [updateIdentity]);
   const reloadIdentity = useCallback(() => {
     revision.current++;
     updateIdentity(null);
     setData(emptyData);
+    setDataReady(false);
     setPhase("loading");
     setReloadRevision((value) => value + 1);
   }, [updateIdentity]);
@@ -54,6 +58,7 @@ export function useUserSession(notify: (message: string) => void, management = t
           continue;
         }
         setData(loaded);
+        setDataReady(management);
         setPhase("ready");
         return;
       }
@@ -131,6 +136,7 @@ export function useUserSession(notify: (message: string) => void, management = t
     user,
     phase,
     data,
+    dataReady,
     identityRevision,
     refresh,
     authenticate,

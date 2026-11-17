@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { connectionExpiry } from "../src/connection-editor.js";
+import { connectionExpiry } from "../src/features/connections/editor.js";
 
 test("editing a connection preserves its exact expiry unless its date or validity changes", () => {
   const original = new Date(2030, 5, 15, 10, 30, 12).getTime() / 1000;

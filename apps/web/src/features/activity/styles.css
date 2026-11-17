@@ -1,0 +1,33 @@
+.activity-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.activity-filters .field {
+  flex: 1;
+  min-width: 160px;
+  margin-bottom: 0;
+}
+.activity-filters select {
+  text-overflow: ellipsis;
+}
+.activity-filters .text-button {
+  min-height: 40px;
+}
+.record-time {
+  white-space: nowrap;
+}
+.record-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+}
+.record-pagination button:disabled,
+.record-pagination button[aria-disabled="true"] {
+  cursor: default;
+}

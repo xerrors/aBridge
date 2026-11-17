@@ -7,10 +7,11 @@ import {
   deviceAuthorizationViewSchema,
   type DeviceKind,
 } from "@abridge/protocol";
-import { api, ApiError } from "./api.js";
-import { Authentication } from "./authentication.js";
-import { Brand, capabilityLabels } from "./components.js";
-import { useUserSession } from "./session.js";
+import { api, ApiError } from "../../lib/api.js";
+import { Authentication } from "../auth/page.js";
+import { Brand } from "../../components/brand.js";
+import { capabilityLabels } from "../../lib/labels.js";
+import { useUserSession } from "../auth/session.js";
 
 type Authorization = z.infer<typeof deviceAuthorizationViewSchema>;
 

@@ -1,7 +1,8 @@
+import { ChevronDown, Plus, RefreshCw } from "lucide-preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { adminCreateUserSchema, adminOverviewSchema, type AdminOverview } from "@abridge/protocol";
-import { api, ApiError, userSchema } from "./api.js";
-import { Field, Form, Modal } from "./components.js";
+import { api, ApiError, userSchema } from "../../lib/api.js";
+import { Field, Form, Modal } from "../../components/forms.js";
 
 function dateTime(value: number | null): string {
   return value === null ? "尚未连接" : new Date(value * 1000).toLocaleString("zh-CN");
@@ -92,9 +93,11 @@ export function InstanceAdminPage({
         <h1>实例管理</h1>
         <div class="actions">
           <button disabled={loading} onClick={() => void refresh()}>
+            <RefreshCw aria-hidden="true" />
             {loading ? "刷新中…" : "刷新"}
           </button>
           <button class="primary" onClick={() => setCreating(true)}>
+            <Plus aria-hidden="true" />
             创建用户
           </button>
         </div>
@@ -147,6 +150,7 @@ export function InstanceAdminPage({
                       在线 <strong>{user.online_count}</strong>
                     </span>
                   </div>
+                  <ChevronDown aria-hidden="true" />
                 </summary>
                 {user.devices.length ? (
                   <div class="table-wrap">
@@ -183,7 +187,6 @@ export function InstanceAdminPage({
           ) : (
             <div class="empty">
               <p>还没有用户</p>
-              <span class="small">创建账户后，用户即可登录并绑定自己的设备。</span>
             </div>
           )}
         </section>

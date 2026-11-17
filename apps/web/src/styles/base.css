@@ -1,0 +1,95 @@
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/geist-regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/fonts/geist-medium.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/geist-semibold.ttf") format("truetype");
+}
+:root {
+  font-family:
+    "Geist",
+    -apple-system,
+    BlinkMacSystemFont,
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  color: var(--ink);
+  background: var(--canvas);
+  font-size: 14px;
+  line-height: 1.5;
+  font-synthesis: none;
+  --ink: #171717;
+  --canvas: #fafafa;
+  --subtle: #f5f5f5;
+  --blue: #0066dd;
+  --line: #e5e5e5;
+  --muted: #666666;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+a {
+  outline-offset: 4px;
+  color: var(--blue);
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+h1 {
+  margin: 0;
+  font-size: 27px;
+  font-weight: 600;
+  letter-spacing: -0.7px;
+}
+h2 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+p {
+  margin: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}
+h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}

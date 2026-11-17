@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { adminSessionSchema } from "@abridge/protocol";
-import { api, ApiError, objectResultSchema } from "./api.js";
+import { api, ApiError, objectResultSchema } from "../../lib/api.js";
 
 /** Cookie-changing responses must finish in request order, including an overlapping logout. */
 export class AdminSessionRequests {

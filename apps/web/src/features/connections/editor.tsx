@@ -1,3 +1,4 @@
+import { CapabilityIcon } from "../../components/icons.js";
 import { useState } from "preact/hooks";
 import {
   CAPABILITIES,
@@ -6,8 +7,9 @@ import {
   type Capability,
   type ConnectionPolicy,
 } from "@abridge/protocol";
-import type { Device, Grant } from "./api.js";
-import { capabilityLabels, Field, Form, Modal, stateLabels } from "./components.js";
+import type { Device, Grant } from "../../lib/api.js";
+import { capabilityLabels, stateLabels } from "../../lib/labels.js";
+import { Field, Form, Modal, Select } from "../../components/forms.js";
 
 type DeviceChoices = Record<string, Capability[]>;
 export interface ConnectionInput {
@@ -55,6 +57,7 @@ function CapabilityChecks({
               )
             }
           />
+          <CapabilityIcon capability={cap} />
           {capabilityLabels[cap]}
           {!allowed.includes(cap) && <span class="small muted">设备未开放</span>}
         </label>
@@ -68,14 +71,23 @@ export function ConnectionEditor({
   devices,
   close,
   submit,
+  inline = false,
 }: {
   grant?: Grant;
+  inline?: boolean;
   devices: Device[];
   close: () => void;
   submit: (input: ConnectionInput) => Promise<void>;
 }) {
   const [mode, setMode] = useState<ConnectionPolicy["mode"]>(grant?.policy.mode ?? "selected");
-  const [choices, setChoices] = useState<DeviceChoices>(() => initialChoices(grant));
+  const [selectedChoices, setSelectedChoices] = useState<DeviceChoices>(() =>
+    grant?.policy.mode === "selected" ? initialChoices(grant) : {},
+  );
+  const [overrides, setOverrides] = useState<DeviceChoices>(() =>
+    grant?.policy.mode === "all" ? initialChoices(grant) : {},
+  );
+  const choices = mode === "selected" ? selectedChoices : overrides;
+  const setChoices = mode === "selected" ? setSelectedChoices : setOverrides;
   const [defaults, setDefaults] = useState<Capability[]>(() =>
     grant?.policy.mode === "all" ? [...grant.policy.capabilities] : [...CAPABILITIES],
   );
@@ -94,44 +106,63 @@ export function ConnectionEditor({
   };
   const changeMode = (next: ConnectionPolicy["mode"]) => {
     setMode(next);
-    // A selected-device permission is not an override in the all-device policy.
-    setChoices({});
   };
-  return (
-    <Modal title={grant ? "编辑连接" : "创建连接"} close={close} className="connection-dialog">
-      <Form
-        label={grant ? "保存连接" : "创建连接"}
-        onSubmit={async (form) => {
-          const permitted = new Set(available.map((device) => device.id));
-          const entries = Object.entries(choices)
-            .filter(([deviceId]) => permitted.has(deviceId))
-            .map(([device_id, capabilities]) => ({ device_id, capabilities }));
-          if (mode === "selected" && entries.some((entry) => entry.capabilities.length === 0))
-            throw new Error("请为所选设备选择至少一项能力");
-          if (mode === "all" && !defaults.length) throw new Error("请选择至少一项默认能力");
-          const policy = connectionPolicySchema.parse(
-            mode === "selected"
-              ? { mode, devices: entries }
-              : { mode, capabilities: defaults, overrides: entries },
-          );
-          const expiresAt = connectionExpiry(expires, expiry, grant?.expires_at);
-          if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now() / 1000))
-            throw new Error("请选择将来的到期日期");
-          await submit({ name: form.get("name"), policy, expires_at: expiresAt });
-        }}
-      >
+  const form = (
+    <Form
+      cancel={close}
+      label={grant ? "保存连接" : "创建连接"}
+      onSubmit={async (form) => {
+        const permitted = new Set(available.map((device) => device.id));
+        const entries = Object.entries(choices)
+          .filter(([deviceId]) => permitted.has(deviceId))
+          .map(([device_id, capabilities]) => ({ device_id, capabilities }));
+        if (mode === "selected" && !entries.length && !grant)
+          throw new Error("请选择至少一台设备，或选择全部设备范围");
+        if (mode === "selected" && entries.some((entry) => entry.capabilities.length === 0))
+          throw new Error("请为所选设备选择至少一项能力");
+        if (mode === "all" && !defaults.length) throw new Error("请选择至少一项默认能力");
+        const policy = connectionPolicySchema.parse(
+          mode === "selected"
+            ? { mode, devices: entries }
+            : { mode, capabilities: defaults, overrides: entries },
+        );
+        const expiresAt = connectionExpiry(expires, expiry, grant?.expires_at);
+        if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now() / 1000))
+          throw new Error("请选择将来的到期日期");
+        await submit({ name: form.get("name"), policy, expires_at: expiresAt });
+      }}
+    >
+      <section class="editor-section">
         <Field name="name" label="连接名称" value={grant?.name} />
-        <div class="field">
-          <label>
-            设备范围
-            <select
+      </section>
+      <section class="editor-section">
+        <h2>设备权限</h2>
+        <div class="scope-options" role="radiogroup" aria-label="设备范围">
+          <label class={`scope-option ${mode === "selected" ? "selected" : ""}`}>
+            <input
+              type="radio"
               name="scope"
-              value={mode}
-              onChange={(event) => changeMode(event.currentTarget.value as ConnectionPolicy["mode"])}
-            >
-              <option value="selected">指定设备</option>
-              <option value="all">全部设备（含新设备）</option>
-            </select>
+              value="selected"
+              checked={mode === "selected"}
+              onChange={() => changeMode("selected")}
+            />
+            <span>
+              <strong>选择设备</strong>
+            </span>
+          </label>
+          <label class={`scope-option ${mode === "all" ? "selected" : ""}`}>
+            <input
+              type="radio"
+              name="scope"
+              value="all"
+              checked={mode === "all"}
+              onChange={() => changeMode("all")}
+            />
+            <span>
+              <strong>
+                全部设备<span class="small muted">含新设备</span>
+              </strong>
+            </span>
           </label>
         </div>
         {mode === "all" && (
@@ -197,6 +228,7 @@ export function ConnectionEditor({
                     {selected.length ? (
                       selected.map((cap) => (
                         <span class="cap" key={cap}>
+                          <CapabilityIcon capability={cap} />
                           {capabilityLabels[cap]}
                         </span>
                       ))
@@ -211,19 +243,25 @@ export function ConnectionEditor({
               </section>
             );
           })}
-          {!available.length && <div class="compact-empty">尚未添加设备</div>}
+          {!available.length && (
+            <div class="compact-empty">
+              尚未添加设备。<a href="#devices/new">添加设备</a>
+            </div>
+          )}
         </div>
+      </section>
+      <section class="editor-section">
         <div class="connection-expiry">
           <div class="field">
             <label>
               有效期
-              <select
+              <Select
                 value={expires ? "date" : "never"}
                 onChange={(event) => setExpires(event.currentTarget.value === "date")}
               >
                 <option value="never">直到撤销</option>
                 <option value="date">指定日期</option>
-              </select>
+              </Select>
             </label>
           </div>
           {expires && (
@@ -241,7 +279,14 @@ export function ConnectionEditor({
             </div>
           )}
         </div>
-      </Form>
+      </section>
+    </Form>
+  );
+  return inline ? (
+    <div class="connection-editor">{form}</div>
+  ) : (
+    <Modal title={grant ? "编辑连接" : "创建连接"} close={close} className="connection-dialog">
+      {form}
     </Modal>
   );
 }

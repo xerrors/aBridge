@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { takeAdminToken } from "../src/instance-admin-session.js";
+import { takeAdminToken } from "../src/features/admin/session.js";
 
 test("admin links remove their bootstrap secret while preserving the page and query", () => {
   const address = new URL("https://bridge.example.com/?source=terminal#admin_token=abr_admin_fixture");
@@ -37,7 +37,7 @@ test("ordinary visits do not modify navigation fragments or invent admin credent
 });
 
 test("logout waits for a pending token exchange so a late cookie cannot restore administrator access", async () => {
-  const { AdminSessionRequests } = await import("../src/instance-admin-session.js");
+  const { AdminSessionRequests } = await import("../src/features/admin/session.js");
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   let hasCookie = false;
@@ -79,7 +79,7 @@ test("logout waits for a pending token exchange so a late cookie cannot restore 
 });
 
 test("a failed token exchange does not prevent a queued administrator logout", async () => {
-  const { AdminSessionRequests } = await import("../src/instance-admin-session.js");
+  const { AdminSessionRequests } = await import("../src/features/admin/session.js");
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   globalThis.fetch = async (_url, options) => {

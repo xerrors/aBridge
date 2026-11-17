@@ -1,0 +1,115 @@
+.login-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 30px;
+}
+.login-panel {
+  width: min(100%, 420px);
+  padding: 36px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 2px 4px #00000004;
+}
+.login-panel .brand {
+  margin-bottom: 32px;
+}
+.login-panel h1 {
+  margin-bottom: 8px;
+  font-size: 24px;
+}
+.login-loading {
+  display: grid;
+  gap: 24px;
+  justify-items: center;
+}
+.login-panel > .button {
+  display: block;
+  margin-bottom: 24px;
+  text-align: center;
+  text-decoration: none;
+}
+.login-panel .primary {
+  width: 100%;
+  margin-top: 8px;
+}
+.authorization-wrap {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 40px 20px;
+}
+.authorization-panel {
+  width: min(100%, 520px);
+  padding: 36px;
+  border-radius: 12px;
+  background: white;
+  border: 1px solid var(--line);
+}
+.authorization-panel > .brand {
+  margin-bottom: 32px;
+}
+.authorization-heading {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 28px;
+  overflow-wrap: anywhere;
+}
+.authorization-device {
+  display: grid;
+  gap: 8px;
+  padding: 20px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.authorization-device h2 {
+  overflow-wrap: anywhere;
+}
+.authorization-device-kind {
+  font-size: 12px;
+  color: var(--muted);
+}
+.authorization-details {
+  display: grid;
+  gap: 18px;
+  margin: 24px 0;
+}
+.authorization-details > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 16px;
+}
+.authorization-details dt {
+  color: var(--muted);
+}
+.authorization-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.authorization-note,
+.authorization-status {
+  margin: 24px 0;
+}
+.authorization-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.authorization-account {
+  display: block;
+  margin: 20px auto -8px;
+}
+.authorization-error {
+  color: #b32c39;
+  margin: 18px 0;
+  overflow-wrap: anywhere;
+}
+.authorization-result {
+  display: grid;
+  justify-items: start;
+  gap: 18px;
+}
+.login-panel form {
+  margin-top: 24px;
+}
