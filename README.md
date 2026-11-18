@@ -193,7 +193,7 @@ npm run benchmark:miniwob
 从源码开发需要 Node.js 22.13+（22.x）、23.4+ 或更新版本。安装依赖并运行完整检查：
 
 ```sh
-npm ci
+npm install
 npm run check
 ```
 

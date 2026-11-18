@@ -11,7 +11,7 @@
 第一次发布前，在已登录 npm 的终端构建公开包：
 
 ```sh
-npm ci
+npm install
 npm run build
 node --import tsx tools/package-release.ts --public
 npm run package:check

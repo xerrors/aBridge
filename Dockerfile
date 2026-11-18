@@ -1,7 +1,7 @@
 FROM node:22-slim AS build
 WORKDIR /src
 COPY . .
-RUN npm ci --ignore-scripts --no-audit --no-fund && npm run build && npm run package
+RUN npm install --ignore-scripts --no-audit --no-fund && npm run build && npm run package
 
 FROM node:22-slim
 LABEL org.opencontainers.image.source="https://github.com/xerrors/aBridge" \

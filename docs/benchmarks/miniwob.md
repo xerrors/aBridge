@@ -7,7 +7,7 @@
 需要 Node、项目依赖、已登录且能使用指定模型的 Codex CLI，以及支持 `--load-extension` 的 Chrome for Testing / Chromium：
 
 ```sh
-npm ci --ignore-scripts
+npm install --ignore-scripts
 npm run benchmark:miniwob
 ```
 

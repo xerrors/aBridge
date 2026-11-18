@@ -53,7 +53,7 @@ systemctl --user restart abridge-client.service
 开发需要 Node/npm 和 Rust 1.100.0（含 rustfmt、clippy）；安装后的客户端不需要这些工具。
 
 ```sh
-npm ci
+npm install
 npm run linux:build
 npm run linux:check
 npm run package:linux -- --target aarch64-unknown-linux-musl

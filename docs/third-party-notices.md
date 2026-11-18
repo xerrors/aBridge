@@ -1,6 +1,6 @@
 # Third-party notices
 
-The application uses the packages pinned in `package-lock.json`. Package names,
+The application uses the packages recorded in the locally generated `package-lock.json`. Package names,
 versions and bundled license files remain authoritative for the actual build.
 The server distribution does not include the desktop SDK. Desktop installation
 retains the Cua Driver native library and its MIT notice; it includes no Node.js runtime.

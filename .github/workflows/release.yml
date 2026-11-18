@@ -25,7 +25,7 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm install --ignore-scripts --no-audit --no-fund
       - name: Validate release identity
         run: node --import tsx tools/check-release.ts
       - run: npm run check

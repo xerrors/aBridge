@@ -33,7 +33,6 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
-          cache: npm
       - name: Install Rust tooling
         run: |
           rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy
@@ -41,7 +40,7 @@ jobs:
           rustup target add "${{ matrix.target }}"
           sudo apt-get update -qq
           sudo apt-get install -y musl-tools
-      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run linux:check
       - run: npm run linux:build
       - run: npm run package:linux -- --target "${{ matrix.target }}"

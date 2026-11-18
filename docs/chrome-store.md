@@ -68,7 +68,7 @@ MV3 对远程执行有严格要求，Debugger API 有特定例外；例外不豁
 
 下面步骤供审核人员在隔离环境中使用自己的临时数据。不要提供开发者本人的真实账户、网站登录或 Agent Key。
 
-1. 准备 Node.js 22.13.0+，克隆本仓库，执行 `npm ci && npm run build`。
+1. 准备 Node.js 22.13.0+，克隆本仓库，执行 `npm install && npm run build`。
 2. 执行 `npm start -- --web --data-dir /absolute/path/to/review-state`，在打开的本机管理台创建临时管理账户。
 3. 安装审核包，点击扩展图标，在弹窗中填写 `http://127.0.0.1:8765` 和浏览器名称，批准访问此 Server 地址；点击“在浏览器授权”，在打开的页面使用临时账户登录并确认绑定。
 4. 管理台出现独立 browser 设备后，创建 Agent 连接，选择该设备的 `browser` 能力，设置临时到期日期并保存 Agent Key，接入支持 Streamable HTTP 的 MCP 客户端。

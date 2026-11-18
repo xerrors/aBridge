@@ -2,15 +2,15 @@
 
 ## 开发环境
 
-使用 Node.js 22.13.0+ 与 npm；根 `package.json` 和锁文件定义依赖及脚本。Server、扩展和管理台使用 strict TypeScript，管理台使用 Preact；macOS 使用 Swift 6 原生运行时及 AppKit UI，构建 App 另需 Xcode Command Line Tools。
+使用 Node.js 22.13.0+ 与 npm；各 workspace 的 `package.json` 声明依赖，根目录提供开发脚本。Server、扩展和管理台使用 strict TypeScript，管理台使用 Preact；macOS 使用 Swift 6 原生运行时及 AppKit UI，构建 App 另需 Xcode Command Line Tools。
 
 ```sh
-npm ci
+npm install
 npm run build
 npm run check
 ```
 
-`npm ci` 安装锁定依赖；构建生成 Server JavaScript、管理台、扩展及 macOS 原生 App（Apple Silicon 上），不在用户运行时调用编译器。检查包含类型、格式、测试及分发边界，具体步骤以根脚本为准。编辑后使用 `npm run format`。
+`npm install` 会生成本地锁文件，供打包和分发检查使用；构建生成 Server JavaScript、管理台、扩展及 macOS 原生 App（Apple Silicon 上），不在用户运行时调用编译器。检查包含类型、格式、测试及分发边界，具体步骤以根脚本为准。编辑后使用 `npm run format`。
 
 源码按 npm workspaces 管理，运行依赖归应用声明，根目录只声明开发工具：
 
