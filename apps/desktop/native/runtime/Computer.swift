@@ -179,16 +179,19 @@ actor NativeComputer {
             else {
                 let windows = try await native.windows(pid: pid).filter { $0.number("pid") == pid && ($0.number("window_id") ?? 0) > 0 }
                 try assertOpen(session)
-                if windows.isEmpty { throw DesktopError(code: "window_unavailable", message: "No window is available; refresh computer_windows") }
-                if windows.count > 1 {
-                    let selected = targets[session]
-                    let canReuse = selected?.number("pid") == pid && windows.contains { $0["window_id"] == selected?["window_id"] }
-                    let hint = canReuse
-                        ? "To refresh the selected window, omit both pid and window_id. To select another, pass both values from computer_windows."
-                        : "Call computer_windows for this PID, then pass the selected pid and window_id to computer_observe."
-                    throw DesktopError(code: "window_selection_required", message: "Multiple windows are available for this PID", hint: hint)
+                if let selected = targets[session], selected.number("pid") == pid {
+                    guard windows.contains(where: { $0["window_id"] == selected["window_id"] }) else {
+                        observations.removeValue(forKey: session)
+                        throw DesktopError(code: "window_id_not_found", message: "The selected window is no longer listed", hint: "Use computer_windows and select the intended replacement explicitly.")
+                    }
+                    target = selected
+                } else if windows.isEmpty {
+                    throw DesktopError(code: "window_unavailable", message: "No window is available; refresh computer_windows")
+                } else if windows.count == 1 {
+                    target = ["pid": .number(pid), "window_id": windows[0]["window_id"]!]
+                } else {
+                    throw DesktopError(code: "window_selection_required", message: "Multiple windows are available for this PID", hint: "Call computer_windows for this PID, then pass the selected pid and window_id to computer_observe.")
                 }
-                target = ["pid": .number(pid), "window_id": windows[0]["window_id"]!]
             }
         } else if args.bool("desktop") == true { target = ["desktop": .bool(true)] }
         else if let previous = targets[session], previous.number("pid") != nil { target = previous }

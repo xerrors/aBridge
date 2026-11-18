@@ -173,6 +173,8 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         let opened = try await menuComputer.execute(session: "menu", tool: "computer_act", arguments: actArgs(main, follow: true, wait: 0))
         check(opened.object("observation")?.object("window")?.number("window_id") == 21, "Follow-up observes the menu rather than its underlying window")
         try await refusal("stale_observation") { try await menuComputer.execute(session: "menu", tool: "computer_act", arguments: actArgs(main)) }
+        let menuRefresh = try await menuComputer.execute(session: "menu", tool: "computer_observe", arguments: ["pid": .number(10)])
+        check(menuRefresh.object("window")?.number("window_id") == 21, "PID refresh follows the selected menu even while its parent window exists")
         let refusalReply: JSONObject = ["isError": .bool(true), "structuredContent": .object(["code": .string("action_refused"), "message": .string("sensitive native detail")])]
         do { _ = try NativeDriver.decodeReply(refusalReply.encoded()); fatalError("Expected typed refusal") }
         catch let error as DesktopError { check(error.code == "action_refused" && error.outcome == "refused" && !error.message.contains("sensitive"), "Typed refusal preserves code and sanitizes native detail") }
@@ -319,14 +321,24 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         let observed = try await targetComputer.execute(session: "single", tool: "computer_observe", arguments: ["pid": .number(10)])
         check(observed.object("window")?.number("window_id") == 20, "PID-only includes offscreen nonordinary windows")
         await driver.configure("ambiguousWindows")
-        try await refusal("window_selection_required") { try await targetComputer.execute(session: "single", tool: "computer_observe", arguments: ["pid": .number(10)]) }
+        let refreshed = try await targetComputer.execute(session: "single", tool: "computer_observe", arguments: ["pid": .number(10)])
+        check(refreshed.object("window")?.number("window_id") == 20, "PID-only refresh keeps the already selected window when another appears")
+        try await refusal("window_selection_required") { try await targetComputer.execute(session: "new", tool: "computer_observe", arguments: ["pid": .number(10)]) }
         _ = try await targetComputer.execute(session: "single", tool: "computer_observe", arguments: [:])
-        check(await driver.lastTarget().number("window_id") == 20, "Failed selection preserves complete prior target")
+        check(await driver.lastTarget().number("window_id") == 20, "Refreshing with or without the same PID preserves the complete target")
         let count = await driver.counts().3
         _ = try await targetComputer.execute(session: "explicit", tool: "computer_observe", arguments: ["pid": .number(10), "window_id": .number(21), "screenshot": .bool(false)])
         check(await driver.counts().3 == count, "Explicit target bypasses enumeration")
         await driver.configure("emptyWindows")
         try await refusal("window_unavailable") { try await targetComputer.execute(session: "empty", tool: "computer_observe", arguments: ["pid": .number(10)]) }
+        let replaced = FixtureDriver()
+        let replacementComputer = NativeComputer(native: replaced)
+        let original = try await replacementComputer.execute(session: "replaced", tool: "computer_observe", arguments: ["pid": .number(10)])
+        await replaced.configure("move")
+        try await refusal("window_id_not_found") { try await replacementComputer.execute(session: "replaced", tool: "computer_observe", arguments: ["pid": .number(10)]) }
+        check(await replaced.counts().1 == 1, "A different sole window cannot silently replace a closed selected window")
+        try await refusal("stale_observation") { try await replacementComputer.execute(session: "replaced", tool: "computer_act", arguments: actArgs(original)) }
+        check(await replaced.counts().0 == 0, "References to the missing window cannot reach the driver")
         let slow = FixtureDriver(); await slow.configure("slowWindows")
         let slowComputer = NativeComputer(native: slow)
         let pending = Task { try await slowComputer.execute(session: "cancel", tool: "computer_observe", arguments: ["pid": .number(10)]) }

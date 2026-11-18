@@ -487,7 +487,7 @@ export const computerObserveSchema = portable(
         pid: computerPidSchema
           .optional()
           .describe(
-            "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
+            "macOS application PID. Omit window_id to refresh this session's selected window for that PID or select the application's only window. For a new selection among multiple windows, use computer_windows.",
           ),
         window_id: computerWindowIdSchema
           .optional()

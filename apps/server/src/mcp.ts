@@ -220,7 +220,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "computer_observe",
-    "Observe the selected window with a screenshot. Reuse the session target by omitting pid and window_id. To select a window, pass pid for an app with one window or use computer_windows and pass pid and window_id. Read observation_id, available_actions, keyboard_focus, and hint first. References expire after 120 seconds or an action. Use desktop=true only for an explicit whole-desktop task; without confirmed focus it returns a read-only observation.",
+    "On macOS, omit pid and window_id or pass the selected window's pid alone to refresh it. For a new target, pass pid for an app with one window or choose pid and window_id from computer_windows. Android observes the screen with desktop=true. Read observation_id, available_actions, keyboard_focus, and hint first. References expire after 120 seconds or an action. Use desktop=true only for an explicit whole-desktop task; without confirmed focus it returns a read-only observation.",
     computerObserveSchema.safeExtend(base),
     (a) => exec("computer_observe", a),
   );
@@ -325,7 +325,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "files_list",
-    "List directory entries at an explicit path.",
+    "List directory entries on the device. macOS and Linux expand ~/ to the device user's home (e.g. ~/Downloads). Android uses /workspace for its granted directory.",
     filesListSchema.safeExtend(base),
     (a) => exec("files_list", a),
   );
