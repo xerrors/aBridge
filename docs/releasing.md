@@ -2,6 +2,8 @@
 
 软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后执行完整检查，生成 Server、浏览器 ZIP、macOS Apple Silicon 包和 Linux CLI 包。
 
+创建 tag 前，将本次版本号、日期、发布状态及变更摘要写入[变更记录](changelog.md)顶部，与版本号一起提交。对照上一发布 tag 核对实际交付内容；涉及协议、数据库或安装方式变化时，写明受影响的用户和升级步骤。
+
 项目采用根目录 [Apache-2.0](https://github.com/xerrors/aBridge/blob/main/LICENSE)；第三方组件保留各自许可证。候选构建成功、上传到商店、商店审核通过和 npm 实际可安装是不同状态。
 
 ## npm
