@@ -30,9 +30,9 @@ Agent 通过 `devices_list` 选择设备 ID，再创建仅含 `browser` 的会�
 
 `browser_act` 的外层参数 `wait_after_ms` 决定动作完成后、读取页面与截图前的等待时间，默认 `2000` 毫秒，可设 `0–10000` 的整数；例如 `3000` 等待 3 秒，`0` 立即观察。`observe_after=false` 不等待，单独的 `browser_open` 与 `browser_observe` 不新增固定等待。等待计入已有时间预算，可被取消或会话关闭打断；动作已经执行但后续观察失败时，只重新观察，不重复点击。
 
-观察返回可见文本、交互元素、链接和明确截断标记。语义控件优先；无语义文本可通过 StaticText 引用精确定位字形范围，未命名 CSS 图标通过有界可见 pointer 目标发现并绑定原 DOM 身份。`observation_id` 与桌面统一为 `obs_` 加 8 位 Base64URL，原样传回，不自行生成。`query` 可为整段子串或1–20项字符串数组，不区分大小写；数组任一项匹配即可，正文与控件遵循同一规则。每项非空且最多200字符，数组总长最多2000字符。结果去重并保持原预算，零结果仅表示本次已加载正文与控件扫描未匹配。链接的 `target` 是 DOM 声明，不是实际打开事件。引用按会话与文档版本绑定，最长有效 60 秒，动作和导航后失效。截图需显式请求，通过原生 MCP 图片块返回。具体预算与恢复语义见 [执行契约](architecture.md)。
+观察返回可见文本、交互元素、链接和明确截断标记。语义控件优先；无语义文本可通过 StaticText 引用精确定位字形范围，未命名 CSS 图标通过有界可见 pointer 目标发现并绑定原 DOM 身份。`observation_id` 与桌面统一为 `obs_` 加 8 位 Base64URL，原样传回，不自行生成。`query` 可为整段子串或1–20项字符串数组，不区分大小写；数组任一项匹配即可，正文与控件遵循同一规则。每项非空且最多200字符，数组总长最多2000字符。查询另附未过滤的短摘要 `page_summary`。返回 `scan`、`elements_total` 和 `elements_returned`；有更多匹配元素时，将 `next_element_offset` 作为 `element_offset`，沿用相同查询继续。续页重新扫描当前页面并签发新引用，动态页面可能改变顺序。正文长文本可用 `browser_read` 的快照分页。结果去重并保持原预算，零结果仅表示本次已加载正文与控件扫描未匹配。链接的 `target` 是 DOM 声明，不是实际打开事件。引用按会话与文档版本绑定，最长有效 60 秒，动作和导航后失效。截图需显式请求，通过原生 MCP 图片块返回。具体预算与恢复语义见 [执行契约](architecture.md)。
 
-扩展通过固定 Chrome debugger 通道执行授权的操作。点击、按键和悬停使用 CDP Input；滚动直接修改最近可滚动容器或页面的 DOM 偏移并返回实际 delta，不发送 wheel 事件；填充使用浏览器文本输入，原生 select 使用 DOM 语义事件。原始 CDP 不对 Agent 开放。代码模式的 `page.evaluate` 在任务页执行 JavaScript，具有该页登录用户权限，固定观察中的密码过滤不能约束脚本读取。只读、错误目标类型和当前覆盖层在无副作用预检中拒绝并保留任务页；嵌套滚动容器裁剪允许滚动显露后再核对命中。Document 引用允许按键与滚动，保留当前键盘焦点。指针准备不提前 focus；元素按键才定位焦点。原生动作已自动滚动并检查目标，不必先用 evaluate 模拟滚动或点击。页面可拒绝操作，执行回执不能代替实际业务效果确认；点击成功也不表示已导航。所有工具及代码中的 `page` 固定操作当前任务页，链接产生的新标签不会自动接管；访问已观察链接可将其 URL 传给 `browser_open` 或 `page.goto`。批量操作与自定义数据提取可用 `browser_exec`。
+扩展通过固定 Chrome debugger 通道执行授权的操作。点击、按键和悬停使用 CDP Input；滚动直接修改最近可滚动容器或页面的 DOM 偏移并返回实际 delta，不发送 wheel 事件；填充使用浏览器文本输入，原生 select 使用 DOM 语义事件。原始 CDP 不对 Agent 开放。代码模式的 `page.evaluate` 在任务页执行 JavaScript，具有该页登录用户权限，固定观察中的密码过滤不能约束脚本读取。只读、错误目标类型和当前覆盖层在无副作用预检中拒绝并保留任务页；嵌套滚动容器裁剪允许滚动显露后再核对命中。Document 引用允许按键与滚动，保留当前键盘焦点。指针准备不提前 focus；元素按键才定位焦点。原生动作已自动滚动并检查目标，不必先用 evaluate 模拟滚动或点击。页面可拒绝操作，执行回执不能代替实际业务效果确认；点击成功也不表示已导航。所有工具及代码中的 `page` 固定操作当前任务页，链接产生的新标签不会自动接管；访问已观察链接可将其 URL 传给 `browser_open` 或 `page.goto`。动作回执及后续观察通过 `opened_tabs` 返回输入期间确认由任务页打开的最多三个子标签，含标签 ID 及可得的标题和 HTTP(S) 地址。已登记的子标签可在输入投递结束后 5 秒内补录首次 HTTP(S) 地址和对应标题，后续导航不会替换该地址。地址超长或回包预算不足时只返回标签 ID 和 `url_omitted: true`。可用 `browser_open` 在任务页打开完整地址，子页中的脚本或 POST 状态仅存在于原标签。批量操作与自定义数据提取可用 `browser_exec`。
 
 ## 连接与本机控制
 
@@ -83,17 +83,21 @@ return { completed: state.completed };
 | `page.evaluate(expressionOrFunction, argument?)` | 执行页面 JavaScript 并返回 JSON，函数参数需可序列化                           |
 | `page.frameLocator(css)`                         | 显式选择单层同源 iframe 后使用 locator/read/wait/evaluate                     |
 
+原生动作可用 `page.locator({within: "#item-42", role: "button", name: "加入购物车"}).click()` 在唯一 CSS 容器内按可访问角色和名称精确定位。省略 `within` 时从文档根查找。观察中无名称的元素可用描述作为显示名称，此时 `accessible_name` 明示空字符串。语义定位匹配完整的可访问名称；显示文本被截断或来自描述时，可直接使用元素引用。原生输入成功回执包含 `input_dispatched: true`。核验数量变化时先读取对应规格的当前数量，例如数量为 2 时，给 `browser_act` 传入 `verify: {selector: "#sku-42 input.qty", state: "value", value: "3"}`。回执的 `verification.matched` 表示页面是否满足该条件。超时仍保留已执行回执，先读取该规格再决定下一步。原生 locator 动作都接受末尾的 options 参数，例如 `fill(text, {verify})`、`scroll(deltaY, deltaX, {verify})`。CSS locator 还支持 read 和 waitFor。脚本中的 `locator.click({verify: {selector: "#sku-42 input.qty", state: "value", value: "3"}})` 复用同一核验和回执；省略核验的 frame_selector 时沿用动作 frame，显式指定时使用指定 frame。值核验及正向动作核验要求目标唯一，多个候选会返回 target_not_unique。后续步骤应检查 `verification.matched`。
+
+选择 iframe 时，`invalid_selector` 表示 CSS 语法错误，`target_missing` 表示没有匹配，`target_not_unique` 包含匹配数量。`unsupported_frame` 表示选中元素无法提供已加载的同源 iframe 文档或可用的执行上下文。
+
 按键支持 Enter、Tab、Escape、方向键等命名键和单字符，暂不接受修饰键组合；`select(valueOrValues)` 按原生选项 value 选择；`scroll(deltaY, deltaX?)` 修改最近可滚动容器或页面的 DOM 偏移，回执包含 before、after 和实际 delta。frame 支持当前同源文档，跨源 frame 明确拒绝，不回退到主文档；嵌套 frame、文件传输和原生文件对话框尚无专门接口。`evaluate` 可处理 DOM 数据与特定页面逻辑，但不能把它当成任意 frame 的通用替代。
 
 代码默认限20秒，`timeout_ms` 可设至120秒；`wait_seconds` 默认15秒，等待返回后原操作可能仍在执行，应使用同一 `operation_id` 查询 `operation_status`，或 `operation_cancel` 取消。每段最多1000个浏览器步骤，QuickJS内存16MiB，连续纯计算有中断限额。日志最多100条/12000字符，状态和内部序列化结果最多1MiB；最终 value 超24000字符返回明确截断预览，建议在脚本内汇总或用快照分页。完整 JSON state 在正常序列化后保存；取消、超时或执行失败不能保证 state 包含最后一步进度，恢复应核对回执与实际页面。
 
 每个浏览器调用都必须 `await`，不支持返回后继续后台写入。批次不是事务；第八步失败不会撤销前七步。回执附带 `steps_completed`，失败时还保留有界 `failed_step`（`operation_id`、`method`、`status`、`error`），外层和每个步骤分别记录操作ID。首次执行前明确拒绝为 `refused`；已有步骤完成后明确失败为 `failed`；在途超时、断连或无确认回执仍为 `outcome_unknown`，并可按失败步骤ID核对。纯脚本异常为 `failed`，没有在途未知步骤的明确取消为 `cancelled`。完成步数不能证明失败步骤无副作用，输入准备中的滚动与 focus 也可能触发页面事件。不重放整段；执行期间同会话独占，取消会终止运行并取消在途浏览器步骤。当前不提供业务事实 `expect` 与人工接管恢复协议。
 
-`browser_read` 缓存单份当前会话快照，最多100万字符；`snapshot_id` 为 `snap_` 加 8 位 Base64URL，新快照替换旧快照，旧 ID 和其他会话的 ID 不能用于读取当前快照。文本按字符分页，表格按行分页，每页最多200行，并保留单元格行列合并信息。响应标记来源URL、缓存与截断，覆盖范围为已加载的主文档或显式同源 frame，不包含未加载分页或虚拟列表外的数据。缓存只供阅读，不授予动作权限。等待上限20秒，不自动重新提交动作；页面脚本一旦提交，执行或结果处理失败都可能已有副作用，会等待任务页清理并报告结果未知；提交前明确校验失败保留任务页。清理只执行一次，重复关闭、取消或停止等待相同结果；清理失败保留原始 `cause`、`cleanup_error` 与 `recovery`，不会宣称任务页已释放，需先停止任务重试清理。新任务页等待进行中的清理，旧会话迟到的清理不影响新页。控制会话仍活跃但任务页已缺失返回 `task_tab_missing`，此时使用 `browser_open`；控制会话真实停止、过期或断连仍遵循原会话恢复契约。
+`browser_read` 缓存单份当前会话快照，最多100万字符；`snapshot_id` 为 `snap_` 加 8 位 Base64URL，新快照替换旧快照，旧 ID 和其他会话的 ID 不能用于读取当前快照。续页只需传 snapshot_id 与 offset；省略 mode 时沿用快照格式。容器和 frame 在建立快照时固定。文本按字符分页，表格按行分页，每页最多200行，并保留单元格行列合并信息。响应标记来源URL、缓存与截断，覆盖范围为已加载的主文档或显式同源 frame，不包含未加载分页或虚拟列表外的数据。缓存只供阅读，不授予动作权限。等待上限20秒，不自动重新提交动作；页面脚本一旦提交，执行或结果处理失败都可能已有副作用，会等待任务页清理并报告结果未知；提交前明确校验失败保留任务页。清理只执行一次，重复关闭、取消或停止等待相同结果；清理失败保留原始 `cause`、`cleanup_error` 与 `recovery`，不会宣称任务页已释放，需先停止任务重试清理。新任务页等待进行中的清理，旧会话迟到的清理不影响新页。控制会话仍活跃但任务页已缺失返回 `task_tab_missing`，此时使用 `browser_open`；控制会话真实停止、过期或断连仍遵循原会话恢复契约。
 
 ### 原生长按与等待
 
-`page.locator(css).click({hold_ms:1500})` 原生按住鼠标左键 1500 毫秒后释放；`browser_act` 的 `click` 动作同样接受 `hold_ms`（0–10000 的整数，省略为普通单击）。保持期间关闭或取消会话会中断等待并清理任务页；页面导航导致结果未知，不重放。原生长按能否触发点赞、三连等业务行为仍由页面决定，DOM `dispatchEvent` 不能代替原生输入验证。
+`page.locator(css).click({hold_ms:1500})` 原生按住鼠标左键 1500 毫秒后释放；`browser_act` 的 `click` 动作同样接受 `hold_ms`（0–10000 的整数，省略为普通单击）。保持期间关闭或取消会话会中断等待并清理任务页；页面导航导致结果未知，不重放。原生长按能否触发点赞、三连等业务行为仍由页面决定，DOM `dispatchEvent` 不能代替原生输入验证。 Server 等待动作终态回执的预算为 30 秒，加上显式长按时长及核验超时（核验默认 10 秒），合计最多 60 秒。后观察和 `wait_after_ms` 共用原有预算。设备接受操作的开始期限仍为 30 秒，`browser_exec` 的外层超时独立生效。
 
 `browser_exec` 外层没有 `setTimeout`、`setInterval` 或 DOM 全局。优先通过 `page.wait` / `locator.waitFor` 等待页面条件；确实需要固定等待时使用 `await page.sleep(ms)`（0–10000 的整数）。等待可被取消并计入代码总超时，不计入浏览器步骤数。`page.evaluate` 内部运行在网页环境，与外层隔离运行时不同。批次后续代码出错不会回滚先前点击，应读取状态后再决定下一步。
 

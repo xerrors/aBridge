@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   CAPABILITIES,
   PROTOCOL_VERSION,
+  OPERATION_START_SECONDS,
   SESSION_IDLE_SECONDS,
   deviceCapabilities,
   deviceMetadataSchema,
@@ -426,6 +427,13 @@ export class ControlService {
   ): Promise<OperationResponse> {
     if (!Number.isFinite(waitSeconds) || waitSeconds < 0 || waitSeconds > 30)
       throw new BridgeError("invalid_wait", "wait_seconds must be 0–30", 422);
+    return this.awaitReceipt(agentConnection, id, waitSeconds);
+  }
+  private async awaitReceipt(
+    agentConnection: AgentConnection,
+    id: string,
+    waitSeconds: number,
+  ): Promise<OperationResponse> {
     const operation = this.authorizedOperation(agentConnection, id);
     const pending = this.pending.get(id),
       required = pending?.required ?? this.cache.get(id)?.required;
@@ -461,7 +469,13 @@ export class ControlService {
     parentId?: string,
   ): Promise<OperationResponse> {
     const { tool, arguments: args } = parseDeviceToolRequest({ tool: requestedTool, arguments: input });
-    const deadline = this.mono() + 30,
+    // Input preparation, transport and the bounded follow-up observation share the usual 30s.
+    // A native hold and an explicit verification run sequentially before that observation.
+    const extraMilliseconds =
+      tool === "browser_act" || tool === "browser_locate_act"
+        ? (args.action.type === "click" ? (args.action.hold_ms ?? 0) : 0) + (args.verify?.timeout_ms ?? 0)
+        : 0;
+    const deadline = this.mono() + 30 + extraMilliseconds / 1000,
       current = this.currentAgentConnection(agentConnection),
       session = this.authorizedSession(current, sessionId),
       device = this.authorizedDevice(current, session.device_id);
@@ -558,7 +572,7 @@ export class ControlService {
         connection_epoch: connection.epoch,
         device_credential_version: device.credential_version,
         sequence: ++connection.sequence,
-        expires_at: this.now() + 30,
+        expires_at: this.now() + OPERATION_START_SECONDS,
         tool,
         arguments: args,
       }),
@@ -569,7 +583,7 @@ export class ControlService {
         message: "Connection lost during delivery; execution will not be replayed",
       });
     if (!wait) return this.operationStatus(current, id);
-    const response = await this.waitOperation(current, id, Math.max(0, Math.min(30, deadline - this.mono())));
+    const response = await this.awaitReceipt(current, id, Math.max(0, deadline - this.mono()));
     if (this.pending.has(id)) {
       // Request cancellation without adding an unbounded send to the response deadline.
       void this.cancelMatching(device.id, "Result deadline exceeded", { operationId: id });

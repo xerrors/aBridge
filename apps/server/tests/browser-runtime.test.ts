@@ -36,6 +36,56 @@ test("browser code batches locator operations and keeps explicit state between r
   runtime.closeAll();
 });
 
+test("frame locator click returns its verification receipt in one step", async () => {
+  const runtime = new BrowserRuntime();
+  const verify = { selector: "#status", text: "Saved" };
+  const result = await runtime.run(
+    "task",
+    `return await page.frameLocator("#editor").locator("button").click({verify: ${JSON.stringify(verify)}})`,
+    async (method, args) => {
+      assert.equal(method, "locate_act");
+      assert.deepEqual(args, {
+        frame_selector: "#editor",
+        selector: "button",
+        action: { type: "click" },
+        verify: { ...verify, frame_selector: "#editor" },
+      });
+      return { input_dispatched: true, verification: { matched: false } };
+    },
+    signal(),
+  );
+  assert.deepEqual(result.value, { input_dispatched: true, verification: { matched: false } });
+  assert.equal(result.steps_completed, 1);
+  runtime.closeAll();
+});
+
+test("locator actions carry verification options and only CSS locators expose CSS reads", async () => {
+  const runtime = new BrowserRuntime();
+  const verify = { selector: "#summary", text: "Saved", frame_selector: "#preview" };
+  const result = await runtime.run(
+    "task",
+    `
+    const loc = page.frameLocator("#editor").locator({role:"textbox",name:"Title"});
+    const options = {verify:${JSON.stringify(verify)}};
+    await loc.fill("New title",options);
+    await loc.press("Enter",options);
+    await loc.select("a",options);
+    await loc.hover(options);
+    await loc.scroll(20,0,options);
+    return [typeof loc.read, typeof loc.waitFor, typeof page.locator("#field").read];`,
+    async (method, args) => {
+      assert.equal(method, "locate_act");
+      assert.deepEqual(args.verify, verify);
+      assert.equal(args.frame_selector, "#editor");
+      return { executed: true, verification: { matched: true } };
+    },
+    signal(),
+  );
+  assert.equal(result.steps_completed, 5);
+  assert.deepEqual(result.value, ["undefined", "undefined", "function"]);
+  runtime.closeAll();
+});
+
 test("browser code cannot access Node, host network, or other run globals", async () => {
   const runtime = new BrowserRuntime();
   const call = async () => ({});

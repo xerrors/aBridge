@@ -8,9 +8,12 @@ import {
   type CdpResults,
 } from "./task-tabs.js";
 import {
+  composedMembership,
+  describeLocatorMatches,
   capturePointerTargets,
   pointerTargetDetails,
   scrollElement,
+  hitsInputTarget,
   validateInput,
   validateSelect,
   prepareInput,
@@ -40,6 +43,9 @@ import {
 } from "@abridge/protocol";
 import { z } from "zod";
 import { fail, errorDetails } from "./types.js";
+// Page functions are serialized without module scope. Pass the shared hit test explicitly.
+const validateInputDeclaration = `function(action){return (${validateInput.toString()}).call(this,action,(${hitsInputTarget.toString()}))}`;
+const prepareInputDeclaration = `function(action){return (${prepareInput.toString()}).call(this,action,(${hitsInputTarget.toString()}))}`;
 type PointerTarget = NonNullable<ReturnType<typeof pointerTargetDetails>>;
 function pointerTarget(value: unknown): PointerTarget | undefined {
   if (
@@ -74,6 +80,7 @@ interface ElementResult {
   role: string;
   name: string;
   description?: string;
+  accessible_name?: string;
   value?: string;
   read_only?: boolean;
   input_type?: string;
@@ -101,7 +108,7 @@ interface InputTarget {
 }
 type FollowUpOptions = Pick<
   DeviceToolArguments<"browser_act">,
-  "observe_after" | "screenshot" | "wait_after_ms"
+  "observe_after" | "screenshot" | "wait_after_ms" | "verify"
 >;
 interface Result {
   [key: string]: unknown;
@@ -193,6 +200,76 @@ function excerpt(text: string, terms: string[]) {
     truncated: selected.length > PAGE_TEXT_BUDGET || terms.some((term) => lower.indexOf(term, from) >= 0),
   };
 }
+// Use encoded lengths: one character in a DOM label can occupy six JSON characters.
+function fitObservationPreviews(result: Result, budget: number, item?: ElementResult) {
+  if (JSON.stringify(result).length <= budget) return;
+  result.truncated = true;
+  let excess = JSON.stringify(result).length - budget;
+  function shorten(value: string) {
+    if (excess <= 0) return value;
+    const original = JSON.stringify(value).length;
+    const target = original - excess;
+    let low = 0,
+      high = value.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (JSON.stringify(value.slice(0, mid)).length <= target) low = mid;
+      else high = mid - 1;
+    }
+    const preview = value.slice(0, low);
+    excess -= original - JSON.stringify(preview).length;
+    return preview;
+  }
+  if (typeof result.text === "string") result.text = shorten(result.text);
+  if (item) {
+    for (const key of ["value", "description", "input_type", "target", "name", "role"] as const) {
+      const value = item[key];
+      if (typeof value === "string") item[key] = shorten(value);
+    }
+  }
+  for (const key of ["title", "page_summary", "url_preview"]) {
+    const value = result[key];
+    if (typeof value === "string") result[key] = shorten(value);
+  }
+  if (excess > 0 && typeof result.url === "string") {
+    result.url_preview = result.url;
+    delete result.url;
+    result.url_truncated = true;
+    excess = JSON.stringify(result).length - budget;
+    result.url_preview = shorten(result.url_preview as string);
+  }
+}
+// Serialized into the task's main document to resolve the frame boundary once.
+function resolveFrameElement(selector: string) {
+  let matches: NodeListOf<Element>;
+  try {
+    matches = document.querySelectorAll(selector);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "SyntaxError") return "invalid_selector";
+    throw error;
+  }
+  if (matches.length !== 1) return matches.length;
+  const frame = matches[0];
+  return frame instanceof HTMLIFrameElement && frame.contentDocument ? frame : "unsupported_frame";
+}
+function appendOpenedTabs(result: Result, tabs: NonNullable<TaskTab["openedTabs"]>) {
+  // Keep the IDs and mark omitted URLs explicitly. Never expose a partial navigation target.
+  const entries: typeof tabs = tabs.map((tab) => ({
+    tab_id: tab.tab_id,
+    ...(tab.url || tab.url_omitted ? { url_omitted: true } : {}),
+  }));
+  result.opened_tabs = entries;
+  let remaining =
+    OBSERVATION_BUDGET -
+    JSON.stringify(result, (key, value) => (key === "image_base64" ? undefined : value)).length;
+  for (const [index, tab] of tabs.entries()) {
+    const cost = JSON.stringify(tab).length - JSON.stringify(entries[index]).length;
+    if (cost <= remaining) {
+      entries[index] = { ...tab };
+      remaining -= cost;
+    }
+  }
+}
 function pageException(value: unknown, fallback: string) {
   if (!value || typeof value !== "object") return fallback;
   const details = value as { text?: unknown; exception?: { description?: unknown; value?: unknown } };
@@ -282,6 +359,8 @@ export class BrowserBridge {
                   : method === "locate_act"
                     ? await this.locateAct(session, params)
                     : await this.act(session, params);
+        if (["observe", "act", "locate_act"].includes(method!) && session.openedTabs?.length)
+          appendOpenedTabs(result, session.openedTabs);
         return { id, status: "executed", result };
       } finally {
         session.busy = false;
@@ -308,6 +387,8 @@ export class BrowserBridge {
                   "unsupported_method",
                   "unsupported_frame",
                   "cleanup_failed",
+                  "target_missing",
+                  "invalid_selector",
                   "target_not_unique",
                 ].includes(error.code || "")
               ? "refused"
@@ -464,6 +545,7 @@ export class BrowserBridge {
   ): Promise<Result> {
     const params = parseArguments(browserObserveSchema, input);
     const query = params.query;
+    const elementOffset = params.element_offset ?? 0;
     const terms = [
       ...new Set(
         (query === undefined ? [] : typeof query === "string" ? [query] : query).map((term) =>
@@ -512,6 +594,7 @@ export class BrowserBridge {
       throw fail("observation_failed", "无法读取页面可见内容，请重新观察");
     const candidates: { item: ElementResult; backendNodeId: number }[] = [];
     const seenNodes = new Set<number>();
+    const controlNames = new Map<string, string>();
     let matches = 0,
       truncated = page.truncated === true || page.text.length > MAX_PAGE_SCAN;
     // Controls stay ahead of textual fallbacks, so long documents cannot hide real buttons.
@@ -551,14 +634,14 @@ export class BrowserBridge {
         !terms.some((term) => `${name}\n${description}\n${value}`.toLowerCase().includes(term))
       )
         continue;
+      if (role === "statictext" && node.parentId && controlNames.get(node.parentId) === name) continue;
+      if (node.nodeId && INTERACTIVE_ROLES.has(role)) controlNames.set(node.nodeId, name);
       seenNodes.add(node.backendDOMNodeId);
       matches++;
-      if (candidates.length >= MAX_ELEMENTS) {
-        truncated = true;
-        continue;
-      }
+      if (candidates.length >= elementOffset + MAX_ELEMENTS) continue;
       const element_ref = `e${candidates.length + 1}`;
       const item: ElementResult = { element_ref, role, name: name.slice(0, 240) };
+      if (!node.name?.value && description) item.accessible_name = "";
       if (description && description !== name) item.description = description.slice(0, 240);
       if (value) item.value = value.slice(0, 240);
       if (name.length > 240 || description.length > 240 || value.length > 240) truncated = true;
@@ -642,10 +725,8 @@ export class BrowserBridge {
         })
         .catch(() => {});
     }
-    if (candidates.length > MAX_ELEMENTS) {
-      candidates.length = MAX_ELEMENTS;
-      truncated = true;
-    }
+    candidates.splice(0, elementOffset);
+    candidates.length = Math.min(candidates.length, MAX_ELEMENTS);
     candidates.forEach((candidate, i) => {
       candidate.item.element_ref = `e${i + 1}`;
     });
@@ -659,6 +740,13 @@ export class BrowserBridge {
       text: selectedText.text,
       elements: [],
       elements_total: matches,
+      elements_returned: 0,
+      element_offset: elementOffset,
+      scan: {
+        text_chars: Math.min(page.text.length, MAX_PAGE_SCAN),
+        text_limited: page.truncated === true || page.text.length > MAX_PAGE_SCAN,
+        ax_nodes: nodes.length,
+      },
       truncated: truncated || selectedText.truncated,
     };
     if (tab.url!.length > 2000) {
@@ -668,18 +756,25 @@ export class BrowserBridge {
       result.truncated = true;
     }
     if (query !== undefined) {
+      result.page_summary = page.text.slice(0, 240);
       result.query = query;
       if (!selectedText.text && !matches)
         result.query_note =
           "No matches in this observation's scanned loaded text and controls; this does not establish that the page has no content.";
     }
+    // Reserve IDs and omission flags in the outer action receipt before assigning refs.
+    const budget = OBSERVATION_BUDGET - (session.openedTabs?.length ? 400 : 0);
     // Reserve space before enriching links, so a bounded response does not
     // incur one CDP round trip for every link in a large document.
+    if (JSON.stringify(result).length > budget - 300) {
+      delete result.query;
+      fitObservationPreviews(result, budget - 300);
+    }
     const selected: typeof candidates = [];
     let planned = JSON.stringify(result).length;
     for (const candidate of candidates) {
       const cost = JSON.stringify(candidate.item).length + 2 + (candidate.item.role === "link" ? 128 : 0);
-      if (planned + cost > OBSERVATION_BUDGET - 200) {
+      if (selected.length && planned + cost > budget - 300) {
         result.truncated = true;
         break;
       }
@@ -723,16 +818,32 @@ export class BrowserBridge {
     const refs = new Map();
     for (const candidate of selected) {
       result.elements.push(candidate.item);
-      if (JSON.stringify(result).length > OBSERVATION_BUDGET - 200) {
+      if (result.elements.length === 1 && JSON.stringify(result).length > budget - 300) {
+        if (candidate.item.url) {
+          delete candidate.item.url;
+          candidate.item.url_truncated = true;
+        }
+        fitObservationPreviews(result, budget - 300, candidate.item);
+        result.truncated = true;
+      }
+      if (result.elements.length > 1 && JSON.stringify(result).length > budget - 300) {
         result.elements.pop();
         result.truncated = true;
         break;
       }
       refs.set(candidate.item.element_ref, candidate.backendNodeId);
     }
-    if (result.elements.length < matches) result.truncated = true;
+    result.elements_returned = result.elements.length;
+    const nextOffset = elementOffset + result.elements.length;
+    if (nextOffset < matches) {
+      result.truncated = true;
+      if (result.elements.length) result.next_element_offset = nextOffset;
+    }
     if (result.truncated)
-      result.next_step = "Use browser_observe with query to focus on omitted page text or controls";
+      result.next_step =
+        result.next_element_offset !== undefined
+          ? "Repeat browser_observe with the same query and element_offset=next_element_offset. Each call scans the current page."
+          : "Use browser_read for paged text or browser_observe with a narrower query.";
     if (params.screenshot) {
       const screenshot = await this.tabs.command(
         session,
@@ -771,19 +882,49 @@ export class BrowserBridge {
     const tab = await this.tabs.valid(session);
     const revision = session.revision;
     await this.tabs.attach(session);
+    const semantic = typeof params.selector === "object" ? params.selector : undefined;
+    const selector =
+      typeof params.selector === "string" ? params.selector : (params.selector.within ?? ":root");
+    const invalidSelector = () =>
+      fail(
+        "invalid_selector",
+        "locator 的字符串参数和 within 都使用 CSS 选择器。按可访问名称定位可用 page.locator({within, role, name})。",
+      );
+    const matchCountError = async (count: number) => {
+      if (!count)
+        return fail(
+          "target_missing",
+          "CSS 选择器匹配 0 个元素。请重新观察目标、检查容器，或用 page.wait 等待其出现。",
+        );
+      const details = await this.pageValue(
+        session,
+        `(${describeLocatorMatches.toString()})(${JSON.stringify(selector)})`,
+        1500,
+        params.frame_selector,
+      ).catch(() => null);
+      return fail(
+        "target_not_unique",
+        `CSS 匹配 ${count} 个元素；请使用更精确的 CSS，或 page.locator({within, role, name})。${details ? "候选 " + JSON.stringify(details).slice(0, 1500) : ""}`,
+      );
+    };
     let backendNodeId: number | undefined;
+    let frameId: string | undefined;
     if (params.frame_selector !== undefined) {
       const frame = await this.frameTarget(session, params.frame_selector);
+      frameId = frame.frameId;
       try {
         const resolved = await this.tabs.command(session, "Runtime.callFunctionOn", {
           objectId: frame.objectId,
           functionDeclaration:
-            "function(selector){const nodes=this.contentDocument.querySelectorAll(selector);if(nodes.length!==1)throw new Error('Target must match exactly once');return nodes[0]}",
-          arguments: [{ value: params.selector }],
+            "function(selector){try{const nodes=this.contentDocument.querySelectorAll(selector);return nodes.length===1?nodes[0]:nodes.length}catch(error){if(error.name==='SyntaxError')return 'invalid_selector';throw error}}",
+          arguments: [{ value: selector }],
           returnByValue: false,
         });
-        if (resolved.exceptionDetails || !resolved.result?.objectId)
-          throw fail("target_not_unique", "frame selector 必须恰好匹配一个元素");
+        if (resolved.result?.value === "invalid_selector") throw invalidSelector();
+        if (typeof resolved.result?.value === "number") throw await matchCountError(resolved.result.value);
+        if (resolved.exceptionDetails)
+          throw fail("locator_failed", pageException(resolved.exceptionDetails, "无法读取 iframe 中的目标"));
+        if (!resolved.result?.objectId) throw fail("target_missing", "iframe 中的定位目标已不可用");
         const { node } = await this.tabs.command(session, "DOM.describeNode", {
           objectId: resolved.result.objectId,
         });
@@ -795,20 +936,118 @@ export class BrowserBridge {
       }
     } else {
       const { root } = await this.tabs.command(session, "DOM.getDocument", {});
-      const { nodeIds } = await this.tabs.command(session, "DOM.querySelectorAll", {
-        nodeId: root.nodeId,
-        selector: params.selector,
-      });
-      if (nodeIds.length !== 1) throw fail("target_not_unique", "selector 必须恰好匹配一个元素");
+      const { nodeIds } = await this.tabs
+        .command(session, "DOM.querySelectorAll", { nodeId: root.nodeId, selector })
+        .catch(async (caught) => {
+          // CDP can report a generic DOM error for malformed CSS. Confirm syntax
+          // separately so a debugger or transport failure keeps its original status.
+          if (!errorDetails(caught).code) {
+            const invalid = await this.pageValue(
+              session,
+              `(()=>{try{document.querySelector(${JSON.stringify(selector)});return false}catch(error){return error.name==='SyntaxError'}})()`,
+              1000,
+            ).catch(() => false);
+            if (invalid === true) throw invalidSelector();
+          }
+          throw caught;
+        });
+      if (nodeIds.length !== 1) throw await matchCountError(nodeIds.length);
       const { node } = await this.tabs.command(session, "DOM.describeNode", { nodeId: nodeIds[0] });
       backendNodeId = node?.backendNodeId;
     }
     if (!backendNodeId) throw fail("target_missing", "目标元素不存在");
+    if (semantic) {
+      // queryAXTree may wait indefinitely for an animation frame in a background tab.
+      // getFullAXTree is also used by observe and returns Chrome's computed roles and names.
+      const deadline = performance.now() + 5000;
+      const { nodes = [] } = await this.tabs.command(
+        session,
+        "Accessibility.getFullAXTree",
+        frameId ? { frameId } : {},
+        deadline,
+      );
+      let targets = [
+        ...new Set(
+          nodes.flatMap((node) =>
+            !node.ignored &&
+            node.backendDOMNodeId &&
+            String(node.role?.value ?? "").toLowerCase() === semantic.role.toLowerCase() &&
+            String(node.name?.value ?? "") === semantic.name
+              ? [node.backendDOMNodeId]
+              : [],
+          ),
+        ),
+      ];
+      if (semantic.within && targets.length)
+        targets = await this.targetsInContainer(session, backendNodeId, targets, deadline);
+      if (!targets.length)
+        throw fail(
+          "target_missing",
+          "容器内没有匹配此 role 和精确可访问名称 name 的目标。请调用 page.observe 检查当前角色、名称及容器。",
+        );
+      if (targets.length !== 1)
+        throw fail(
+          "target_not_unique",
+          `容器内有 ${targets.length} 个可访问目标匹配该角色与名称；请缩小 within 容器。`,
+        );
+      backendNodeId = targets[0];
+    }
     return this.executeInput(session, { backendNodeId, revision, url: tab.url! }, params.action, {
+      verify: params.verify && { frame_selector: params.frame_selector, ...params.verify },
       observe_after: false,
       screenshot: false,
       wait_after_ms: 0,
     });
+  }
+
+  private async targetsInContainer(session: TaskTab, container: number, targets: number[], deadline: number) {
+    const inside: number[] = [];
+    const objectGroup = "abridge-locator-scope";
+    // Bound concurrent CDP requests and live remote handles, even on large catalogs.
+    for (let offset = 0; offset < targets.length; offset += 16) {
+      const batch = targets.slice(offset, offset + 16);
+      try {
+        const resolved = await Promise.allSettled(
+          [container, ...batch].map((backendNodeId) =>
+            this.tabs.command(session, "DOM.resolveNode", { backendNodeId, objectGroup }, deadline),
+          ),
+        );
+        const handles = resolved.map((result) => {
+          if (result.status === "rejected") throw result.reason;
+          const { object } = result.value;
+          if (!object?.objectId) throw fail("target_missing", "定位期间元素已从页面移除，请重新观察");
+          return { objectId: object.objectId };
+        });
+        const lookup = await this.tabs.command(
+          session,
+          "Runtime.callFunctionOn",
+          {
+            ...handles[0],
+            functionDeclaration: composedMembership.toString(),
+            arguments: handles.slice(1),
+            returnByValue: true,
+          },
+          deadline,
+        );
+        const matched = lookup.result?.value;
+        if (
+          lookup.exceptionDetails ||
+          !Array.isArray(matched) ||
+          matched.length !== batch.length ||
+          matched.some((value) => typeof value !== "boolean")
+        )
+          throw fail(
+            "locator_failed",
+            pageException(lookup.exceptionDetails, "无法核对目标所属容器，请重新观察"),
+          );
+        inside.push(...batch.filter((_, index) => matched[index]));
+      } finally {
+        await this.tabs
+          .command(session, "Runtime.releaseObjectGroup", { objectGroup }, performance.now() + 500)
+          .catch(() => {});
+      }
+    }
+    return inside;
   }
 
   async frameTarget(
@@ -824,15 +1063,25 @@ export class BrowserBridge {
       session,
       "Runtime.evaluate",
       {
-        expression: `(()=>{const frames=document.querySelectorAll(${JSON.stringify(selector)});if(frames.length!==1)return 'frame_not_unique';const frame=frames[0];if(frame.tagName!=='IFRAME'||!frame.contentDocument)return 'unsupported_frame';return frame})()`,
+        expression: `(${resolveFrameElement.toString()})(${JSON.stringify(selector)})`,
         returnByValue: false,
         objectGroup: "abridge-frame",
       },
       deadline,
     );
-    if (frame.exceptionDetails || !frame.result?.objectId)
-      throw fail("unsupported_frame", "frame 必须唯一且为已加载的同源 iframe；不会转投主文档");
     try {
+      if (frame.exceptionDetails)
+        throw fail("locator_failed", pageException(frame.exceptionDetails, "读取 frame_selector 时发生错误"));
+      const match = frame.result?.value;
+      if (match === "invalid_selector")
+        throw fail("invalid_selector", "frame_selector 需要有效的 CSS 选择器");
+      if (match === 0)
+        throw fail("target_missing", "frame_selector 匹配 0 个元素，请检查选择器或等待 iframe 加载");
+      if (typeof match === "number")
+        throw fail("target_not_unique", `frame_selector 匹配 ${match} 个元素，请指定唯一 iframe`);
+      if (match === "unsupported_frame")
+        throw fail("unsupported_frame", "frame_selector 的目标必须为已加载的同源 iframe");
+      if (!frame.result?.objectId) throw fail("locator_failed", "无法读取 frame_selector 的目标");
       const { node } = await this.tabs.command(
         session,
         "DOM.describeNode",
@@ -914,11 +1163,20 @@ export class BrowserBridge {
   }
   async read(session: TaskTab, input: BridgeParams): Promise<Result> {
     const params = parseArguments(browserReadSchema, input);
-    const { mode, offset, limit } = params;
+    const { offset, limit } = params;
+    const mode = params.mode ?? (params.snapshot_id ? session.snapshot?.format : undefined) ?? "text";
     const initial = await this.tabs.valid(session);
     if (params.snapshot_id !== undefined) {
       if (!session.snapshot || session.snapshot.id !== params.snapshot_id || session.snapshot.format !== mode)
         throw fail("snapshot_missing", "快照不存在或格式不同");
+      if (
+        (params.selector !== undefined && params.selector !== session.snapshot.selector) ||
+        (params.frame_selector !== undefined && params.frame_selector !== session.snapshot.frameSelector)
+      )
+        throw fail(
+          "invalid_params",
+          "快照的容器和 frame 已固定。续读使用 snapshot_id 和 offset；读取其他目标请创建新快照。",
+        );
     } else {
       const revision = session.revision;
       const sourceURL = initial.url;
@@ -963,18 +1221,26 @@ export class BrowserBridge {
         url: sourceURL!,
         truncated,
         coverage: params.frame_selector ? "loaded_same_origin_frame" : "loaded_main_document",
+        selector: params.selector,
+        frameSelector: params.frame_selector,
       };
     }
     const snapshot = session.snapshot!;
-    const start = offset;
+    const start = Math.min(offset, snapshot.value.length);
     let end = Math.min(snapshot.value.length, start + Math.min(limit, mode === "text" ? 24000 : 200));
     let page = snapshot.value.slice(start, end);
-    while (JSON.stringify(page).length > 24000 && end > start + 1) {
-      end--;
+    if (JSON.stringify(page).length > 24000) {
+      let low = start;
+      let high = end;
+      while (low + 1 < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (JSON.stringify(snapshot.value.slice(start, middle)).length <= 24000) low = middle;
+        else high = middle;
+      }
+      if (low === start) throw fail("result_too_large", "单行数据超过返回预算，请用脚本提取较小字段");
+      end = low;
       page = snapshot.value.slice(start, end);
     }
-    if (JSON.stringify(page).length > 24000)
-      throw fail("result_too_large", "单行数据超过返回预算，请用脚本提取较小字段");
     return {
       snapshot_id: snapshot.id,
       mode,
@@ -988,26 +1254,28 @@ export class BrowserBridge {
       cached: params.snapshot_id !== undefined,
     };
   }
-  async wait(session: TaskTab, input: BridgeParams): Promise<Result> {
+  async wait(session: TaskTab, input: BridgeParams, verify = false): Promise<Result> {
     const params = parseArguments(browserWaitSchema, input);
     const state = params.state;
     const timeout = params.timeout_ms;
     const deadline = performance.now() + timeout;
-    const expression = `(${checkCondition.toString()})(${JSON.stringify(params.selector)},${JSON.stringify(params.text)},${JSON.stringify(state)},${JSON.stringify(params.value)})`;
+    const expression = `(${checkCondition.toString()})(${JSON.stringify(params.selector)},${JSON.stringify(params.text)},${JSON.stringify(state)},${JSON.stringify(params.value)},${verify})`;
     do {
       try {
-        if (
-          await this.pageValue(
-            session,
-            expression,
-            Math.max(1, Math.ceil(deadline - performance.now())),
-            params.frame_selector,
-          )
-        )
-          return { matched: true, state };
+        const matched = await this.pageValue(
+          session,
+          expression,
+          Math.max(1, Math.ceil(deadline - performance.now())),
+          params.frame_selector,
+        );
+        if (typeof matched === "number")
+          throw fail("target_not_unique", `核验条件命中 ${matched} 个元素；请将选择器限定到目标容器`);
+        if (matched === true) return { matched: true, state };
       } catch (caught) {
-        if (errorDetails(caught).code === "observation_timeout") break;
-        throw caught;
+        const code = errorDetails(caught).code;
+        if (code === "observation_timeout") break;
+        // The action may create the verification frame asynchronously.
+        if (params.frame_selector === undefined || code !== "target_missing") throw caught;
       }
       const remaining = deadline - performance.now();
       if (remaining <= 0) break;
@@ -1019,13 +1287,20 @@ export class BrowserBridge {
     const params = parseArguments(browserActSchema, input);
     const observation = session.observation;
     const action = params.action;
-    if (
-      !observation ||
-      observation.id !== params.observation_id ||
-      observation.expires <= this.now() ||
-      observation.revision !== session.revision
-    )
-      throw fail("stale_observation", "观察已失效，请重新观察");
+    if (session.invalidatedObservation?.id === params.observation_id)
+      throw fail(
+        "stale_observation",
+        `未投递输入：${session.invalidatedObservation.reason}；待页面稳定后使用 browser_observe`,
+      );
+    if (!observation || observation.id !== params.observation_id)
+      throw fail(
+        "stale_observation",
+        "未投递输入：引用不属于当前观察或已失效；请用 browser_observe 重新定位",
+      );
+    if (observation.expires <= this.now())
+      throw fail("stale_observation", "未投递输入：观察已过期；请用 browser_observe 重新定位");
+    if (observation.revision !== session.revision)
+      throw fail("stale_observation", "未投递输入：文档版本已变化；请用 browser_observe 重新定位");
     if (!observation.refs.has(action.element_ref))
       throw fail("invalid_action", "需要当前观察中的精确元素和支持的动作");
     return this.executeInput(
@@ -1046,20 +1321,21 @@ export class BrowserBridge {
     params: FollowUpOptions,
   ): Promise<Result> {
     const tab = await this.tabs.valid(session);
-    if (
-      session.revision !== target.revision ||
-      tab.url !== target.url ||
-      tab.status === "loading" ||
-      tab.pendingUrl
-    )
-      throw fail("stale_observation", "页面已变化，请重新观察");
+    if (tab.status === "loading" || tab.pendingUrl)
+      throw fail("stale_observation", "未投递输入：页面正在加载；待加载完成后使用 browser_observe");
+    if (tab.url !== target.url)
+      throw fail("stale_observation", "未投递输入：页面地址已变化；请使用 browser_observe 检查新页面");
+    if (session.revision !== target.revision)
+      throw fail("stale_observation", "未投递输入：文档版本已变化；请用 browser_observe 重新定位");
     const { object } = await this.tabs.command(session, "DOM.resolveNode", {
       backendNodeId: target.backendNodeId,
       objectGroup: "abridge-action",
     });
-    if (!object?.objectId) throw fail("stale_observation", "元素已不存在");
+    if (!object?.objectId)
+      throw fail("stale_observation", "未投递输入：元素已不存在；请用 browser_observe 重新定位");
     try {
-      if (session.revision !== target.revision) throw fail("stale_observation", "页面已导航");
+      if (session.revision !== target.revision)
+        throw fail("stale_observation", "未投递输入：页面已导航；请使用 browser_observe 检查新页面");
       let response: CdpResults["Runtime.callFunctionOn"] = {};
       const native = ["click", "fill", "hover", "press"].includes(action.type!);
       let point: { x: number; y: number } | undefined;
@@ -1078,7 +1354,7 @@ export class BrowserBridge {
       // A pure preflight can reject a readonly/wrong-kind target without losing the task.
       const validation = await this.tabs.command(session, "Runtime.callFunctionOn", {
         objectId: object.objectId,
-        functionDeclaration: validateInput.toString(),
+        functionDeclaration: validateInputDeclaration,
         arguments: [{ value: action.type }],
         returnByValue: true,
       });
@@ -1089,7 +1365,7 @@ export class BrowserBridge {
           preparedSideEffects = true;
           const prepared = await this.tabs.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
-            functionDeclaration: prepareInput.toString(),
+            functionDeclaration: prepareInputDeclaration,
             arguments: [{ value: action.type }],
             returnByValue: true,
           });
@@ -1117,7 +1393,7 @@ export class BrowserBridge {
           );
           const refreshed = await this.tabs.command(session, "Runtime.callFunctionOn", {
             objectId: object.objectId,
-            functionDeclaration: prepareInput.toString(),
+            functionDeclaration: prepareInputDeclaration,
             arguments: [{ value: action.type }],
             returnByValue: true,
           });
@@ -1125,7 +1401,7 @@ export class BrowserBridge {
           if (refreshed.exceptionDetails || !point || !Number.isFinite(point.x) || !Number.isFinite(point.y))
             throw fail("action_failed", "渲染后目标不可用");
         }
-        const assertCurrentDocument = async () => {
+        const assertCurrentDocument = async (stage = "目标输入尚未投递") => {
           const currentTab = await this.tabs.valid(session);
           if (
             session.revision !== target.revision ||
@@ -1133,10 +1409,12 @@ export class BrowserBridge {
             currentTab.status === "loading" ||
             currentTab.pendingUrl
           )
-            throw fail("stale_observation", "准备输入期间页面已导航，请重新观察");
+            throw fail("stale_observation", `页面正在加载或文档已变化（${stage}）；请检查状态，避免重复操作`);
         };
         await assertCurrentDocument();
         session.observation = null;
+        session.openedTabs = undefined;
+        session.capturingTabs = true;
         preparedSideEffects = true;
         if (action.type === "scroll") {
           response = await this.tabs.command(session, "Runtime.callFunctionOn", {
@@ -1147,7 +1425,7 @@ export class BrowserBridge {
           });
         } else if (action.type === "click" || action.type === "hover") {
           await this.tabs.command(session, "Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
-          await assertCurrentDocument();
+          await assertCurrentDocument("已投递指针移动");
           if (action.type === "click") {
             try {
               await this.tabs.command(session, "Input.dispatchMouseEvent", {
@@ -1162,7 +1440,7 @@ export class BrowserBridge {
                   action.hold_ms,
                   performance.now() + action.hold_ms + 1000,
                 );
-                await assertCurrentDocument();
+                await assertCurrentDocument("已投递鼠标按下");
               }
             } finally {
               await this.tabs.command(session, "Input.dispatchMouseEvent", {
@@ -1233,7 +1511,7 @@ export class BrowserBridge {
               });
             }
           }
-          await assertCurrentDocument();
+          await assertCurrentDocument("已完成字段准备");
           if (action.text === "") {
             try {
               await this.tabs.command(session, "Input.dispatchKeyEvent", {
@@ -1274,12 +1552,25 @@ export class BrowserBridge {
       } catch (caught) {
         if (preparedSideEffects) throw await this.tabs.uncertainFailure(session, caught);
         throw caught;
+      } finally {
+        if (session.capturingTabs) session.childUrlDeadline = performance.now() + 5000;
+        session.capturingTabs = false;
+      }
+      let verification: Result | undefined;
+      if (params.verify) {
+        try {
+          verification = await this.wait(session, params.verify, true);
+        } catch (caught) {
+          verification = { matched: false, error: diagnostic(errorDetails(caught)) };
+        }
       }
       return await this.afterObservation(
         session,
         params,
         {
           executed: true,
+          ...(native ? { input_dispatched: true } : {}),
+          ...(verification ? { verification } : {}),
           route:
             action.type === "scroll"
               ? "dom_scroll"

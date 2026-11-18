@@ -173,14 +173,19 @@ export class BrowserRuntime {
         const scope = frame_selector => {
           const scoped = args => frame_selector === undefined ? args : {...args,frame_selector};
           const locator = selector => {
-            const act = action => invoke('locate_act',scoped({selector,action}));
-            return Object.freeze({
-              click: (options = {}) => act({...options,type:'click'}),
-              fill: text => act({type:'fill',text}),
-              press: key => act({type:'press',key}),
-              select: values => act({type:'select',values:Array.isArray(values)?values:[values]}),
-              hover: () => act({type:'hover'}),
-              scroll: (delta_y, delta_x = 0) => act({type:'scroll',delta_x,delta_y}),
+            const act = (action, {verify, ...options} = {}) => invoke('locate_act', scoped({
+              selector, action:{...options,...action}, ...(verify === undefined ? {} : {verify:verify?.frame_selector === undefined ? scoped(verify) : verify})
+            }));
+            const actions = {
+              click: options => act({type:'click'},options),
+              fill: (text, options) => act({type:'fill',text},options),
+              press: (key, options) => act({type:'press',key},options),
+              select: (values, options) => act({type:'select',values:Array.isArray(values)?values:[values]},options),
+              hover: options => act({type:'hover'},options),
+              scroll: (delta_y, delta_x = 0, options) => act({type:'scroll',delta_x,delta_y},options)
+            };
+            if (typeof selector !== 'string') return Object.freeze(actions);
+            return Object.freeze({...actions,
               read: (options = {}) => invoke('read',scoped({...options,selector})),
               waitFor: (options = {}) => invoke('wait',scoped({...options,selector}))
             });
