@@ -1,0 +1,148 @@
+---
+import BridgeStudy from "../components/BridgeStudy.astro";
+import "../site.css";
+import bridge from "../../../../docs/assets/brand/bridge.svg?url";
+import wordmark from "../../../../docs/assets/brand/wordmark.svg?url";
+import chrome from "../../../../docs/assets/brand/platforms/chrome.svg?url";
+import mac from "../../../../docs/assets/brand/platforms/macos.svg?url";
+import linux from "../../../../docs/assets/brand/platforms/linux.svg?url";
+import android from "../../../../docs/assets/brand/platforms/android.svg?url";
+const repo = "https://github.com/xerrors/aBridge";
+const guide = repo + "#快速开始";
+const clients = [
+  {
+    name: "Chrome",
+    icon: chrome,
+    summary: "沿用已登录的浏览器",
+    detail: "每个 Chrome Profile 可以单独授权。Agent 在专用标签页里查资料、操作网页，也能填写表单。",
+    example: "把报销单里的金额和日期填进系统，填好后让我确认。",
+    link: "安装浏览器扩展",
+    url: "https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc",
+  },
+  {
+    name: "macOS",
+    icon: mac,
+    summary: "操作桌面上的原生应用",
+    detail: "在 Mac 上按需开启屏幕观察、键鼠输入、终端或文件访问。每种能力都由你决定。",
+    example: "打开预览，把桌面上这两份 PDF 并排显示。",
+    link: "查看安装与权限",
+    url: repo + "/blob/main/docs/deployment.md#macos-app",
+  },
+  {
+    name: "Linux",
+    icon: linux,
+    summary: "读写文件，执行终端任务",
+    detail: "Linux CLI 将已授权的开发机或服务器接入 aBridge，支持 amd64 和 arm64。",
+    example: "读一下这个项目的构建日志，找出第一个报错。",
+    link: "查看 CLI 安装说明",
+    url: repo + "/blob/main/apps/linux-client/README.md",
+  },
+  {
+    name: "Android",
+    icon: android,
+    summary: "在手机上点按、滑动和输入",
+    detail: "Android 预览版支持观察屏幕、操作应用和读写授权目录。在 Android 13 及以上设备上从源码构建。",
+    example: "打开日历，查看下周一上午有哪些安排。",
+    link: "查看预览版构建说明",
+    url: repo + "/blob/main/apps/android/README.md",
+  },
+];
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>aBridge · 让 Agent 操作你授权的设备</title>
+    <meta
+      name="description"
+      content="aBridge 是开源、自托管的 MCP 桥接工具，让 Agent 接入已授权的浏览器、Mac、Linux 和 Android 设备。"
+    />
+    <link rel="icon" href={bridge} type="image/svg+xml" />
+  </head>
+  <body>
+    <a class="skip" href="#main">
+      跳到正文
+    </a>
+    <header>
+      <div class="wrap bar">
+        <a class="brand" href={import.meta.env.BASE_URL} aria-label="aBridge 首页">
+          <img src={bridge} alt="" width="32" height="24" />
+          <img src={wordmark} alt="" width="82" height="23" />
+        </a>
+        <nav aria-label="主导航">
+          <a href="#devices">支持设备</a>
+          <a href={repo + "#开发与文档"}>文档</a>
+          <a class="git" href={repo}>
+            GitHub <span aria-hidden="true">↗</span>
+          </a>
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      <section class="wrap hero" aria-labelledby="hero-title">
+        <div class="intro">
+          <h1 id="hero-title">
+            让 Agent 操作
+            <br />
+            你授权的设备。
+          </h1>
+          <p>
+            aBridge 是开源、自托管的 MCP 桥接工具。
+            <br class="desktop" />
+            把已登录的浏览器和手边的设备接给你的 Agent。
+          </p>
+          <div class="actions">
+            <a class="primary" href={guide}>
+              快速开始
+            </a>
+            <a class="secondary" href="#devices">
+              查看支持设备 <span aria-hidden="true">↓</span>
+            </a>
+          </div>
+        </div>
+        <BridgeStudy />
+      </section>
+      <section id="devices" class="devices">
+        <div class="wrap client-layout">
+          <div class="section-intro">
+            <h2>从一台设备开始</h2>
+            <p>
+              按需安装客户端，为每个 Agent
+              <br class="desktop" />
+              指定设备、能力和授权期限。
+            </p>
+          </div>
+          <div class="clients">
+            {clients.map((c, i) => (
+              <details name="client" open={i === 0}>
+                <summary>
+                  <img src={c.icon} alt="" width="25" height="25" />
+                  <strong>{c.name}</strong>
+                  <span class="summary">{c.summary}</span>
+                  <span class="toggle" aria-hidden="true"></span>
+                </summary>
+                <div class="detail">
+                  <p>{c.detail}</p>
+                  <blockquote>
+                    <small>任务示例</small>
+                    {c.example}
+                  </blockquote>
+                  <a href={c.url}>
+                    {c.link} <span aria-hidden="true">↗</span>
+                  </a>
+                </div>
+              </details>
+            ))}
+          </div>
+        </div>
+      </section>
+    </main>
+    <footer class="wrap">
+      <img src={wordmark} alt="aBridge" width="70" height="20" />
+      <a href={repo + "/blob/main/LICENSE"}>Apache 2.0</a>
+      <a href={repo + "/releases"}>版本发布 ↗</a>
+    </footer>
+  </body>
+</html>

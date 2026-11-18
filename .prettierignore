@@ -9,3 +9,5 @@ apps/browser/public/icons/
 package-lock.json
 
 apps/linux-client/Cargo.lock
+
+apps/site/.astro/

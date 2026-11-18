@@ -1,0 +1,129 @@
+---
+import mark from "../../../../docs/assets/brand/bridge.svg?raw";
+
+// Project the two original brand outlines onto the same oblique plane.
+const contours = [...mark.matchAll(/<path d="([^"]+)"/g)].map((match) => match[1]);
+const projection = "matrix(5.5 -2.5 4.35 2.8 17 213)";
+const layers = Array.from({ length: 48 }, (_, index) => 48 - index);
+---
+
+<figure>
+  <svg class="study" viewBox="0 0 560 365" aria-hidden="true">
+    <defs>
+      <linearGradient id="face" x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox">
+        <stop stop-color="#579efa" />
+        <stop offset=".46" stop-color="#247df0" />
+        <stop offset="1" stop-color="#0066dd" />
+      </linearGradient>
+      <linearGradient id="edge" x1="0%" y1="0%" x2="100%" y2="65%">
+        <stop stop-color="#1248a1" />
+        <stop offset=".33" stop-color="#074193" />
+        <stop offset=".62" stop-color="#0863ce" />
+        <stop offset="1" stop-color="#073f90" />
+      </linearGradient>
+      <filter id="shadow" x="-50%" y="-65%" width="200%" height="240%">
+        <feGaussianBlur stdDeviation="9" />
+      </filter>
+      <filter id="contact" x="-40%" y="-40%" width="180%" height="180%">
+        <feGaussianBlur stdDeviation="2.8" />
+      </filter>
+      <pattern id="dots" width="13" height="13" patternUnits="userSpaceOnUse">
+        <circle cx="1" cy="1" r=".85" fill="#9cafc9" />
+      </pattern>
+      <radialGradient id="fade">
+        <stop offset=".46" stop-color="white" />
+        <stop offset="1" stop-color="black" />
+      </radialGradient>
+      <mask id="field">
+        <ellipse cx="280" cy="197" rx="310" ry="183" fill="url(#fade)" />
+      </mask>
+      {contours.map((d, i) => (
+        <path id={"piece" + i} d={d} />
+      ))}
+    </defs>
+    <rect width="560" height="365" fill="url(#dots)" mask="url(#field)" opacity=".64" />
+    <g transform="translate(0 54)" fill="none" stroke="#96a9be" stroke-width=".8" opacity=".52">
+      <path d="M4 254 391 78M108 344 554 141M50 192 272 335M265 73 519 238" stroke-dasharray="4 5" />
+    </g>
+    <g fill="#284b75" opacity=".23" filter="url(#shadow)" transform="translate(4 60)">
+      <g transform={projection}>
+        {contours.map((_, i) => (
+          <use href={"#piece" + i} />
+        ))}
+      </g>
+    </g>
+    <g fill="#344763" opacity=".3" filter="url(#contact)" transform="translate(0 50)">
+      <g transform={projection}>
+        {contours.map((_, i) => (
+          <use href={"#piece" + i} />
+        ))}
+      </g>
+    </g>
+    {contours.map((_, i) => (
+      <g>
+        {layers.map((dy) => (
+          <g transform={"translate(0 " + dy + ")"}>
+            <use href={"#piece" + i} transform={projection} fill="url(#edge)" />
+          </g>
+        ))}
+        <use
+          href={"#piece" + i}
+          transform={projection}
+          fill="url(#face)"
+          stroke="#87bafa"
+          stroke-width=".23"
+          stroke-linejoin="round"
+        />
+      </g>
+    ))}
+  </svg>
+  <figcaption>
+    <span>Agent</span>
+    <i></i>
+    <strong>aBridge</strong>
+    <i></i>
+    <span>设备</span>
+  </figcaption>
+</figure>
+<style>
+  figure {
+    margin: 0;
+    align-self: center;
+    min-width: 0;
+  }
+  .study {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+  figcaption {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: #49596d;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  figcaption strong {
+    color: #0066dd;
+  }
+  figcaption i {
+    width: 33px;
+    height: 1px;
+    background: #b7c4d3;
+    position: relative;
+  }
+  figcaption i::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    top: -2px;
+    width: 4px;
+    height: 4px;
+    border-right: 1px solid #8c9fb5;
+    border-top: 1px solid #8c9fb5;
+    transform: rotate(45deg);
+  }
+</style>
