@@ -441,7 +441,7 @@ actor NativeDriver: DesktopNativeDriver {
             let dimensionsMatch = Self.windowFrame(observation.object("window_bounds")) == frame
             displayFiltered = true
             if dimensionsMatch, let width = observation.number("width"), let height = observation.number("height") {
-                pixels = try? await captureVisibleWindow(id: id, pid: pid, frame: frame, width: width, height: height)
+                pixels = try? await Self.captureVisibleWindow(id: id, pid: pid, frame: frame, width: width, height: height)
             } else { pixels = nil }
             try Task.checkCancellation()
             if let pixels {
@@ -490,7 +490,9 @@ actor NativeDriver: DesktopNativeDriver {
         return attribute(minimize, kAXEnabledAttribute) as? Bool == true
     }
 
-    private func captureVisibleWindow(id: Double, pid: Double, frame: CGRect, width: Double, height: Double) async throws -> Data? {
+    // Older ScreenCaptureKit SDKs do not mark SCShareableContent as Sendable.
+    // Keep it outside the actor and return only the encoded image.
+    private nonisolated static func captureVisibleWindow(id: Double, pid: Double, frame: CGRect, width: Double, height: Double) async throws -> Data? {
         guard (1...1920).contains(width), (1...1920).contains(height),
               abs(width / height - frame.width / frame.height) <= 2 / height else { return nil }
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -514,7 +516,7 @@ actor NativeDriver: DesktopNativeDriver {
     private func currentPixels(session: String, target: JSONObject, frame: CGRect, screenshot: WindowScreenshot) async throws -> Data? {
         guard let id = target.number("window_id"), let pid = target.number("pid") else { return nil }
         if screenshot.displayFiltered {
-            return try await captureVisibleWindow(id: id, pid: pid, frame: frame, width: screenshot.width, height: screenshot.height)
+            return try await Self.captureVisibleWindow(id: id, pid: pid, frame: frame, width: screenshot.width, height: screenshot.height)
         }
         var args = target
         args["session"] = .string(session); args["max_image_dimension"] = .number(1920)
