@@ -7,7 +7,7 @@ import { withBase } from "vitepress";
   <section id="runtime" class="runtime-section" aria-labelledby="runtime-title">
     <div class="section-heading">
       <h2 id="runtime-title">一次任务如何执行</h2>
-      <a class="quiet-link" :href="withBase('/architecture')">阅读架构文档</a>
+      <a class="quiet-link" :href="withBase('/architecture.html')">阅读架构文档</a>
     </div>
     <p class="section-lede">比如让 Agent 查看项目看板，这次请求会经过三个地方。</p>
     <ol class="runtime-path">

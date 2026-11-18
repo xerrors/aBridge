@@ -21,7 +21,7 @@ const clients = [
     summary:
       "将扩展装在你选定的 Chrome 用户配置中。Agent 可以沿用已有的登录状态，在独立标签页里查资料、填表单。",
     requirement: "Chrome 116+",
-    link: "/browser-profile-design",
+    link: "/browser-profile-design.html",
     prompt: "打开项目看板，找出本周到期的任务。",
     capabilities: ["观察页面", "导航", "表单操作"],
   },
@@ -33,7 +33,7 @@ const clients = [
     summary:
       "在 Mac 上开启所需的系统权限。Agent 可以查看应用窗口、使用键盘和鼠标，也可以通过 Shell 和文件工具处理本机资料。",
     requirement: "Apple Silicon · macOS 14+",
-    link: "/deployment#macos-app",
+    link: "/deployment.html#macos-app",
     prompt: "打开日历，查看我明天上午的安排。",
     capabilities: ["屏幕与键鼠", "Shell", "文件读写"],
   },
@@ -45,7 +45,7 @@ const clients = [
     summary:
       "用 Device Token 绑定 Linux 主机，按需启用 Shell 和文件权限。客户端支持通过 systemd 在后台运行。",
     requirement: "Linux amd64 / arm64",
-    link: "/deployment#linux-cli",
+    link: "/deployment.html#linux-cli",
     prompt: "查看这个项目最新一次构建的日志。",
     capabilities: ["Shell", "文件读写"],
   },
@@ -69,7 +69,7 @@ const selected = ref(clients[0]);
   <main class="brand-page">
     <section class="bridge-hero">
       <div class="hero-copy">
-        <a class="release-link" :href="withBase('/changelog')"
+        <a class="release-link" :href="withBase('/changelog.html')"
           ><span>v{{ version }}</span> 版本记录 <ChevronRight :size="14" aria-hidden="true"
         /></a>
         <h1>让 Agent 用上<br />你的设备。</h1>
@@ -77,7 +77,7 @@ const selected = ref(clients[0]);
           通过自托管的 MCP 服务，让 Agent 在你的浏览器、电脑或手机上执行任务。你来选择设备、权限和有效期。
         </p>
         <div class="hero-actions">
-          <a class="primary-link" :href="withBase('/guide/start')">快速开始</a
+          <a class="primary-link" :href="withBase('/guide/start.html')">快速开始</a
           ><a class="quiet-link" href="#runtime">了解工作原理</a>
         </div>
       </div>

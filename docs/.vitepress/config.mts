@@ -5,14 +5,16 @@ import { defineConfig } from "vitepress";
 
 const docsDir = fileURLToPath(new URL("../", import.meta.url));
 
+const base = process.env.DOCS_BASE ?? "/";
+
 export default defineConfig({
+  base,
   lang: "zh-CN",
   title: "aBridge",
   description: "自托管的 MCP 服务，让 Agent 在你授权的设备和浏览器中执行任务。",
   appearance: false,
-  cleanUrls: true,
   srcExclude: ["assets/**"],
-  head: [["link", { rel: "icon", href: "/assets/brand/bridge.svg", type: "image/svg+xml" }]],
+  head: [["link", { rel: "icon", href: base + "assets/brand/bridge.svg", type: "image/svg+xml" }]],
   themeConfig: {
     siteTitle: false,
     logo: { src: "/assets/brand/wordmark.svg", alt: "aBridge 首页" },

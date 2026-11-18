@@ -6,19 +6,19 @@ const suites = [
     title: "MiniWoB++ 适配子集",
     description: "Chrome 扩展 · 每例限时 180 秒",
     file: "miniwob-v2-results.json",
-    report: "/benchmarks/browser-reliability-v2",
+    report: "/benchmarks/browser-reliability-v2.html",
   },
   {
     title: "AndroidWorld 回归集",
     description: "Android 13 模拟器 · 文件与笔记",
     file: "android-world-results.json",
-    report: "/benchmarks/android-world#measured-result",
+    report: "/benchmarks/android-world.html#measured-result",
   },
   {
     title: "AndroidWorld 挑战集",
     description: "Android 13 模拟器 · 跨应用与多步操作",
     file: "android-world-challenge-results.json",
-    report: "/benchmarks/android-world#challenge-results",
+    report: "/benchmarks/android-world.html#challenge-results",
   },
 ];
 
