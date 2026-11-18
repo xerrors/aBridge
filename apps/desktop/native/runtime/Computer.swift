@@ -96,12 +96,26 @@ actor NativeComputer {
             NativeDriver.windowFrame($0.object("bounds")) != nil
         }
     }
-    private func followUpTarget(_ target: JSONObject, before: [JSONObject], focusedBefore: Double?) async throws -> JSONObject {
-        guard let pid = target.number("pid"), let id = target.number("window_id") else { return target }
+    private enum FollowUpTarget {
+        case selected(JSONObject), candidates([JSONObject])
+    }
+    private func windowSelection(_ windows: [JSONObject], message: String) -> JSONObject {
+        let candidates = windows.prefix(16).map { window in
+            var candidate = window.filter { ["pid", "window_id", "layer"].contains($0.key) }
+            candidate["title"] = window.string("title").map(NativeDriver.windowDiagnosticText)
+            return JSONValue.object(candidate)
+        }
+        return [
+            "observation_error": .object(DesktopError(code: "window_selection_required", message: message, hint: "Choose a window candidate and call computer_observe with its PID and window ID.").json),
+            "window_candidates": .array(candidates)
+        ]
+    }
+    private func followUpTarget(_ target: JSONObject, before: [JSONObject], focusedBefore: Double?) async throws -> FollowUpTarget {
+        guard let pid = target.number("pid"), let id = target.number("window_id") else { return .selected(target) }
         let windows = try await visibleWindows(pid)
         let focused = try await native.focusedWindow(pid: pid, candidates: windows)
-        if let focused, focused != focusedBefore {
-            return ["pid": .number(pid), "window_id": .number(focused)]
+        if let focused, focused != focusedBefore, focused != id {
+            return .selected(["pid": .number(pid), "window_id": .number(focused)])
         }
         let current = windows.first { $0.number("window_id") == id }
         let previous = before.first { $0.number("window_id") == id }
@@ -116,18 +130,20 @@ actor NativeComputer {
                 guard let previousOrder = previous?.number("z_index"), let previousDepth = oldCandidate.number("z_index") else { return false }
                 return previousDepth <= previousOrder
             }
-            if appearedAbove.count == 1, let nextID = appearedAbove[0]["window_id"] {
-                return ["pid": .number(pid), "window_id": nextID]
+            if appearedAbove.count == 1, let candidate = appearedAbove.first, let nextID = candidate["window_id"],
+               await native.isMenuWindow(pid: pid, candidate: candidate, windows: windows) {
+                return .selected(["pid": .number(pid), "window_id": nextID])
             }
-            if appearedAbove.count > 1 {
-                throw DesktopError(code: "window_selection_required", message: "Multiple windows appeared above the previous target", hint: "Use computer_windows for the same PID and observe the intended window explicitly.")
+            if !appearedAbove.isEmpty {
+                return .candidates([current].compactMap { $0 } + appearedAbove)
             }
         }
         if current == nil, previous != nil {
-            if let focused { return ["pid": .number(pid), "window_id": .number(focused)] }
+            if let focused { return .selected(["pid": .number(pid), "window_id": .number(focused)]) }
+            if !windows.isEmpty { return .candidates(windows) }
             throw DesktopError(code: "window_unavailable", message: "The previous target is no longer visible", hint: "Use computer_windows for the same PID and observe the intended window explicitly.")
         }
-        return target
+        return .selected(target)
     }
     private func open(_ session: String, _ args: JSONObject) async throws -> JSONObject {
         guard let bundle = args.string("bundle_id"), try await native.apps().contains(where: { $0.string("bundle_id") == bundle }) else { throw DesktopError(code: "app_not_found", message: "Application is not installed") }
@@ -161,10 +177,7 @@ actor NativeComputer {
                     return ["observation": .object(observation)]
                 }
                 if attempt == 15 && !windows.isEmpty {
-                    return [
-                        "observation_error": .object(DesktopError(code: "window_selection_required", message: "Cannot identify the application's focused or main window", hint: "Choose a window candidate and call computer_observe with its PID and window ID.").json),
-                        "window_candidates": .array(windows.prefix(16).map { .object($0.filter { ["pid", "window_id", "title", "layer"].contains($0.key) }) })
-                    ]
+                    return windowSelection(windows, message: "Cannot identify the application's focused or main window")
                 }
             }
             try await Task.sleep(nanoseconds: 250_000_000)
@@ -173,6 +186,7 @@ actor NativeComputer {
     }
     private func observe(_ session: String, _ args: JSONObject) async throws -> JSONObject {
         try assertOpen(session)
+        observations.removeValue(forKey: session)
         var target: JSONObject
         if let pid = args.number("pid") {
             if let id = args.number("window_id") { target = ["pid": .number(pid), "window_id": .number(id)] }
@@ -181,7 +195,6 @@ actor NativeComputer {
                 try assertOpen(session)
                 if let selected = targets[session], selected.number("pid") == pid {
                     guard windows.contains(where: { $0["window_id"] == selected["window_id"] }) else {
-                        observations.removeValue(forKey: session)
                         throw DesktopError(code: "window_id_not_found", message: "The selected window is no longer listed", hint: "Use computer_windows and select the intended replacement explicitly.")
                     }
                     target = selected
@@ -196,7 +209,6 @@ actor NativeComputer {
         } else if args.bool("desktop") == true { target = ["desktop": .bool(true)] }
         else if let previous = targets[session], previous.number("pid") != nil { target = previous }
         else { throw DesktopError(code: "target_required", message: "Provide pid and window_id, or set desktop=true") }
-        observations.removeValue(forKey: session)
         let screenshot = args.bool("screenshot") != false
         let desktop = target.bool("desktop") == true
         let windowFocus = target.number("pid").flatMap { pid in target.number("window_id").map { "\(pid):\($0)" } }
@@ -319,6 +331,9 @@ actor NativeComputer {
             guard let element = observation.refs[ref] else {
                 throw DesktopError(code: "invalid_reference", message: "Element reference is not in this observation", hint: "Use an element_ref from the current observation with the requested action listed.")
             }
+            if kind == "double_click" || action.string("button") == "middle" {
+                throw DesktopError(code: "click_coordinates_required", message: "Middle and double clicks require screenshot coordinates", hint: "Refresh the window with screenshot=true and use a point on the intended control.")
+            }
             let actionName = kind == "type" ? "type" : action.string("button") == "right" ? "right_click" : "click"
             guard element.actions.contains(actionName), observation.available.contains("element_" + actionName) else {
                 throw DesktopError(code: "element_action_unavailable", message: "The selected element does not support this action", hint: "Use a reference from the current observation that advertises the requested action.")
@@ -414,9 +429,14 @@ actor NativeComputer {
             if observation.target.number("pid") != nil && before == nil {
                 throw DesktopError(code: "window_tracking_unavailable", message: "Could not track windows across the action", hint: "Refresh the intended window before acting again.")
             }
-            var next = try await followUpTarget(observation.target, before: before ?? [], focusedBefore: focusedBefore)
-            next["screenshot"] = .bool(args.bool("screenshot") == true)
-            result["observation"] = .object(try await observe(session, next))
+            switch try await followUpTarget(observation.target, before: before ?? [], focusedBefore: focusedBefore) {
+            case .selected(var next):
+                next["screenshot"] = .bool(args.bool("screenshot") == true)
+                result["observation"] = .object(try await observe(session, next))
+            case .candidates(let windows):
+                targets.removeValue(forKey: session)
+                result.merge(windowSelection(windows, message: "Cannot identify the interactive window after the action")) { _, new in new }
+            }
         } catch {
             result["observation_error"] = .object((error as? DesktopError)?.json ?? ["code": .string("observation_failed"), "message": .string("Action delivered; follow-up observation unavailable")])
         }

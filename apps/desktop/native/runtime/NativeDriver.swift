@@ -13,6 +13,7 @@ protocol DesktopNativeDriver: Sendable {
     func visibleWindows(pid: Double) async throws -> [JSONObject]
     func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double?
     func mainWindow(pid: Double, candidates: [JSONObject]) async throws -> Double?
+    func isMenuWindow(pid: Double, candidate: JSONObject, windows: [JSONObject]) async -> Bool
     func open(bundleID: String) async throws
     func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject
     func act(session: String, action: JSONObject) async throws -> JSONObject
@@ -25,6 +26,7 @@ extension DesktopNativeDriver {
         try await windows(pid: pid).filter { $0.number("pid") == pid && $0.bool("is_on_screen") == true }
     }
     func mainWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? { nil }
+    func isMenuWindow(pid: Double, candidate: JSONObject, windows: [JSONObject]) async -> Bool { false }
 }
 
 private func consumeDriverBuffer(_ buffer: inout CuaDriverBuffer) -> Data {
@@ -102,7 +104,7 @@ private func startDriverOperation(_ driver: OpaquePointer?, nameBytes: [UInt8], 
 }
 
 actor NativeDriver: DesktopNativeDriver {
-    private struct ScreenWindow {
+    struct ScreenWindow {
         let id: Double
         let pid: Double
         let frame: CGRect
@@ -127,15 +129,35 @@ actor NativeDriver: DesktopNativeDriver {
 
         func diagnostic(includeTitle: Bool) -> JSONObject {
             var result: JSONObject = ["window_id": .number(id), "pid": .number(pid)]
-            if let app { result["app_name"] = .string(String(decoding: app.utf16.prefix(120), as: UTF16.self)) }
-            if includeTitle, let title { result["title"] = .string(String(decoding: title.utf16.prefix(120), as: UTF16.self)) }
+            if let app { result["app_name"] = NativeDriver.windowDiagnosticText(app) }
+            if includeTitle, let title { result["title"] = NativeDriver.windowDiagnosticText(title) }
             return result
         }
+
+        func trackingRow(zIndex: Int) -> JSONObject {
+            var row: JSONObject = ["window_id": .number(id), "pid": .number(pid), "is_on_screen": .bool(true), "z_index": .number(Double(zIndex))]
+            row["title"] = title.map(JSONValue.string)
+            row["layer"] = layer.map { .number(Double($0)) }
+            row["bounds"] = .object(["x": .number(frame.minX), "y": .number(frame.minY), "width": .number(frame.width), "height": .number(frame.height)])
+            return row
+        }
+    }
+
+    nonisolated static func windowDiagnosticText(_ text: String) -> JSONValue {
+        .string(String(decoding: text.utf16.prefix(120), as: UTF16.self))
     }
 
     private struct SiblingCover: Equatable {
         let id: Double
         let frame: CGRect
+    }
+
+    private struct WindowScreenshot {
+        let data: Data
+        let id: String
+        let width: Double
+        let height: Double
+        let displayFiltered: Bool
     }
 
     private struct WindowInput {
@@ -146,6 +168,7 @@ actor NativeDriver: DesktopNativeDriver {
         let focusedWindow: AXUIElement?
         let focusedControl: AXUIElement?
         let editable: Bool
+        var screenshot: WindowScreenshot?
     }
 
     private var driver: OpaquePointer?
@@ -291,15 +314,7 @@ actor NativeDriver: DesktopNativeDriver {
         let stack = onScreenWindows()
         return stack.enumerated().compactMap { index, window in
             guard window.pid == pid, !window.transparent, window.frame.width > 0, window.frame.height > 0 else { return nil }
-            var row = window.diagnostic(includeTitle: true)
-            row["bounds"] = .object([
-                "x": .number(window.frame.minX), "y": .number(window.frame.minY),
-                "width": .number(window.frame.width), "height": .number(window.frame.height)
-            ])
-            row["is_on_screen"] = .bool(true)
-            row["layer"] = window.layer.map { .number(Double($0)) }
-            row["z_index"] = .number(Double(stack.count - index))
-            return row
+            return window.trackingRow(zIndex: stack.count - index)
         }
     }
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
@@ -338,11 +353,30 @@ actor NativeDriver: DesktopNativeDriver {
     }
     private func matchWindow(_ window: AXUIElement, candidates: [JSONObject]) -> Double? {
         guard let frame = axFrame(window) else { return nil }
+        return Self.matchWindow(frame: frame, candidates: candidates, title: attribute(window, kAXTitleAttribute) as? String)
+    }
+    nonisolated static func matchWindow(frame: CGRect, candidates: [JSONObject], title: @autoclosure () -> String?) -> Double? {
         let matching = candidates.filter { Self.windowFrame($0.object("bounds")) == frame }
         if matching.count == 1 { return matching[0].number("window_id") }
-        guard let title = attribute(window, kAXTitleAttribute) as? String, !title.isEmpty else { return nil }
+        guard let title = title(), !title.isEmpty else { return nil }
         let titled = matching.filter { $0.string("title") == title }
         return titled.count == 1 ? titled[0].number("window_id") : nil
+    }
+    func isMenuWindow(pid: Double, candidate: JSONObject, windows: [JSONObject]) async -> Bool {
+        guard let process = pid_t(exactly: pid), let id = candidate.number("window_id"),
+              let frame = Self.windowFrame(candidate.object("bounds")) else { return false }
+        let app = AXUIElementCreateApplication(process)
+        var hit: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(app, Float(frame.midX), Float(frame.midY), &hit) == .success,
+              var element = hit else { return false }
+        for _ in 0..<12 {
+            if attribute(element, kAXRoleAttribute) as? String == kAXMenuRole {
+                return matchWindow(element, candidates: windows) == id
+            }
+            guard let parent = elementAttribute(element, kAXParentAttribute) else { break }
+            element = parent
+        }
+        return false
     }
     func open(bundleID: String) async throws {
         let result = try await NativeShell.run(executable: "/usr/bin/open", arguments: ["-b", bundleID], cwd: NSHomeDirectory(), environment: ProcessInfo.processInfo.environment, timeout: 5000, output: nil)
@@ -382,11 +416,13 @@ actor NativeDriver: DesktopNativeDriver {
             mapped["token"] = element["element_token"]; mapped["value"] = element["value"] ?? element["value_description"]
             return .object(mapped)
         })
+        var pixels: Data?, displayFiltered = false
         if let image = result.array("content")?.compactMap(\.object).first(where: { $0.string("type") == "image" }), let base64 = image.string("data") {
             observation["image_base64"] = .string(base64); observation["mime_type"] = image["mimeType"]
             observation["width"] = data["screenshot_width"] ?? data["width"]
             observation["height"] = data["screenshot_height"] ?? data["height"]
-            if let png = Data(base64Encoded: base64), png.count >= 24, Array(png.prefix(8)) == [137,80,78,71,13,10,26,10] {
+            pixels = Data(base64Encoded: base64)
+            if let png = pixels, png.count >= 24, Array(png.prefix(8)) == [137,80,78,71,13,10,26,10] {
                 func uint32(_ offset: Int) -> Double { Double(png[offset..<offset+4].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }) }
                 if observation.number("width") == nil { observation["width"] = .number(uint32(16)) }
                 if observation.number("height") == nil { observation["height"] = .number(uint32(20)) }
@@ -396,14 +432,14 @@ actor NativeDriver: DesktopNativeDriver {
            let index = stack.firstIndex(where: { $0.id == id && $0.pid == pid }),
            stack.suffix(from: index + 1).contains(where: {
                let frame = stack[index].frame
-               return $0.pid == pid && $0.frame.intersects(frame) && $0.frame.width * $0.frame.height >= frame.width * frame.height
-           }) {
+               return $0.pid == pid && !$0.transparent && $0.frame.intersects(frame) && $0.frame.width * $0.frame.height >= frame.width * frame.height
+           }), !isStandardDocumentWindow(stack[index], stack: stack, state: data) {
             let frame = stack[index].frame
             // The driver's independent-window capture can return a miniature of
             // the parent for same-app popup windows. Keep its coordinate binding
             // only if the visible, window-filtered capture has the same geometry.
             let dimensionsMatch = Self.windowFrame(observation.object("window_bounds")) == frame
-            let pixels: Data?
+            displayFiltered = true
             if dimensionsMatch, let width = observation.number("width"), let height = observation.number("height") {
                 pixels = try? await captureVisibleWindow(id: id, pid: pid, frame: frame, width: width, height: height)
             } else { pixels = nil }
@@ -419,7 +455,11 @@ actor NativeDriver: DesktopNativeDriver {
         if let pid = target.number("pid"), let windowID = target.number("window_id") {
             let frame = Self.windowFrame(observation.object("window_bounds"))
             observation["window_pixel_target"] = .bool(stack.contains { $0.pid == pid && $0.id == windowID && !$0.transparent && $0.frame == frame })
-            let input = windowInput(target: target, pid: pid, windowID: windowID, state: data, stack: stack, beforeCapture: beforeCapture)
+            var input = windowInput(target: target, pid: pid, windowID: windowID, state: data, stack: stack, beforeCapture: beforeCapture)
+            if let pixels, pixels.count <= 4 * 1024 * 1024, let capture = observation.string("capture_id"),
+               let width = observation.number("width"), let height = observation.number("height") {
+                input.screenshot = WindowScreenshot(data: pixels, id: capture, width: width, height: height, displayFiltered: displayFiltered)
+            } else { observation.removeValue(forKey: "capture_id") }
             windowInputs[id] = input
             var keyboard: JSONObject = ["status": .string(input.focusedWindow == nil ? "unverified" : input.focusedControl == nil ? "window" : "control"), "editable": .bool(input.editable)]
             if let control = input.focusedControl {
@@ -430,6 +470,24 @@ actor NativeDriver: DesktopNativeDriver {
             observation["keyboard_focus"] = .object(keyboard)
         }
         return observation
+    }
+
+    private func isStandardDocumentWindow(_ window: ScreenWindow, stack: [ScreenWindow], state: JSONObject) -> Bool {
+        // Overlapping documents can span displays. Only trust the SDK's normal
+        // window image when the exact target has an unambiguous AX counterpart
+        // with document chrome; an unidentified same-app popup still needs the filter.
+        guard window.layer == 0, let pid = pid_t(exactly: window.pid),
+              let exact = state.object("background_input")?.object("exact_window"), exact.string("status") == "matched",
+              exact.number("pid") == window.pid, exact.number("window_id") == window.id,
+              stack.filter({ $0.pid == window.pid && !$0.transparent && $0.frame == window.frame }).count == 1,
+              let windows = attribute(AXUIElementCreateApplication(pid), kAXWindowsAttribute) as? [AXUIElement] else { return false }
+        let matching = windows.filter { axFrame($0) == window.frame }
+        guard matching.count == 1, let root = matching.first, let title = window.title, !title.isEmpty,
+              attribute(root, kAXTitleAttribute) as? String == title,
+              attribute(root, kAXSubroleAttribute) as? String == kAXStandardWindowSubrole else { return false }
+        if attribute(root, kAXDocumentAttribute) != nil { return true }
+        guard let minimize = elementAttribute(root, kAXMinimizeButtonAttribute) else { return false }
+        return attribute(minimize, kAXEnabledAttribute) as? Bool == true
     }
 
     private func captureVisibleWindow(id: Double, pid: Double, frame: CGRect, width: Double, height: Double) async throws -> Data? {
@@ -451,6 +509,51 @@ actor NativeDriver: DesktopNativeDriver {
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination), data.length <= 4 * 1024 * 1024 else { return nil }
         return data as Data
+    }
+
+    private func currentPixels(session: String, target: JSONObject, frame: CGRect, screenshot: WindowScreenshot) async throws -> Data? {
+        guard let id = target.number("window_id"), let pid = target.number("pid") else { return nil }
+        if screenshot.displayFiltered {
+            return try await captureVisibleWindow(id: id, pid: pid, frame: frame, width: screenshot.width, height: screenshot.height)
+        }
+        var args = target
+        args["session"] = .string(session); args["max_image_dimension"] = .number(1920)
+        args["include_screenshot"] = .bool(true); args["include_accessibility_tree"] = .bool(false)
+        args["verbose"] = .bool(true)
+        let reply = try await invoke("get_window_state", args)
+        guard let state = reply.object("structuredContent"), state.number("pid") == pid, state.number("window_id") == id,
+              Self.windowFrame(state.object("window_bounds")) == frame, state.bool("screenshot_frame_valid") == true,
+              let image = reply.array("content")?.compactMap(\.object).first(where: { $0.string("type") == "image" }),
+              let base64 = image.string("data"), base64.utf8.count <= 5_592_408 else { return nil }
+        return Data(base64Encoded: base64)
+    }
+
+    // A menu and the control underneath can paint the same icon at the click
+    // point. A coordinate has no element identity, so compare the whole window.
+    nonisolated static func matchesWindowPixels(_ observed: Data, _ current: Data, size: CGSize) -> Bool {
+        guard (1...1920).contains(size.width), (1...1920).contains(size.height),
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return false }
+        func decode(_ data: Data) -> CGImage? {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  CGFloat(image.width) == size.width, CGFloat(image.height) == size.height else { return nil }
+            return image
+        }
+        guard let original = decode(observed) else { return false }
+        if observed == current { return true }
+        // A change in PNG metadata or encoding can leave the visible image intact.
+        func bitmap(_ image: CGImage) -> CGContext? {
+            guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                          bytesPerRow: image.width * 4, space: colorSpace,
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            context.draw(image, in: CGRect(origin: .zero, size: size))
+            return context
+        }
+        guard let fresh = decode(current), let before = bitmap(original), let after = bitmap(fresh) else { return false }
+        return withExtendedLifetime((before, after)) {
+            guard let a = before.data, let b = after.data else { return false }
+            return memcmp(a, b, before.bytesPerRow * before.height) == 0
+        }
     }
     nonisolated static func actionRequest(session id: String, action: JSONObject) throws -> (String, JSONObject) {
         guard let kind = action.string("action"), let target = action.object("target") else { throw DesktopError(code: "invalid_arguments", message: "Missing desktop action target") }
@@ -659,8 +762,23 @@ actor NativeDriver: DesktopNativeDriver {
         let input = windowInputs.removeValue(forKey: id)
         if tool == "click", wire["capture_id"] != nil,
            let target = action.object("target"), target.number("pid") != nil {
-            let covers = input.map { $0.captureCovers + $0.covers } ?? []
-            try checkWindowPoint(action, target: target, foreground: wire.string("delivery_mode") == "foreground", covers: covers)
+            let hint = "Refresh the window before clicking. For changing content, prefer a supported element_ref from a fresh observation."
+            guard let input, input.target == target, let screenshot = input.screenshot, screenshot.id == wire.string("capture_id"),
+                  let frame = Self.windowFrame(action.object("window_bounds")) else {
+                throw DesktopError(code: "stale_observation", message: "The click has no matching window screenshot", hint: hint)
+            }
+            let current: Data?
+            do { current = try await currentPixels(session: id, target: target, frame: frame, screenshot: screenshot) }
+            catch let error as DesktopError where error.code == "session_ended" || error.code == "session_not_started" {
+                throw error
+            } catch { current = nil }
+            try Task.checkCancellation()
+            // Recheck the live window stack after the asynchronous capture.
+            try checkWindowPoint(action, target: target, foreground: wire.string("delivery_mode") == "foreground",
+                                 covers: input.captureCovers + input.covers)
+            guard let current, Self.matchesWindowPixels(screenshot.data, current, size: CGSize(width: screenshot.width, height: screenshot.height)) else {
+                throw DesktopError(code: "stale_observation", message: "The observed window image changed or could not be verified", hint: hint)
+            }
         }
         if let target = action.object("target"), let input {
             let keyboard = tool == "press_key" || (tool == "type_text" && wire["element_token"] == nil)
@@ -689,7 +807,7 @@ actor NativeDriver: DesktopNativeDriver {
         guard !closed else { return }; closed = true
         for operation in operations.values { operation.cancel() }
         while !operations.isEmpty { await Task.detached { try? await Task.sleep(nanoseconds: 10_000_000) }.value }
-        sessions.removeAll()
+        sessions.removeAll(); windowInputs.removeAll()
         if driver != nil {
             let operation = DriverOperation()
             let timer = Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if !Task.isCancelled { operation.cancel(timeout: true) } }
