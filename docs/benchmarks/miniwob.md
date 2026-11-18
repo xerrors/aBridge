@@ -31,9 +31,9 @@ npm run check
 
 ## 数据来自哪里
 
-使用 [Farama Foundation MiniWoB++](https://github.com/Farama-Foundation/miniwob-plusplus/tree/33c3b4ddef8c6eb67c57a29663d844b1eda7e614)，固定 commit `33c3b4ddef8c6eb67c57a29663d844b1eda7e614`，MIT 许可。任务、脚本、样式、图像保持上游原样；[来源清单](../../tools/bench/miniwob-agent-source.json) 保存每个文件的 SHA-256，下载缓存逐项校验。数据不是我们编写的业务题或根据模型成绩挑选的样例。
+使用 [Farama Foundation MiniWoB++](https://github.com/Farama-Foundation/miniwob-plusplus/tree/33c3b4ddef8c6eb67c57a29663d844b1eda7e614)，固定 commit `33c3b4ddef8c6eb67c57a29663d844b1eda7e614`，MIT 许可。任务、脚本、样式、图像保持上游原样；[来源清单](https://github.com/xerrors/aBridge/blob/main/tools/bench/miniwob-agent-source.json) 保存每个文件的 SHA-256，下载缓存逐项校验。数据不是我们编写的业务题或根据模型成绩挑选的样例。
 
-[冻结协议](../../tools/bench/agent-suite.json) 在正式运行前确定以下任务，每类使用数字种子 `0、1`，test 模式。上游通过种子生成文字、目标和界面布局，控制器调用 `Math.seedrandom(seed)`、`core.setDataMode('test')`、`core.startEpisodeReal()`。不手写答案，不根据失败修改样例，不重试或挑选最好结果。
+[冻结协议](https://github.com/xerrors/aBridge/blob/main/tools/bench/agent-suite.json) 在正式运行前确定以下任务，每类使用数字种子 `0、1`，test 模式。上游通过种子生成文字、目标和界面布局，控制器调用 `Math.seedrandom(seed)`、`core.setDataMode('test')`、`core.startEpisodeReal()`。不手写答案，不根据失败修改样例，不重试或挑选最好结果。
 
 | 任务                     | 内容                     | 原始限时 |
 | ------------------------ | ------------------------ | -------- |

@@ -27,3 +27,4 @@ coverage/
 ._*
 
 apps/linux-client/target/
+docs/.vitepress/cache/

@@ -2,7 +2,7 @@
 
 软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后执行完整检查，生成 Server、浏览器 ZIP、macOS Apple Silicon 包和 Linux CLI 包。
 
-项目采用根目录 [Apache-2.0](../LICENSE)；第三方组件保留各自许可证。候选构建成功、上传到商店、商店审核通过和 npm 实际可安装是不同状态。
+项目采用根目录 [Apache-2.0](https://github.com/xerrors/aBridge/blob/main/LICENSE)；第三方组件保留各自许可证。候选构建成功、上传到商店、商店审核通过和 npm 实际可安装是不同状态。
 
 ## npm
 
@@ -73,7 +73,7 @@ npm run package:macos
 
 ## Linux
 
-发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带各架构的 `abridge-client-<version>-<target>.tar.gz`、SHA-256 和体积报告。下载后按 [Linux 安装说明](../apps/linux-client/README.md#安装与绑定) 核对校验和。
+发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带各架构的 `abridge-client-<version>-<target>.tar.gz`、SHA-256 和体积报告。下载后按 [Linux 安装说明](https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md#安装与绑定) 核对校验和。
 
 ## Chrome 应用商店
 

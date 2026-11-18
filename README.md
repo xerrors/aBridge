@@ -199,6 +199,8 @@ npm run check
 
 检查覆盖格式、架构、类型、自动化测试、打包和评测报告一致性。启动开发版 Server 可使用 `npm run build` 和 `npm start -- --web`。
 
+官网与文档使用 VitePress，源码位于 `docs/`。在仓库根目录运行 `npm run docs:dev` 可本地预览，运行 `npm run docs:build` 可生成静态站点。
+
 | 文档                                           | 内容                                             |
 | ---------------------------------------------- | ------------------------------------------------ |
 | [安装与维护](docs/deployment.md)               | Docker、Node.js、App、反向代理、升级与 OIDC 配置 |

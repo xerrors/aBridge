@@ -33,7 +33,7 @@
 
 结果由 README 表格和原始快照生成，不手写分数：[可启动基线](miniwob-v2-baseline.json)、[修复版主集合](miniwob-v2-results.json)、[额外种子](miniwob-v2-extra.json)。
 
-[全量案例](cases-all.md)与[按标准审核后的案例](cases-conforming.md)分开提供。沿用[任务有效性政策](../../tools/bench-case-policy.json)，失败、超时、工具不足或 CLI 故障均不能作为剔除依据；当前没有任务不符合约定的独立证据。未知奖励与用量保持未知，不能当作零或推算完整美元成本。
+[全量案例](cases-all.md)与[按标准审核后的案例](cases-conforming.md)分开提供。沿用[任务有效性政策](https://github.com/xerrors/aBridge/blob/main/tools/bench-case-policy.json)，失败、超时、工具不足或 CLI 故障均不能作为剔除依据；当前没有任务不符合约定的独立证据。未知奖励与用量保持未知，不能当作零或推算完整美元成本。
 
 历史结果保留在[之前开发分支的快照](https://github.com/xerrors/aBridge/tree/b335d16b28eca4ce801e2dee687c0bfffce5a331/docs/benchmarks)，不从不同版本抽取最好样本，也不将额外种子或重复运行混入主集合分母。
 

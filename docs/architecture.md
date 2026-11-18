@@ -184,7 +184,7 @@ App 包内包含 AppKit 主程序、Swift 设备客户端、独立 Swift 更新�
 
 桌面接管保护只覆盖在途输入，读取和普通鼠标移动不触发暂停。手动暂停持久保存，远程请求不能解除。依赖及许可见 [第三方说明](third-party-notices.md)。
 
-安装、更新与维护见 [部署说明](deployment.md)，开发和验证要求见 [贡献指南](../.github/CONTRIBUTING.md)，安全限制见 [SECURITY.md](../.github/SECURITY.md)。
+安装、更新与维护见 [部署说明](deployment.md)，开发和验证要求见 [贡献指南](https://github.com/xerrors/aBridge/blob/main/.github/CONTRIBUTING.md)，安全限制见 [SECURITY.md](https://github.com/xerrors/aBridge/blob/main/.github/SECURITY.md)。
 
 ### macOS 更新
 
