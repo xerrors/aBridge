@@ -2,7 +2,8 @@
 import codex from "../../assets/brand/agents/codex-color.svg";
 import claude from "../../assets/brand/agents/claudecode-color.svg";
 import cursor from "../../assets/brand/agents/cursor.svg";
-import gemini from "../../assets/brand/agents/geminicli-color.svg";
+import deepseek from "../../assets/brand/agents/deepseek-color.svg";
+import workbuddy from "../../assets/brand/agents/workbuddy-color.svg";
 import opencode from "../../assets/brand/agents/opencode.svg";
 import yuxi from "../../assets/brand/agents/yuxi.svg";
 import { withBase } from "vitepress";
@@ -14,12 +15,13 @@ import linux from "../../assets/brand/platforms/linux.svg";
 import android from "../../assets/brand/platforms/android.svg";
 
 const agents = [
-  { name: "Codex CLI", icon: codex },
-  { name: "Claude Code", icon: claude },
-  { name: "Cursor", icon: cursor },
-  { name: "Gemini CLI", icon: gemini },
-  { name: "OpenCode", icon: opencode },
-  { name: "Yuxi", icon: yuxi },
+  { name: "WorkBuddy", icon: workbuddy, slot: "top" },
+  { name: "Codex CLI", icon: codex, slot: "upper-left" },
+  { name: "Cursor", icon: cursor, slot: "upper-right" },
+  { name: "Yuxi", icon: yuxi, slot: "center" },
+  { name: "DeepSeek Harness", icon: deepseek, slot: "lower-left" },
+  { name: "Claude Code", icon: claude, slot: "lower-right" },
+  { name: "OpenCode", icon: opencode, slot: "bottom" },
 ];
 const devices = [
   { name: "Chrome", icon: chrome, capability: "浏览器扩展" },
@@ -38,7 +40,7 @@ const devices = [
     <p class="section-lede">Agent 通过 MCP 发出请求，aBridge 核对权限，再交给你选定的设备执行。</p>
     <div class="topology" role="group" aria-label="支持 MCP 的 Agent 通过自托管的 aBridge 连接设备客户端">
       <ul class="honeycomb" aria-label="Agent 客户端示例">
-        <li v-for="agent in agents" :key="agent.name">
+        <li v-for="agent in agents" :key="agent.name" :style="{ gridArea: agent.slot }">
           <img :src="agent.icon" alt="" /><strong>{{ agent.name }}</strong>
         </li>
       </ul>
@@ -100,7 +102,15 @@ const devices = [
   justify-content: center;
   column-gap: 0;
   row-gap: 4px;
-  padding: 0 12px 45px;
+  padding: 0 12px;
+  grid-template-rows: repeat(6, 42px);
+  grid-template-areas:
+    ". top ."
+    "upper-left top upper-right"
+    "upper-left center upper-right"
+    "lower-left center lower-right"
+    "lower-left bottom lower-right"
+    ". bottom .";
 }
 .honeycomb li {
   position: relative;
@@ -109,7 +119,7 @@ const devices = [
   align-content: center;
   justify-items: center;
   gap: 5px;
-  height: 90px;
+  height: 100%;
   margin-inline: -10%;
   filter: drop-shadow(0 2px 2px #45618b15);
 }
@@ -126,17 +136,16 @@ const devices = [
   inset: 1px;
   background: white;
 }
-.honeycomb li:nth-child(3n + 2) {
-  transform: translateY(52%);
-}
 .honeycomb img {
   width: 31px;
   height: 31px;
   object-fit: contain;
 }
 .honeycomb strong {
+  max-width: 11ch;
+  text-align: center;
   font-size: 12px;
-  line-height: 1.25;
+  line-height: 1.15;
   font-weight: 580;
 }
 .bridge-lane {
@@ -214,20 +223,14 @@ const devices = [
     background: linear-gradient(#e8f2ff00, #d2e7ff);
   }
   .honeycomb {
-    grid-template-columns: repeat(3, 80px);
-    gap: 4px;
+    grid-template-columns: repeat(3, minmax(0, 76px));
+    grid-template-rows: repeat(6, 32px);
+    gap: 3px 0;
     padding: 0;
   }
   .honeycomb li {
-    margin-inline: 0;
-    height: 64px;
+    margin-inline: -10%;
     gap: 2px;
-  }
-  .honeycomb li:nth-child(3n + 2) {
-    transform: none;
-  }
-  .honeycomb li:nth-child(n + 4) {
-    transform: translateX(12%);
   }
   .honeycomb img {
     width: 21px;
