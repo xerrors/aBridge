@@ -62,7 +62,9 @@ actor NativeComputer {
     private func apps(_ args: JSONObject) async throws -> JSONObject {
         let query = args.string("query")?.lowercased()
         let apps = try await native.apps().filter { app in
-            if let query { return "\(app.string("name") ?? "")\n\(app.string("bundle_id") ?? "")".lowercased().contains(query) }
+            if let query {
+                return ["name", "localized_name", "bundle_id"].contains { app.string($0)?.lowercased().contains(query) == true }
+            }
             return app.bool("running") == true && (app.number("pid") ?? 0) > 0
         }
         var rows: [JSONValue] = []

@@ -140,7 +140,7 @@ Agent 高频使用的公开引用保持短：`observation_id` 为 `obs_` 加 8 �
 
 ## 桌面操作
 
-`computer_apps` 默认返回运行中的应用，`query` 可查找未启动的已安装应用。`computer_open(bundle_id=...)` 核对应用身份后启动或激活一次，返回目标窗口观察，需要 `input` 与 `screen`。macOS 优先观察可确认的焦点窗或主窗，多个候选无法判定时返回 `window_candidates`，由调用方显式选择。应用已启动但观察失败时保留启动结果，不自动再次启动。
+`computer_apps` 默认返回运行中的应用。`query` 匹配应用名、Bundle ID 和运行中应用的系统本地化名称，也可按应用名或 Bundle ID 查找未启动的已安装应用。`computer_open(bundle_id=...)` 核对应用身份后启动或激活一次，返回目标窗口观察，需要 `input` 与 `screen`。macOS 优先观察可确认的焦点窗或主窗，多个候选无法判定时返回 `window_candidates`，由调用方显式选择。应用已启动但观察失败时保留启动结果，不自动再次启动。
 
 `computer_windows` 按应用 PID 列出窗口，包含屏幕外窗口。`computer_observe` 只传 `pid` 时，以该 PID 返回的有效窗口为准：唯一窗口直接观察；多个窗口返回 `window_selection_required`，提示先调用 `computer_windows(pid=...)` 再传 `pid` 与 `window_id` 选择；没有窗口返回 `window_unavailable`。显式传入 `window_id` 时须同时提供 `pid`，且 ID 必须是有效的正安全整数；缺少 PID 或 ID 非法时返回 `invalid_arguments`，错误信息说明缺失字段或提示从 `computer_windows` 取得有效 ID。省略目标时复用会话已选窗口，无目标返回 `target_required`；失败不会替换已选窗口。空窗口列表不能单独证明权限或 Space 问题。
 

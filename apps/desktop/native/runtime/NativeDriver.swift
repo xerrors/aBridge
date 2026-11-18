@@ -270,7 +270,13 @@ actor NativeDriver: DesktopNativeDriver {
         let result = try await invoke("list_apps", [:])
         return (result.object("structuredContent")?.array("apps") ?? []).compactMap { value in
             guard let app = value.object else { return nil }
-            return app.filter { ["pid", "name", "bundle_id", "running", "active"].contains($0.key) }
+            var row = app.filter { ["pid", "name", "bundle_id", "running", "active"].contains($0.key) }
+            if app.bool("running") == true, let pid = app.number("pid").flatMap(pid_t.init(exactly:)), pid > 0,
+               let running = NSRunningApplication(processIdentifier: pid), let bundleID = running.bundleIdentifier,
+               bundleID == app.string("bundle_id"), let name = running.localizedName, !name.isEmpty, name != app.string("name") {
+                row["localized_name"] = .string(String(name.prefix(200)))
+            }
+            return row
         }
     }
     func windows(pid: Double? = nil) async throws -> [JSONObject] {
