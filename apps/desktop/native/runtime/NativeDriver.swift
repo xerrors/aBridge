@@ -629,7 +629,9 @@ actor NativeDriver: DesktopNativeDriver {
         let app = AXUIElementCreateApplication(process)
         guard let focused = elementAttribute(app, kAXFocusedWindowAttribute), axFrame(focused) == frame else { return unverified }
         let sameFrame = windows.filter { $0.frame == frame }
-        guard sameFrame.count == 1 || matchesWindowRoot(focused, app: app, target: target, state: state, frame: frame) else { return unverified }
+        if sameFrame.count != 1, !matchesWindowRoot(focused, app: app, target: target, state: state, frame: frame) {
+            return unverified
+        }
         let control = receivingControl(app, window: focused)
         return WindowInput(target: target, wasVisible: true, covers: covers, captureCovers: captureCovers, focusedWindow: focused, focusedControl: control, editable: isEditable(control))
     }
