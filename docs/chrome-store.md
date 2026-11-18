@@ -48,6 +48,7 @@ You must run or have access to an aBridge Server and configure an MCP client wit
 | storage              | Save the chosen Server, browser device binding, pause state, connection diagnostics and operation receipts needed to avoid replaying interrupted actions.                                                                |
 | identity             | Open the user-selected Server authorization page and receive its one-time, PKCE-bound device authorization callback. This does not request access to the user’s Google account.                                          |
 | alarms               | Retry connection after the extension worker is suspended or connectivity is interrupted, while Chrome is running.                                                                                                        |
+| webNavigation        | Identify new tabs opened by the active task tab during an authorized action, including links that omit opener information. Events are matched to the task's source tab.                                                  |
 | Optional host access | Contact only the Server origin entered during binding. The extension requests that specific origin at the time the user configures it.                                                                                   |
 
 权限需保持与单一用途相关且范围最小。[官方 Privacy practices 指南](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy)

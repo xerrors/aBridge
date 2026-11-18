@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           npm --version
           distribution=latest
-          if [[ "$GITHUB_REF_NAME" == v0.* || "$GITHUB_REF_NAME" == *-* ]]; then distribution=next; fi
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then distribution=next; fi
           npm publish dist/releases/*.tgz --access public --provenance --tag "$distribution"
   github-release:
     needs: [build, linux-client, npm]
@@ -135,15 +135,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          extra=()
-          if [[ "$GITHUB_REF_NAME" == v0.* || "$GITHUB_REF_NAME" == *-* ]]; then extra+=(--prerelease); fi
+          extra=(--latest)
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then extra=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" release/* --verify-tag --title "aBridge $GITHUB_REF_NAME" --generate-notes "${extra[@]}"
       - name: Explain npm status
         if: needs.npm.result == 'skipped'
         run: echo 'npm publication skipped. Configure the package trusted publisher and set NPM_PUBLISH_ENABLED=true.' >> "$GITHUB_STEP_SUMMARY"
   container:
     needs: github-release
-    if: startsWith(github.ref_name, 'v0.') == false && contains(github.ref_name, '-') == false
+    if: contains(github.ref_name, '-') == false
     uses: ./.github/workflows/container.yml
     with:
       tag: ${{ github.ref_name }}

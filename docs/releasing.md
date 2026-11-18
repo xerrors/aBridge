@@ -35,7 +35,7 @@ npm publish dist/releases/*.tgz --access public
 
 首次引导也可先保持 `NPM_PUBLISH_ENABLED=false`，推送 tag 生成 GitHub 候选产物，再人工发布同版本首包、配置 npm 信任并打开该变量。之后先递增根版本，再创建新的 tag；不要对已人工发布的同版本重跑 npm 发布。
 
-0.x 开发候选版本及带预发布后缀的版本使用 npm `next`，并标记为 GitHub Pre-release；1.0 及以上无预发布后缀的稳定版本使用 npm `latest`。已存在版本不可覆盖；修改版本后再创建新的 tag。
+带预发布后缀的版本使用 npm `next`，并标记为 GitHub Pre-release。无后缀的版本作为正式版发布，使用 npm `latest`。已存在版本不可覆盖；修改版本后再创建新的 tag。
 
 发布验证后，Server 的使用入口为 `npx @xerrors/abridge --web`；在确认 npm 上实际存在之前，不将这个入口表述为已可用。
 
@@ -85,6 +85,6 @@ npm run package:macos
 
 ## 容器镜像发布
 
-`release.yml` 在正式 GitHub Release 创建成功后显式调用可复用的 `.github/workflows/container.yml` 构建镜像，也支持手动输入已发布的正式 tag 补发。使用 `GITHUB_TOKEN` 创建 Release 不会触发另一个 release 事件工作流，因此发布链路直接调用。0.x 及带预发布后缀的候选版本默认不生成容器镜像。使用对应 tag 的源码和当前 Dockerfile，在原生 amd64、arm64 Linux runner 分别构建并验收健康接口、页面脚本、管理员认证及 Server 分发边界，再向 GHCR 推送版本和 `latest` 多架构清单。发布权限使用临时 `GITHUB_TOKEN`，不配置长期 registry token。
+`release.yml` 在正式 GitHub Release 创建成功后显式调用可复用的 `.github/workflows/container.yml` 构建镜像，也支持手动输入已发布的正式 tag 补发。使用 `GITHUB_TOKEN` 创建 Release 不会触发另一个 release 事件工作流，因此发布链路直接调用。带预发布后缀的版本不生成容器镜像。使用对应 tag 的源码和当前 Dockerfile，在原生 amd64、arm64 Linux runner 分别构建并验收健康接口、页面脚本、管理员认证及 Server 分发边界，再向 GHCR 推送版本和 `latest` 多架构清单。发布权限使用临时 `GITHUB_TOKEN`，不配置长期 registry token。
 
 首次推送后须在 GitHub Package 设置中将镜像设为 Public，并验证匿名拉取；仓库公开不代表首次创建的容器包自动公开。部署命令见[Docker 镜像](deployment.md#docker-镜像)。
