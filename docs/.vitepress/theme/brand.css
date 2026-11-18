@@ -259,82 +259,6 @@ body:has(.brand-page) {
   font-size: 17px;
   line-height: 1.8;
 }
-.runtime-path {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  list-style: none;
-  padding: 36px clamp(22px, 3vw, 44px);
-  margin: 28px 0 0;
-  border-radius: 10px;
-  background: #edf4fb;
-}
-.path-head {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 25px;
-}
-.node-icon {
-  display: grid;
-  place-items: center;
-  width: 46px;
-  height: 46px;
-  border: 1px solid #bccfe0;
-  border-radius: 9px;
-  background: #fff;
-  color: #205c96;
-  flex-shrink: 0;
-}
-.node-icon svg {
-  width: 24px;
-  height: 24px;
-  stroke-width: 1.65;
-}
-.server-icon {
-  background: #0066dd;
-  border-color: #0066dd;
-  color: white;
-}
-.path-wire {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 1;
-  margin-right: 14px;
-  color: #405e7a;
-  font:
-    13px ui-monospace,
-    monospace;
-}
-.path-wire:before,
-.path-wire:after {
-  content: "";
-  height: 1px;
-  background: #a6bdd2;
-  flex: 1;
-}
-.path-wire svg {
-  position: absolute;
-  right: -3px;
-  color: #809cb5;
-}
-.runtime-path h3 {
-  font-size: 21px;
-  line-height: 1.4;
-  letter-spacing: -0.035em;
-  font-weight: 630;
-  margin-bottom: 9px;
-}
-.runtime-path p {
-  padding-right: clamp(16px, 3vw, 42px);
-  font-size: 15px;
-  color: #405468;
-  line-height: 1.8;
-}
-.runtime-path li:last-child p {
-  padding-right: 0;
-}
 .benchmark-section {
   --run-cell: clamp(8px, 1vw, 14px);
   display: grid;
@@ -437,19 +361,8 @@ body:has(.brand-page) {
   .brand-page {
     padding: 0 22px;
   }
-  .runtime-path,
   .benchmark-section {
     grid-template-columns: 1fr;
-  }
-  .runtime-path {
-    gap: 25px;
-    padding: 24px;
-  }
-  .path-head {
-    margin-bottom: 12px;
-  }
-  .path-wire {
-    flex: 0 1 140px;
   }
   .benchmark-section {
     gap: 24px;

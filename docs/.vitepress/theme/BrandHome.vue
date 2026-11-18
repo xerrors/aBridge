@@ -83,6 +83,7 @@ const selected = ref(clients[0]);
       </div>
       <div class="figure-frame"><BridgeFigure /></div>
     </section>
+    <RuntimeSection />
     <section class="device-section" aria-labelledby="client-title">
       <div class="device-heading">
         <h2 id="client-title">接入你的设备</h2>
@@ -115,7 +116,6 @@ const selected = ref(clients[0]);
         </div>
       </div>
     </section>
-    <RuntimeSection />
     <BenchmarkSection />
     <footer class="brand-footer">
       <img :src="wordmark" alt="aBridge" /><a href="https://github.com/xerrors/aBridge/blob/main/LICENSE"

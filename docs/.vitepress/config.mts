@@ -19,7 +19,7 @@ export default defineConfig({
     siteTitle: false,
     logo: { src: "/assets/brand/wordmark.svg", alt: "aBridge 首页" },
     nav: [
-      { text: "运行机制", link: "/#runtime" },
+      { text: "工作原理", link: "/#runtime" },
       { text: "任务评测", link: "/#benchmarks" },
       { text: "文档", link: "/guide/start" },
       { text: "GitHub", link: "https://github.com/xerrors/aBridge" },
