@@ -22,7 +22,8 @@ const clients = [
       "将扩展装在你选定的 Chrome 用户配置中。Agent 可以沿用已有的登录状态，在独立标签页里查资料、填表单。",
     requirement: "Chrome 116+",
     link: "/browser-profile-design.html",
-    prompt: "打开项目看板，找出本周到期的任务。",
+    prompt:
+      "先在小红书上搜搜过年适合送长辈的礼品，再去淘宝找一找。挑 4 件单价在 300 到 600 元之间的礼品，放进购物车，把每件的价格报给我。",
     capabilities: ["观察页面", "导航", "表单操作"],
   },
   {
@@ -34,7 +35,8 @@ const clients = [
       "在 Mac 上开启所需的系统权限。Agent 可以查看应用窗口、使用键盘和鼠标，也可以通过 Shell 和文件工具处理本机资料。",
     requirement: "Apple Silicon · macOS 14+",
     link: "/deployment.html#macos-app",
-    prompt: "打开日历，查看我明天上午的安排。",
+    prompt:
+      "在我的 Mac 上用腾讯会议预约下周二上午 12 点的会议。然后登录我的网易邮箱，把会议信息发给联系人“黄玉川”，并附上我桌面上的设计说明书。",
     capabilities: ["屏幕与键鼠", "Shell", "文件读写"],
   },
   {
@@ -46,7 +48,8 @@ const clients = [
       "用 Device Token 绑定 Linux 主机，按需启用 Shell 和文件权限。客户端支持通过 systemd 在后台运行。",
     requirement: "Linux amd64 / arm64",
     link: "/deployment.html#linux-cli",
-    prompt: "查看这个项目最新一次构建的日志。",
+    prompt:
+      "帮我看看这台 Linux 主机的 CPU、内存和磁盘占用，再逐个检查 Docker 容器的运行状态。把监控结果汇总给我，有异常的单独指出来。",
     capabilities: ["Shell", "文件读写"],
   },
   {
@@ -58,7 +61,7 @@ const clients = [
       "从源码构建预览客户端和配套 Server。授权后，Agent 可以查看屏幕、点按和滑动，也可以读写你选定的目录。",
     requirement: "Android 13+ · 源码构建",
     link: "https://github.com/xerrors/aBridge/tree/main/apps/android",
-    prompt: "打开设置，查看这台手机的系统版本。",
+    prompt: "帮我在手机日历里添加下周二上午 12 点的日程，然后给小汪发短信：“下周二我有个会，你先吃饭”。",
     capabilities: ["屏幕与触控", "文本输入", "授权目录"],
   },
 ];
