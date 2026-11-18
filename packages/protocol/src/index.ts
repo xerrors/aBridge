@@ -664,6 +664,13 @@ export const operationFrameSchema = deviceDispatchEnvelopeSchema.extend({
   tool: z.enum(Object.keys(TOOL_CAPABILITIES) as [DeviceTool, ...DeviceTool[]]),
 });
 export type OperationFrame = z.infer<typeof operationFrameSchema>;
+export const deviceCancelSchema = z.object({
+  type: z.literal("cancel"),
+  connection_epoch: z.number().int().positive(),
+  operation_ids: z.array(z.string().min(1)),
+  caller_operation_id: z.string().min(1).optional(),
+  reason: z.string().optional(),
+});
 export const epochSchema = z.number().int().nonnegative();
 
 /** Shared device envelopes; consumers validate capability-specific tool admission. */

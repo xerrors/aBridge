@@ -37,6 +37,7 @@ final class DeviceNetworkDelegate: NSObject, URLSessionTaskDelegate, @unchecked 
 }
 
 actor DeviceClient {
+    private enum CancellationSource { case caller, stop }
     private struct Admission {
         let hash: String, session: String
         let capabilities: Set<String>
@@ -47,6 +48,7 @@ actor DeviceClient {
         let session: String, client: String
         let capabilities: Set<String>
         let task: Task<Void, Never>
+        var cancellation: CancellationSource?
     }
     private let storage: NativeStorage
     private let contract: NativeContract
@@ -202,7 +204,9 @@ actor DeviceClient {
         case "dispatch":
             let identity = connection
             Task { do { try await self.dispatch(frame) } catch { self.failConnection(identity) } }
-        case "cancel": await stopOperations(Set((frame.array("operation_ids") ?? []).compactMap(\.string)))
+        case "cancel":
+            let caller = try? contract.validate("cancel", frame).string("caller_operation_id")
+            await stopOperations(Set((frame.array("operation_ids") ?? []).compactMap(\.string)), callerOperationID: caller, wait: false)
         case "session_close":
             if let id = frame.string("session_id") {
                 closedSessions.insert(id)
@@ -268,17 +272,28 @@ actor DeviceClient {
         do {
             try Task.checkCancellation()
             result = try await executor.execute(id: id, session: frame.string("session_id")!, tool: tool, arguments: arguments)
-            try Task.checkCancellation()
-            if config.paused || config.revoked == true { throw CancellationError() }
+            guard let running = operations[id], !config.paused, config.revoked != true, !stopping,
+                  status == "online", socket != nil, identity == self.connection, monotonicSeconds() - lastAck < lease,
+                  !closedSessions.contains(running.session), running.capabilities.allSatisfy({ config.capabilities[$0] == true && serverCapabilities.contains($0) }) else { throw CancellationError() }
+            if Task.isCancelled {
+                guard running.cancellation == .caller, tool == "computer_act", result.bool("action_executed") == true else { throw CancellationError() }
+                result = ["action_executed": .bool(true), "business_verified": .bool(false)]
+                if arguments.bool("observe_after") != false || arguments.bool("screenshot") == true {
+                    result["observation_error"] = .object(["code": .string("operation_cancelled"), "message": .string("Action delivered; follow-up observation unavailable after cancellation")])
+                }
+            }
         } catch {
             let nativeFailure = error as? DesktopError
             let cancelled = Task.isCancelled || error is CancellationError || nativeFailure?.code == "operation_cancelled"
             let timedOut = nativeFailure?.code == "driver_timeout"
-            if let nativeFailure, !cancelled, ["refused", "failed"].contains(nativeFailure.outcome), nativeFailure.code != "outcome_unknown" {
+            let screenRead = operations[id]?.capabilities == ["screen"]
+            if cancelled && screenRead {
+                outcome = "cancelled"
+                failure = ["code": .string("operation_cancelled"), "message": .string("The desktop read was cancelled")]
+            } else if let nativeFailure, !cancelled, ["refused", "failed"].contains(nativeFailure.outcome), nativeFailure.code != "outcome_unknown" {
                 outcome = nativeFailure.outcome
                 failure = nativeFailure.json
-            } else if !cancelled, ["computer_apps", "computer_windows", "computer_observe"].contains(tool) {
-                // These tools do not deliver input, so a missing driver result is a read failure.
+            } else if screenRead {
                 outcome = "failed"
                 failure = [
                     "code": .string(timedOut ? "driver_timeout" : "driver_error"),
@@ -293,19 +308,22 @@ actor DeviceClient {
         }
         do {
             try journal!.finish(id: id, status: outcome)
-            operations.removeValue(forKey: id); try await writeStatus()
+            operations.removeValue(forKey: id)
             guard identity == connection, frame.number("connection_epoch") == epoch else { return }
             var response: JSONObject = ["type": .string("result"), "operation_id": .string(id), "connection_epoch": .number(epoch), "status": .string(outcome), "result": .object(result)]
             if let failure { response["error"] = .object(failure) }
             try await send(response)
+            try await writeStatus()
         } catch { operations.removeValue(forKey: id); failConnection(identity) }
     }
-    private func stopOperations(_ ids: Set<String>? = nil) async {
+    private func stopOperations(_ ids: Set<String>? = nil, callerOperationID: String? = nil, wait: Bool = true) async {
         for id in admissions.keys where ids == nil || ids!.contains(id) { admissions[id]?.cancelled = true }
         let selected = operations.filter { ids == nil || ids!.contains($0.key) }
-        for operation in selected.values { operation.task.cancel() }
-        for operation in selected.values { await operation.task.value }
-        for operation in selected.values where !operation.capabilities.isDisjoint(with: ["screen", "input"]) { await executor.closeSession(operation.session) }
+        for (id, operation) in selected {
+            if operation.cancellation != .stop { operations[id]?.cancellation = id == callerOperationID ? .caller : .stop }
+            operation.task.cancel()
+        }
+        if wait { for operation in selected.values { await operation.task.value } }
     }
     func control(_ request: JSONObject) async throws -> JSONObject {
         switch request.string("command") {

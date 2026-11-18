@@ -2,20 +2,38 @@ import Foundation
 
 actor AdmissionDriver: DesktopNativeDriver {
     private var gates: [String] = []
+    private var observationGate: String?
+    private var heldAfterCancel: String?
+    private var heldContinuation: CheckedContinuation<Void, Never>?
+    private var nextAction: (id: String, confirm: Bool)?
+    func simulateAction(_ id: String, confirm: Bool) { nextAction = (id, confirm) }
     private var failure: String?
     func fail(_ mode: String) { failure = mode }
     private var waiting = Set<String>()
     private var released = Set<String>()
-    func arm(_ id: String) { gates.append(id) }
-    func releaseGate(_ id: String) { released.insert(id) }
-    func releaseAll() { released.formUnion(gates); released.formUnion(waiting); gates.removeAll() }
-    func diagnostics(initialize: Bool) async -> JSONObject {
-        if initialize, !gates.isEmpty {
-            let id = gates.removeFirst(); waiting.insert(id)
-            emitJSON(["event": .string("entered"), "id": .string(id)])
-            while !released.contains(id) && !Task.isCancelled { try? await sleepMilliseconds(5) }
-            waiting.remove(id)
+    func arm(_ id: String, observation: Bool, holdAfterCancel: Bool) {
+        if observation { observationGate = id } else { gates.append(id) }
+        if holdAfterCancel { heldAfterCancel = id }
+    }
+    func releaseGate(_ id: String) {
+        released.insert(id)
+        if id == heldAfterCancel { heldContinuation?.resume(); heldContinuation = nil; heldAfterCancel = nil }
+    }
+    func releaseAll() { for id in gates + Array(waiting) { releaseGate(id) }; gates.removeAll() }
+    private func waitAtGate(_ id: String) async throws {
+        waiting.insert(id); defer { waiting.remove(id) }
+        emitJSON(["event": .string("entered"), "id": .string(id)])
+        do { while !released.contains(id) { try await sleepMilliseconds(5) } }
+        catch {
+            if heldAfterCancel == id {
+                emitJSON(["event": .string("cancelling"), "id": .string(id)])
+                await withCheckedContinuation { heldContinuation = $0 }
+            }
+            throw error
         }
+    }
+    func diagnostics(initialize: Bool) async -> JSONObject {
+        if initialize, !gates.isEmpty { try? await waitAtGate(gates.removeFirst()) }
         return ["driver": .object(["ready": .bool(true)]), "permissions": .object(["screen": .bool(true), "input": .bool(true)])]
     }
     private func throwFailure() throws {
@@ -36,6 +54,7 @@ actor AdmissionDriver: DesktopNativeDriver {
     func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? { nil }
     func open(bundleID: String) async throws { throw DesktopError(code: "fixture_forbidden", message: "No real applications in fixture") }
     func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject {
+        if let id = observationGate { observationGate = nil; try await waitAtGate(id) }
         try throwFailure()
         return [
             "elements": .array([.object(["token": .string("fixture-token"), "role": .string("AXButton"), "actions": .array([.string("AXPress")])])]),
@@ -44,6 +63,12 @@ actor AdmissionDriver: DesktopNativeDriver {
     }
     func act(session: String, action: JSONObject) async throws -> JSONObject {
         try throwFailure()
+        if let simulation = nextAction {
+            nextAction = nil
+            if !simulation.confirm { try await waitAtGate(simulation.id) }
+            emitJSON(["event": .string("delivered"), "id": .string(simulation.id)])
+            return ["action_executed": .bool(true), "business_verified": .bool(false), "summary": .string("private action summary")]
+        }
         throw DesktopError(code: "fixture_forbidden", message: "No real input in fixture")
     }
     func release(session: String) async {}
@@ -63,7 +88,8 @@ actor AdmissionDriver: DesktopNativeDriver {
             let id = command.string("id") ?? ""
             switch command.string("command") {
             case "fail": await driver.fail(id); emitJSON(["event": .string("failed"), "id": .string(id)])
-            case "arm": await driver.arm(id); emitJSON(["event": .string("armed"), "id": .string(id)])
+            case "arm": await driver.arm(id, observation: command.bool("observation") == true, holdAfterCancel: command.bool("holdAfterCancel") == true); emitJSON(["event": .string("armed"), "id": .string(id)])
+            case "action": await driver.simulateAction(id, confirm: command.bool("confirm") == true); emitJSON(["event": .string("armed"), "id": .string(id)])
             case "release": await driver.releaseGate(id); emitJSON(["event": .string("released"), "id": .string(id)])
             case "control":
                 do { emitJSON(["event": .string("control"), "id": .string(id), "result": .object(try await client.control(command.object("request") ?? [:]))]) }

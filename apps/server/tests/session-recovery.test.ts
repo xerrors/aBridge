@@ -151,6 +151,98 @@ test("activity returns fresh leases for dispatch, completion, status and duplica
   }
 });
 
+test("session closure supersedes caller cancellation before a late action receipt", async () => {
+  const f = await fixture();
+  try {
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    const action = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_act",
+      { observation_id: "obs_fixture1", action: { type: "click", element_ref: "e1" } },
+      undefined,
+      false,
+    );
+    const cancel = () => f.control.cancelOperation(f.agentConnection, action.operation_id);
+    const whileActive = cancel();
+    await f.control.closeSession(f.agentConnection, session.id);
+    const afterClose = cancel();
+    const cancellations = f.frames.filter((frame) => frame.type === "cancel");
+    assert.deepEqual(
+      cancellations.map((frame) => frame.caller_operation_id),
+      [action.operation_id, undefined, undefined],
+    );
+    await f.complete(action.operation_id, { action_executed: true, summary: "private content" });
+    for (const receipt of await Promise.all([whileActive, afterClose])) {
+      assert.equal(receipt.status, "outcome_unknown");
+      assert.equal(receipt.error?.code, "operation_cancelled");
+      assert.equal(receipt.result, undefined);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("a result deadline fails desktop reads in place and keeps unconfirmed writes unknown", async (t) => {
+  const f = await fixture();
+  try {
+    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const missing = [
+      f.control.execute(f.agentConnection, session.id, "computer_apps", {}),
+      f.control.execute(f.agentConnection, session.id, "computer_windows", { pid: 10 }),
+      f.control.execute(f.agentConnection, session.id, "computer_observe", { desktop: true }),
+      f.control.execute(f.agentConnection, session.id, "computer_open", { bundle_id: "org.example.Fixture" }),
+    ];
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(30_000);
+    const receipts = await Promise.all(missing);
+    assert.deepEqual(
+      receipts.map((result) => result.status),
+      ["failed", "failed", "failed", "outcome_unknown"],
+    );
+    assert.ok(
+      receipts.every(
+        (result) => result.error?.code === "result_timeout" && result.session?.status === "active",
+      ),
+    );
+    assert.deepEqual(
+      f.frames.filter((frame) => frame.type === "cancel").map((frame) => frame.operation_ids),
+      receipts.map((result) => [result.operation_id]),
+    );
+    for (const receipt of receipts) {
+      await f.complete(receipt.operation_id);
+      assert.equal(f.control.operationStatus(f.agentConnection, receipt.operation_id).status, receipt.status);
+    }
+    const refresh = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_observe",
+      { desktop: true },
+      undefined,
+      false,
+    );
+    await f.complete(refresh.operation_id, { observation_id: "obs_fixture1" });
+    assert.equal(f.control.operationStatus(f.agentConnection, refresh.operation_id).status, "executed");
+    const write = receipts[3]!;
+    const replay = await f.control.execute(
+      f.agentConnection,
+      session.id,
+      "computer_open",
+      { bundle_id: "org.example.Fixture" },
+      write.operation_id,
+    );
+    assert.equal(replay.status, "outcome_unknown");
+    assert.equal(
+      f.frames.filter((frame) => frame.type === "dispatch" && frame.operation_id === write.operation_id)
+        .length,
+      1,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("discovery and input occupancy expose only this Agent connection's sessions without renewing or taking over", async () => {
   const f = await fixture();
   try {
