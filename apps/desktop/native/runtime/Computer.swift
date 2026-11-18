@@ -3,10 +3,15 @@ import Darwin
 
 actor NativeComputer {
     private struct Observation {
+        struct ElementReference {
+            let token: String
+            let actions: [String]
+        }
         let id: String
         let created: Double
         let target: JSONObject
-        var refs: [String: String] = [:]
+        var refs: [String: ElementReference] = [:]
+        var available = Set<String>()
         var width: Double?
         var height: Double?
         let captureID: String?
@@ -75,25 +80,65 @@ actor NativeComputer {
         if windows.isEmpty { result["guidance"] = .string("Refresh computer_apps/windows and observe a returned pid/window_id; off-screen windows are included") }
         return result
     }
-    private func focus() async throws -> String? {
+    private func focus(ordinaryOnly: Bool) async throws -> String? {
         do {
             let active = try await native.apps().filter { $0.bool("active") == true && $0.bool("running") == true }
             guard active.count == 1, let pid = active[0].number("pid") else { return nil }
-            let windows = try await native.windows(pid: pid).filter { $0.number("pid") == pid && $0.bool("is_on_screen") == true && $0.number("layer") == 0 }
+            let windows = try await visibleWindows(pid).filter { !ordinaryOnly || $0.number("layer") == 0 }
             guard !windows.isEmpty, let windowID = try await native.focusedWindow(pid: pid, candidates: windows) else { return nil }
             return "\(pid):\(windowID)"
         } catch { try Task.checkCancellation(); return nil }
     }
+    private func visibleWindows(_ pid: Double) async throws -> [JSONObject] {
+        try await native.visibleWindows(pid: pid).filter {
+            NativeDriver.windowFrame($0.object("bounds")) != nil
+        }
+    }
+    private func followUpTarget(_ target: JSONObject, before: [JSONObject], focusedBefore: Double?) async throws -> JSONObject {
+        guard let pid = target.number("pid"), let id = target.number("window_id") else { return target }
+        let windows = try await visibleWindows(pid)
+        let focused = try await native.focusedWindow(pid: pid, candidates: windows)
+        if let focused, focused != focusedBefore {
+            return ["pid": .number(pid), "window_id": .number(focused)]
+        }
+        let current = windows.first { $0.number("window_id") == id }
+        let previous = before.first { $0.number("window_id") == id }
+        if let source = current ?? previous, let frame = NativeDriver.windowFrame(source.object("bounds")) {
+            let appearedAbove = windows.filter {
+                guard let candidateID = $0.number("window_id"), candidateID != id,
+                      let bounds = NativeDriver.windowFrame($0.object("bounds")), bounds.intersects(frame) else { return false }
+                let oldCandidate = before.first { $0.number("window_id") == candidateID }
+                if current == nil { return oldCandidate == nil }
+                guard let order = source.number("z_index"), let depth = $0.number("z_index"), depth > order else { return false }
+                guard let oldCandidate else { return true }
+                guard let previousOrder = previous?.number("z_index"), let previousDepth = oldCandidate.number("z_index") else { return false }
+                return previousDepth <= previousOrder
+            }
+            if appearedAbove.count == 1, let nextID = appearedAbove[0]["window_id"] {
+                return ["pid": .number(pid), "window_id": nextID]
+            }
+            if appearedAbove.count > 1 {
+                throw DesktopError(code: "window_selection_required", message: "Multiple windows appeared above the previous target", hint: "Use computer_windows for the same PID and observe the intended window explicitly.")
+            }
+        }
+        if current == nil, previous != nil {
+            if let focused { return ["pid": .number(pid), "window_id": .number(focused)] }
+            throw DesktopError(code: "window_unavailable", message: "The previous target is no longer visible", hint: "Use computer_windows for the same PID and observe the intended window explicitly.")
+        }
+        return target
+    }
     private func open(_ session: String, _ args: JSONObject) async throws -> JSONObject {
         guard let bundle = args.string("bundle_id"), try await native.apps().contains(where: { $0.string("bundle_id") == bundle }) else { throw DesktopError(code: "app_not_found", message: "Application is not installed") }
-        try assertOpen(session); try await native.open(bundleID: bundle)
+        try assertOpen(session)
+        observations.removeValue(forKey: session); targets.removeValue(forKey: session)
+        try await native.open(bundleID: bundle)
         var base: JSONObject = ["launch_requested": .bool(true), "bundle_id": .string(bundle)]
         let followUp = Task { try await self.openObservation(session, args, bundle) }
         let timer = Task { try? await Task.sleep(nanoseconds: 8_000_000_000); if !Task.isCancelled { followUp.cancel() } }
         defer { timer.cancel() }
         do {
-            let observation = try await withTaskCancellationHandler { try await followUp.value } onCancel: { followUp.cancel() }
-            base["observation"] = .object(observation)
+            let window = try await withTaskCancellationHandler { try await followUp.value } onCancel: { followUp.cancel() }
+            base.merge(window) { _, new in new }
         } catch {
             try Task.checkCancellation()
             base["observation_error"] = .object(["code": .string((error as? DesktopError)?.code ?? "window_unavailable"), "message": .string("Application launch requested; follow-up window observation unavailable")])
@@ -101,16 +146,24 @@ actor NativeComputer {
         return base
     }
     private func openObservation(_ session: String, _ args: JSONObject, _ bundle: String) async throws -> JSONObject {
-        for _ in 0..<16 {
+        for attempt in 0..<16 {
             try assertOpen(session)
             if let app = try await native.apps().first(where: { $0.string("bundle_id") == bundle && $0.bool("running") == true && ($0.number("pid") ?? 0) > 0 }), let pid = app.number("pid") {
-                let windows = try await native.windows(pid: pid).filter { $0.number("layer") == 0 && ($0.object("bounds")?.number("width") ?? 0) > 0 && ($0.object("bounds")?.number("height") ?? 0) > 0 }.sorted { a, b in
-                    if a.bool("is_on_screen") != b.bool("is_on_screen") { return a.bool("is_on_screen") == true }
-                    let aa = (a.object("bounds")?.number("width") ?? 0) * (a.object("bounds")?.number("height") ?? 0)
-                    let ba = (b.object("bounds")?.number("width") ?? 0) * (b.object("bounds")?.number("height") ?? 0)
-                    return aa > ba
+                let windows = try await visibleWindows(pid)
+                let ordinary = windows.filter { $0.number("layer") == 0 }
+                var id = try await native.focusedWindow(pid: pid, candidates: windows)
+                if id == nil { id = try await native.mainWindow(pid: pid, candidates: ordinary) }
+                if id == nil && attempt == 15 && windows.count == 1 && ordinary.count == 1 { id = ordinary[0].number("window_id") }
+                if let id {
+                    let observation = try await observe(session, ["pid": .number(pid), "window_id": .number(id), "screenshot": .bool(args.bool("screenshot") ?? false)])
+                    return ["observation": .object(observation)]
                 }
-                if let window = windows.first, let id = window["window_id"] { return try await observe(session, ["pid": .number(pid), "window_id": id, "screenshot": .bool(args.bool("screenshot") ?? false)]) }
+                if attempt == 15 && !windows.isEmpty {
+                    return [
+                        "observation_error": .object(DesktopError(code: "window_selection_required", message: "Cannot identify the application's focused or main window", hint: "Choose a window candidate and call computer_observe with its PID and window ID.").json),
+                        "window_candidates": .array(windows.prefix(16).map { .object($0.filter { ["pid", "window_id", "title", "layer"].contains($0.key) }) })
+                    ]
+                }
             }
             try await Task.sleep(nanoseconds: 250_000_000)
         }
@@ -134,11 +187,11 @@ actor NativeComputer {
         let screenshot = args.bool("screenshot") != false
         let desktop = target.bool("desktop") == true
         let windowFocus = target.number("pid").flatMap { pid in target.number("window_id").map { "\(pid):\($0)" } }
-        let before = desktop || screenshot ? try await focus() : nil
+        let before = desktop || screenshot ? try await focus(ordinaryOnly: desktop) : nil
         try assertOpen(session)
         let raw = try await native.observe(session: session, target: target, screenshot: screenshot)
         try assertOpen(session)
-        let after = before != nil && (desktop || before == windowFocus) ? try await focus() : nil
+        let after = before != nil && (desktop || before == windowFocus) ? try await focus(ordinaryOnly: desktop) : nil
         try assertOpen(session)
         var observation = Observation(id: try referenceID(), created: now(), target: target, width: raw.number("width"), height: raw.number("height"), captureID: raw.string("capture_id"), windowBounds: raw.object("window_bounds"), focus: before == after ? before : nil)
         let result = try compact(raw, &observation, query: args.string("query"))
@@ -148,6 +201,7 @@ actor NativeComputer {
     private func compact(_ raw: JSONObject, _ observation: inout Observation, query: String?) throws -> JSONObject {
         var result: JSONObject = ["observation_id": .string(observation.id), "elements": .array([])]
         for key in ["app_name", "window_title"] { if let value = raw.string(key) { result[key] = .string(String(value.prefix(200))) } }
+        result["keyboard_focus"] = raw["keyboard_focus"]
         if observation.target.number("pid") != nil { result["window"] = .object(observation.target) }
         else { result["desktop"] = .bool(true) }
         result["focus_status"] = .string(observation.focus != nil ? "confirmed" : "unconfirmed")
@@ -179,8 +233,8 @@ actor NativeComputer {
             if element.bool("selected") == true { row["selected"] = .bool(true) }
             rows.append(.object(row)); result["elements"] = .array(rows)
             if try result.encoded().count > 7000 { rows.removeLast(); truncated = true; continue }
-            if actionable {
-                observation.refs[ref] = element.string("token")
+            if actionable, let token = element.string("token") {
+                observation.refs[ref] = .init(token: token, actions: supported)
                 elementActions.formUnion(supported)
             }
         }
@@ -190,7 +244,7 @@ actor NativeComputer {
         }
         let pixel = result["image_base64"] != nil && (observation.width ?? 0) > 0 && (observation.height ?? 0) > 0 && raw.bool("frame_valid") != false
         let desktop = observation.target.bool("desktop") == true
-        let bound = pixel && observation.captureID != nil
+        let bound = pixel && observation.captureID != nil && (desktop || raw.bool("window_pixel_target") == true)
         let foreground = bound && observation.focus != nil && (desktop || NativeDriver.windowFrame(observation.windowBounds) != nil)
         let routes = raw.object("background_input")?.array("routes")?.compactMap(\.object) ?? []
         func allowed(_ route: String) -> Bool {
@@ -203,14 +257,22 @@ actor NativeComputer {
         }
         if background { available.append("pixel_click_background") }
         if foreground { available.append("pixel_click_foreground") }
-        if desktop ? observation.focus != nil : allowed("pid_keyboard") { available += ["key", "type"] }
-        if pixel && (desktop ? observation.focus != nil : allowed("window_pointer")) {
+        if desktop {
+            if observation.focus != nil { available += ["key", "type"] }
+        } else if allowed("pid_keyboard"), let keyboard = raw.object("keyboard_focus"), ["window", "control"].contains(keyboard.string("status") ?? "") {
+            available.append("key")
+            if keyboard.bool("editable") == true { available.append("type") }
+        }
+        if pixel && (desktop ? observation.focus != nil : raw.bool("window_pixel_target") == true && allowed("window_pointer")) {
             available += ["move", "drag", "scroll"]
         }
+        observation.available = Set(available)
         result["available_actions"] = .array(available.map(JSONValue.string))
         result["pixel_actions"] = .bool(background || foreground)
         if desktop && observation.focus == nil {
             result["hint"] = .string("Focus is unconfirmed. Observe again or select the intended window.")
+        } else if let issue = raw.string("capture_issue") {
+            result["hint"] = .string(issue)
         } else if pixel && !background && !foreground {
             result["hint"] = .string("Coordinate clicks are unavailable for this observation. Use a supported element action or refresh the same target.")
         } else if truncated {
@@ -234,10 +296,14 @@ actor NativeComputer {
         var request: JSONObject = ["action": .string(kind), "target": .object(observation.target)]
         var checkFocus = desktop
         if let ref = action.string("element_ref") {
-            guard let token = observation.refs[ref] else {
+            guard let element = observation.refs[ref] else {
                 throw DesktopError(code: "invalid_reference", message: "Element reference is not in this observation", hint: "Use an element_ref from the current observation with the requested action listed.")
             }
-            request["native_ref"] = .string(token)
+            let actionName = kind == "type" ? "type" : action.string("button") == "right" ? "right_click" : "click"
+            guard element.actions.contains(actionName), observation.available.contains("element_" + actionName) else {
+                throw DesktopError(code: "element_action_unavailable", message: "The selected element does not support this action", hint: "Use a reference from the current observation that advertises the requested action.")
+            }
+            request["native_ref"] = .string(element.token)
         }
         func point(_ x: Double?, _ y: Double?) throws -> (x: JSONValue, y: JSONValue, position: JSONObject) {
             guard let width = observation.width, let height = observation.height else { throw DesktopError(code: "screenshot_required", message: "A valid screenshot is required", hint: "Refresh the same target with computer_observe and screenshot=true.") }
@@ -260,9 +326,15 @@ actor NativeComputer {
                     throw DesktopError(code: "screenshot_required", message: "The screenshot has no actionable capture reference", hint: "Refresh the same target with computer_observe and screenshot=true.")
                 }
                 request["capture_id"] = .string(capture)
-                if foreground && !desktop {
+                if !desktop {
                     request["window_bounds"] = observation.windowBounds.map(JSONValue.object)
                     request["window_position"] = .object(click.position)
+                }
+                if !foreground && !observation.available.contains("pixel_click_background") {
+                    throw DesktopError(code: "background_unavailable", message: "The observation does not support background coordinate clicks", hint: "Use a supported element action or an explicitly available foreground click.")
+                }
+                if foreground && observation.focus != nil && !observation.available.contains("pixel_click_foreground") {
+                    throw DesktopError(code: "foreground_unavailable", message: "The observation does not support foreground coordinate clicks", hint: "Refresh the intended window and inspect its available actions.")
                 }
             }
             request["delivery_mode"] = .string(foreground ? "foreground" : "background")
@@ -283,30 +355,50 @@ actor NativeComputer {
             request["x"] = .number(floor(width/2)); request["y"] = .number(floor(height/2)); request["delta_x"] = action["delta_x"]; request["delta_y"] = action["delta_y"]
         default: throw DesktopError(code: "invalid_arguments", message: "Unsupported desktop action")
         }
+        if (kind == "key" || kind == "type"), request["native_ref"] == nil, !observation.available.contains(kind) {
+            throw DesktopError(code: "keyboard_target_unverified", message: "Keyboard input is not available for the observed target", hint: "Refresh the intended window and confirm keyboard focus, or type with a supported element reference.")
+        }
+        if ["move", "drag", "scroll"].contains(kind), !observation.available.contains(kind) {
+            throw DesktopError(code: "pointer_action_unavailable", message: "The observation does not support this pointer action", hint: "Refresh the intended target with a screenshot and inspect available_actions.")
+        }
         if let modifiers = action.array("modifiers") {
             let aliases = ["command": "cmd", "control": "ctrl", "alt": "option"]
             request["modifiers"] = .array(modifiers.compactMap(\.string).map { .string(aliases[$0] ?? $0) })
         }
         try assertOpen(session)
         if checkFocus {
-            guard let expected = observation.focus, let current = try await focus() else {
+            guard let expected = observation.focus, let current = try await focus(ordinaryOnly: desktop) else {
                 throw DesktopError(code: "focus_unavailable", message: "Cannot verify focus on the observed target", hint: focusHint)
             }
             try assertOpen(session)
             if current != expected { throw DesktopError(code: "focus_changed", message: "The front window changed after observation", hint: focusHint) }
         }
+        let shouldObserve = args.bool("observe_after") != false || args.bool("screenshot") == true
+        var before: [JSONObject]?
+        var focusedBefore: Double?
+        if shouldObserve, let pid = observation.target.number("pid") {
+            do {
+                let windows = try await visibleWindows(pid)
+                focusedBefore = try await native.focusedWindow(pid: pid, candidates: windows)
+                before = windows
+            } catch { try Task.checkCancellation() }
+        }
         try assertOpen(session)
         // Consume before delivery: failed/unknown writes are never replayed with an old reference.
         observations.removeValue(forKey: session)
         var result = try await native.act(session: session, action: request)
-        if args.bool("observe_after") == false && args.bool("screenshot") != true { return result }
+        if !shouldObserve { return result }
         do {
             try assertOpen(session)
             try await Task.sleep(nanoseconds: UInt64(max(0, args.number("wait_after_ms") ?? 2000) * 1_000_000))
-            var next = observation.target; next["screenshot"] = .bool(args.bool("screenshot") == true)
+            if observation.target.number("pid") != nil && before == nil {
+                throw DesktopError(code: "window_tracking_unavailable", message: "Could not track windows across the action", hint: "Refresh the intended window before acting again.")
+            }
+            var next = try await followUpTarget(observation.target, before: before ?? [], focusedBefore: focusedBefore)
+            next["screenshot"] = .bool(args.bool("screenshot") == true)
             result["observation"] = .object(try await observe(session, next))
         } catch {
-            result["observation_error"] = .object(["code": .string((error as? DesktopError)?.code ?? "observation_failed"), "message": .string("Action delivered; follow-up observation unavailable")])
+            result["observation_error"] = .object((error as? DesktopError)?.json ?? ["code": .string("observation_failed"), "message": .string("Action delivered; follow-up observation unavailable")])
         }
         return result
     }

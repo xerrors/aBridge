@@ -3,9 +3,27 @@ import assert from "node:assert/strict";
 import {
   browserActionSchema,
   browserLocateActSchema,
+  deviceErrorSchema,
   parseDeviceToolRequest,
   toolArgumentSchemas,
 } from "@abridge/protocol";
+
+test("device occlusion diagnostics preserve bounded window identities and recovery", () => {
+  const error = {
+    code: "window_point_occluded",
+    message: "The screenshot point is covered by another surface",
+    desktop: {
+      target: { pid: 10, window_id: 20, title: "🐱".repeat(60) },
+      blocker: { pid: 10, window_id: 21 },
+      recovery: "observe_blocker",
+    },
+  };
+  assert.deepEqual(deviceErrorSchema.parse(error), error);
+  assert.equal(
+    deviceErrorSchema.safeParse({ ...error, desktop: { ...error.desktop, blocker: { pid: 10 } } }).success,
+    false,
+  );
+});
 
 test("browser action references and locator inputs share the same action limits", () => {
   const action = { type: "press", key: "k".repeat(32) };

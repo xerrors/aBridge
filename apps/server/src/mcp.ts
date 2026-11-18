@@ -57,6 +57,7 @@ function prioritize(container: JsonObject, keys: readonly string[]): JsonObject 
 const desktopObservationFields = [
   "observation_id",
   "available_actions",
+  "keyboard_focus",
   "hint",
   "window",
   "app_name",
@@ -101,12 +102,13 @@ export function contentResponse(
       copy.result = prioritize(copy.result, [
         ...desktopObservationFields,
         "observation_error",
+        "window_candidates",
         "effect",
         "delivery",
         "observation",
       ]);
     }
-    if (object(copy.error)) copy.error = prioritize(copy.error, ["code", "hint", "message"]);
+    if (object(copy.error)) copy.error = prioritize(copy.error, ["code", "hint", "desktop", "message"]);
     copy = prioritize(copy, ["status", "error", "operation_id", "result"]);
   }
   return { content: [{ type: "text", text: JSON.stringify(copy) }, ...images] };
@@ -212,19 +214,19 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "computer_open",
-    "Launch or activate an app by exact bundle_id and return its observation. Continue from result.observation; never relaunch to refresh.",
+    "Launch or activate an app by exact bundle_id. Continue from result.observation, or select a returned window_candidate with computer_observe. Never relaunch to refresh.",
     computerOpenSchema.safeExtend(base),
     (a) => exec("computer_open", a),
   );
   register(
     "computer_observe",
-    "Observe the selected window with a screenshot. Reuse the session target by omitting pid and window_id. To select a window, pass pid for an app with one window or use computer_windows and pass pid and window_id. Read observation_id, available_actions, and hint first. References expire after 120 seconds or an action. Use desktop=true only for an explicit whole-desktop task; without confirmed focus it returns a read-only observation.",
+    "Observe the selected window with a screenshot. Reuse the session target by omitting pid and window_id. To select a window, pass pid for an app with one window or use computer_windows and pass pid and window_id. Read observation_id, available_actions, keyboard_focus, and hint first. References expire after 120 seconds or an action. Use desktop=true only for an explicit whole-desktop task; without confirmed focus it returns a read-only observation.",
     computerObserveSchema.safeExtend(base),
     (a) => exec("computer_observe", a),
   );
   register(
     "computer_act",
-    "Act once using the current observation_id. Prefer a supported element_ref action. Window screenshot clicks default to background. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. If the action returns unverifiable or unknown, verify the expected change before continuing. Use result.observation directly, with screenshot=true on the action for visual follow-up. wait_after_ms defaults to 2000.",
+    "Act once using the current observation_id and available_actions. Prefer a supported element_ref action. Window screenshot clicks default to background. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. A covering window can be reported in error.desktop. If the action returns unverifiable or unknown, verify the expected change before continuing. Use result.observation directly, including any new window target. Set screenshot=true for visual follow-up. wait_after_ms defaults to 2000.",
     computerActSchema.safeExtend(base),
     (a) => exec("computer_act", a),
   );

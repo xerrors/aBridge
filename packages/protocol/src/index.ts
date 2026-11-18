@@ -329,8 +329,21 @@ export const computerActionSchema = z.discriminatedUnion("type", [
 ]);
 // Operation diagnostics stay bounded across clients, server and script receipts.
 const operationErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
+const desktopWindowDiagnosticSchema = z.object({
+  pid: z.number().int().positive(),
+  window_id: z.number().int().positive(),
+  app_name: z.string().max(120).optional(),
+  title: z.string().max(120).optional(),
+});
 export const operationErrorSchema = operationErrorDetailSchema.extend({
   hint: z.string().max(240).optional(),
+  desktop: z
+    .object({
+      target: desktopWindowDiagnosticSchema,
+      blocker: desktopWindowDiagnosticSchema.optional(),
+      recovery: z.enum(["observe_blocker", "clear_occlusion"]),
+    })
+    .optional(),
   cause: operationErrorDetailSchema.optional(),
   connection: connectionLossSchema.optional(),
   cleanup_error: operationErrorDetailSchema.optional(),

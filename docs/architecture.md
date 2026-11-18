@@ -140,17 +140,19 @@ Agent 高频使用的公开引用保持短：`observation_id` 为 `obs_` 加 8 �
 
 ## 桌面操作
 
-`computer_apps` 默认返回运行中的应用，`query` 可查找未启动的已安装应用。`computer_open(bundle_id=...)` 核对应用身份后启动或激活一次，返回目标窗口观察，需要 `input` 与 `screen`。应用已启动但观察失败时保留启动结果，不自动再次启动。
+`computer_apps` 默认返回运行中的应用，`query` 可查找未启动的已安装应用。`computer_open(bundle_id=...)` 核对应用身份后启动或激活一次，返回目标窗口观察，需要 `input` 与 `screen`。macOS 优先观察可确认的焦点窗或主窗，多个候选无法判定时返回 `window_candidates`，由调用方显式选择。应用已启动但观察失败时保留启动结果，不自动再次启动。
 
 `computer_windows` 按应用 PID 列出窗口，包含屏幕外窗口。`computer_observe` 只传 `pid` 时，以该 PID 返回的有效窗口为准：唯一窗口直接观察；多个窗口返回 `window_selection_required`，提示先调用 `computer_windows(pid=...)` 再传 `pid` 与 `window_id` 选择；没有窗口返回 `window_unavailable`。显式传入 `window_id` 时须同时提供 `pid`，且 ID 必须是有效的正安全整数；缺少 PID 或 ID 非法时返回 `invalid_arguments`，错误信息说明缺失字段或提示从 `computer_windows` 取得有效 ID。省略目标时复用会话已选窗口，无目标返回 `target_required`；失败不会替换已选窗口。空窗口列表不能单独证明权限或 Space 问题。
 
 只有显式 `desktop=true` 才选择整屏，并且不能与窗口目标同时指定。整屏观察不以焦点确认为截图前提：观察前后均确认恰好一个前台普通应用，且其唯一可判定的屏幕内普通前窗保持一致时，返回 `focus_status=confirmed`；焦点无法确认、查询失败或期间切换时，仍返回观察及请求的截图，标记 `focus_status=unconfirmed`、`pixel_actions=false`。截图自身的错误、取消与会话关闭仍正常返回失败。
 
-观察优先返回 `observation_id`、`available_actions` 和适用的恢复提示，其后是目标窗口、截图几何与有界控件列表。桌面引用最长有效 120 秒，动作后失效。元素点击使用观察中的元素引用；坐标点击必须使用同一观察的可操作截图和截图像素坐标。窗口坐标点击默认 `action.delivery_mode=background`，由驱动按指定窗口投递。
+观察优先返回 `observation_id`、`available_actions` 和适用的恢复提示，其后是目标窗口、截图几何与有界控件列表。桌面引用最长有效 120 秒，动作后失效。元素点击使用观察中的元素引用；坐标点击必须使用同一观察的可操作截图和截图像素坐标。窗口坐标点击默认 `action.delivery_mode=background`，由驱动按指定窗口投递。macOS 后台坐标点击重新校验目标窗口的可见性、几何及点击点的同应用覆盖。观察期间被同应用窗口覆盖的点在覆盖消失后仍须重新观察。叠放窗口的截图由系统按精确窗口裁取，像素几何无法确认时仅提供可取得的辅助功能观察。
 
-整屏和带修饰键的点击须显式指定 `action.delivery_mode=foreground` 并使用截图坐标。前台窗口点击要求截取时目标窗口焦点已确认，调用驱动前再次核对焦点、窗口位置与点击点遮挡，并为截图缩放保留边缘余量。驱动随后再次确认窗口焦点，通过系统鼠标投递。预检和系统投递之间桌面仍可能变化，动作后须核对目标窗口的实际结果。整屏动作（含键盘输入）要求观察时及执行前焦点一致。焦点无从确认时返回 `focus_unavailable`，前窗变化时返回 `focus_changed`。窗口位置变化或点击点被遮挡时分别返回 `window_frame_changed` 或 `window_point_occluded`。恢复后刷新观察并使用新的引用和坐标。
+整屏和带修饰键的点击须显式指定 `action.delivery_mode=foreground` 并使用截图坐标。前台窗口点击要求截取时目标窗口焦点已确认，调用驱动前再次核对焦点、窗口位置与点击点遮挡，并为截图缩放保留边缘余量。驱动随后再次确认窗口焦点，通过系统鼠标投递。预检和系统投递之间桌面仍可能变化，动作后须核对目标窗口的实际结果。整屏动作（含键盘输入）要求观察时及执行前焦点一致。焦点无从确认时返回 `focus_unavailable`，前窗变化时返回 `focus_changed`。窗口位置变化或点击点被遮挡时分别返回 `window_frame_changed` 或 `window_point_occluded`。遮挡回执的 `error.desktop` 包含目标窗口、可识别的遮挡窗口和恢复动作。同应用遮挡提示观察该窗口，其他遮挡提示清除遮挡后观察原目标。恢复后使用新的引用和坐标。
 
-`computer_act` 默认附带 `result.observation`，可直接继续操作。动作执行完成后，先等待 `wait_after_ms` 再进行后续观察或截图：默认 `2000` 毫秒，接受 `0–10000` 的整数，`0` 表示不等待；`observe_after=false` 仅执行动作且不等待。复合观察需要同时具备 `input` 与 `screen`。动作已执行而后观察失败时分别返回动作结果与 `observation_error`，只补观察，不重放动作。
+`computer_act` 默认附带 `result.observation`，可直接继续操作。动作执行完成后，先等待 `wait_after_ms` 再进行后续观察或截图：默认 `2000` 毫秒，接受 `0–10000` 的整数，`0` 表示不等待；`observe_after=false` 仅执行动作且不等待。复合观察需要同时具备 `input` 与 `screen`。macOS 会跟踪同应用新获焦点的窗口，或定位到原目标上方唯一新出现的交互窗口。当结果附带新窗口时继续使用其中的 `observation_id`。动作已执行而后观察失败时分别返回动作结果与 `observation_error`，只补观察，不重放动作。
+
+macOS 窗口观察的 `keyboard_focus` 分别报告已确认的窗口和接收键盘的控件状态。窗口按键需要可用的路由和已确认的窗口，不带元素引用直接输入文本还需要已确认的可编辑控件。指定元素引用时校验观察中该元素公布的动作。投递前发现窗口或键盘接收者发生变化时拒绝并提示刷新。
 
 ## 浏览器操作
 

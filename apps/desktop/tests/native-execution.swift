@@ -8,6 +8,9 @@ actor FixtureDriver: DesktopNativeDriver {
     var captures = 0, appQueries = 0, windowQueries = 0
     var frameValid = true, failObservation = false, failAction = false, failApps = false, failWindows = false
     var moveDuringCapture = false, focusReported = true, keyboardAvailable = true, windowDelay: UInt64 = 0
+    var showsMenuOnClick = false
+    var focusedWindowID: Double?, mainWindowID: Double?
+    var editableControl = true
     func configure(_ key: String, _ value: Bool = true) {
         switch key {
         case "noApps": if value { applicationList = [] }
@@ -27,16 +30,22 @@ actor FixtureDriver: DesktopNativeDriver {
         case "failApps": failApps = value
         case "failWindows": failWindows = value
         case "slowWindows": windowDelay = value ? 500_000_000 : 0
+        case "menuOnClick": showsMenuOnClick = value
+        case "noEditor": editableControl = !value
+        case "watermark": var overlay = windowList[0]; overlay["window_id"] = .number(21); overlay["title"] = .string("WatermarkWidget"); overlay["bounds"] = .object(["x": .number(0), "y": .number(0), "width": .number(500), "height": .number(500)]); windowList.insert(overlay, at: 0)
         default: fatalError("Unknown fixture setting")
         }
     }
+    func select(focused: Double? = nil, main: Double? = nil) { focusedWindowID = focused; mainWindowID = main }
     func diagnostics(initialize: Bool) async -> JSONObject { [:] }
     func apps() async throws -> [JSONObject] { appQueries += 1; if failApps { throw DesktopError(code: "fixture", message: "fixture") }; return applicationList }
     func windows(pid: Double?) async throws -> [JSONObject] { windowQueries += 1; if windowDelay > 0 { try await Task.sleep(nanoseconds: windowDelay) }; if failWindows { throw DesktopError(code: "fixture", message: "fixture") }; return windowList }
     func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? {
-        guard candidates.count == 1, focusReported else { return nil }
-        return candidates[0].number("window_id")
+        guard focusReported else { return nil }
+        if let focusedWindowID, candidates.contains(where: { $0.number("window_id") == focusedWindowID }) { return focusedWindowID }
+        return candidates.count == 1 ? candidates[0].number("window_id") : nil
     }
+    func mainWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? { mainWindowID }
     func open(bundleID: String) async throws {}
     func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject {
         captures += 1; targets.append(target)
@@ -48,10 +57,23 @@ actor FixtureDriver: DesktopNativeDriver {
                 .object(["route": .string(route), "status": .string(route == "pid_keyboard" && !keyboardAvailable ? "refused" : "available")])
             }
         )])
+        raw["keyboard_focus"] = .object(["status": .string(keyboardAvailable ? (editableControl ? "control" : "window") : "unverified"), "editable": .bool(keyboardAvailable && editableControl)])
+        raw["window_pixel_target"] = .bool(true)
         if screenshot { raw["image_base64"] = .string(Data("fixture-image".utf8).base64EncodedString()); raw["mime_type"] = .string("image/png") }
         return raw
     }
-    func act(session: String, action: JSONObject) async throws -> JSONObject { actions.append(action); if failAction { throw DesktopError(code: "outcome_unknown", message: "fixture", outcome: "outcome_unknown") }; return ["action_executed": .bool(true), "business_verified": .bool(false)] }
+    func act(session: String, action: JSONObject) async throws -> JSONObject {
+        actions.append(action)
+        if failAction { throw DesktopError(code: "outcome_unknown", message: "fixture", outcome: "outcome_unknown") }
+        if showsMenuOnClick && windowList.count == 1 && action.string("action") == "click" {
+            var menu = windowList[0]
+            menu["window_id"] = .number(21)
+            menu["layer"] = .number(101)
+            menu["z_index"] = .number(2)
+            windowList.append(menu)
+        }
+        return ["action_executed": .bool(true), "business_verified": .bool(false)]
+    }
     func release(session: String) async { released.append(session) }
     func shutdown() async {}
     func counts() -> (Int, Int, Int, Int) { (actions.count, captures, appQueries, windowQueries) }
@@ -103,11 +125,22 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         print("PASS native execution: focus, references, window selection, cancellation, observation waits, files, shell groups, UTF-8, bounded output, SDK ABI")
     }
     static func computerTests() async throws {
+        let menuDriver = FixtureDriver()
+        await menuDriver.configure("menuOnClick")
+        let menuComputer = NativeComputer(native: menuDriver)
+        let main = try await menuComputer.execute(session: "menu", tool: "computer_observe", arguments: ["pid": .number(10), "window_id": .number(20)])
+        let opened = try await menuComputer.execute(session: "menu", tool: "computer_act", arguments: actArgs(main, follow: true, wait: 0))
+        check(opened.object("observation")?.object("window")?.number("window_id") == 21, "Follow-up observes the menu rather than its underlying window")
+        try await refusal("stale_observation") { try await menuComputer.execute(session: "menu", tool: "computer_act", arguments: actArgs(main)) }
         let refusalReply: JSONObject = ["isError": .bool(true), "structuredContent": .object(["code": .string("action_refused"), "message": .string("sensitive native detail")])]
         do { _ = try NativeDriver.decodeReply(refusalReply.encoded()); fatalError("Expected typed refusal") }
         catch let error as DesktopError { check(error.code == "action_refused" && error.outcome == "refused" && !error.message.contains("sensitive"), "Typed refusal preserves code and sanitizes native detail") }
         do { _ = try NativeDriver.decodeReply(["isError": .bool(true)].encoded()); fatalError("Expected unknown outcome") }
         catch let error as DesktopError { check(error.outcome == "outcome_unknown", "Unconfirmed SDK results use the shared unknown-outcome contract") }
+        do {
+            _ = try NativeDriver.decodeReply(["isError": .bool(true), "structuredContent": .object(["code": .string("element_disabled"), "effect": .string("refused")])].encoded())
+            fatalError("Expected explicit SDK refusal")
+        } catch let error as DesktopError { check(error.code == "element_disabled" && error.outcome == "refused", "An explicit refusal stays distinct from an unknown input outcome") }
         let shared: JSONObject = ["target": .object(["pid": .number(10), "window_id": .number(20)]), "native_ref": .string("fixture-token"), "capture_id": .string("fixture-capture"), "modifiers": .array([.string("cmd")])]
         let (typeTool, typeWire) = try NativeDriver.actionRequest(session: "wire", action: shared.merging(["action": .string("type"), "text": .string("fixture")]) { _, new in new })
         check(typeTool == "type_text" && Set(typeWire.keys) == ["session", "target", "element_token", "text"], "Element typing only sends its tool fields")
@@ -152,6 +185,13 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         try await refusal("invalid_arguments") { try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, ["type": .string("click"), "x": .number(100), "y": .number(2)])) }
         check(observed.array("available_actions")?.contains(.string("element_click")) == true && observed.array("elements")?[1].object?["element_ref"] == nil, "Advertise supported actions without turning static text into an action")
         check(observed.array("available_actions")?.contains(.string("key")) == false, "Do not advertise ambiguous background keyboard input")
+        try await refusal("keyboard_target_unverified") {
+            try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, ["type": .string("key"), "key": .string("cmd+a")]))
+        }
+        try await refusal("element_action_unavailable") {
+            try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, ["type": .string("type"), "element_ref": .string("e1"), "text": .string("should not type into a button")]))
+        }
+        check(await driver.counts().0 == 0, "Unavailable actions never reach the driver")
         let click: JSONObject = ["type": .string("click"), "element_ref": .string("e1")]
         _ = try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(observed, click))
         let delivered = await driver.lastAction()
@@ -198,6 +238,20 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         check(delivered.string("delivery_mode") == "foreground" && delivered.array("modifiers") == [.string("cmd")] && delivered.string("capture_id") == "fixture-capture", "Explicit foreground preserves capture and modifier identity")
     }
     static func windowTests() async throws {
+        let openArgs: JSONObject = ["bundle_id": .string("dev.abridge.fixture")]
+        for caseName in ["focus", "main", "ambiguous"] {
+            let openDriver = FixtureDriver()
+            await openDriver.configure("watermark")
+            if caseName == "focus" { await openDriver.select(focused: 20, main: 21) }
+            if caseName == "main" { await openDriver.select(main: 20) }
+            let result = try await NativeComputer(native: openDriver).execute(session: "open", tool: "computer_open", arguments: openArgs)
+            if caseName == "ambiguous" {
+                check(result.object("observation_error")?.string("code") == "window_selection_required", "Ambiguous launch asks the caller to choose")
+                check(result.array("window_candidates")?.count == 2 && result["observation"] == nil, "Ambiguous launch returns both window identities")
+            } else {
+                check(result.object("observation")?.object("window")?.number("window_id") == 20, "Focus or main-window proof outranks a larger overlay")
+            }
+        }
         let driver = FixtureDriver()
         let targetComputer = NativeComputer(native: driver)
         await driver.configure("offscreen")
