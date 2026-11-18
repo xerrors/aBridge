@@ -150,7 +150,8 @@ actor NativeDriver: DesktopNativeDriver {
 
     private var driver: OpaquePointer?
     private var closed = false
-    private var sessions = Set<String>()
+    private enum SessionState { case observing, observed }
+    private var sessions: [String: SessionState] = [:]
     private var windowInputs: [String: WindowInput] = [:]
     private var operations: [UUID: DriverOperation] = [:]
     private var lastDiagnostics: JSONObject = ["driver": .object(["loaded": .bool(false), "ready": .bool(false)]), "permissions": .object(["checked": .bool(false), "screen": .bool(false), "input": .bool(false)])]
@@ -196,7 +197,7 @@ actor NativeDriver: DesktopNativeDriver {
             throw DesktopError(code: "driver_unavailable", message: "Desktop driver must run embedded in this process")
         }
     }
-    private func invoke(_ name: String, _ arguments: JSONObject, timeout: Double = 30000) async throws -> JSONObject {
+    func invoke(_ name: String, _ arguments: JSONObject, timeout: Double = 30000) async throws -> JSONObject {
         try Task.checkCancellation(); try ready()
         let id = UUID(), operation = DriverOperation()
         operations[id] = operation
@@ -217,10 +218,16 @@ actor NativeDriver: DesktopNativeDriver {
         guard let result = try JSONValue.decode(data).object else { throw DesktopError(code: "driver_error", message: "Invalid desktop driver response", outcome: "outcome_unknown") }
         if result.bool("isError") == true || result.bool("is_error") == true {
             let structured = result.object("structuredContent") ?? [:]
-            let code = structured.string("code") ?? structured.object("refusal")?.string("code") ?? structured.object("error")?.string("code") ?? result.string("errorCode") ?? "outcome_unknown"
+            let nestedRefusal = structured.object("refusal")?.string("code")
+            let rawCode = structured.string("code") ?? nestedRefusal ?? structured.object("error")?.string("code") ?? result.string("errorCode")
+            let code = rawCode.flatMap { value in
+                value.utf8.count <= 64 && value.wholeMatch(of: /[a-z][a-z0-9_]*/) != nil ? value : nil
+            } ?? "outcome_unknown"
             let recovery = actionRecovery(code)
             let known = ["action_refused", "permission_denied", "permission_required", "accessibility_permission_required", "screen_recording_permission_required", "invalid_arguments", "session_not_found", "session_closed", "unsupported"]
-            let refused = code != "outcome_unknown" && (structured.string("effect") == "refused" || recovery != nil || known.contains(code))
+            let explicitRefusal = structured.string("effect") == "refused" ||
+                (structured.string("status") == "refused" && nestedRefusal == code && structured["effect"] == nil)
+            let refused = code != "outcome_unknown" && (explicitRefusal || recovery != nil || known.contains(code))
             throw DesktopError(code: code, message: recovery ?? "Desktop driver could not complete the requested operation", outcome: refused ? "refused" : "outcome_unknown", hint: recovery)
         }
         return result
@@ -243,16 +250,13 @@ actor NativeDriver: DesktopNativeDriver {
             return "Observe the window that currently receives keyboard input."
         case "no_focused_text_input":
             return "Focus an editable control and refresh the observation, or use a supported element reference."
+        case "session_ended", "session_not_started":
+            return "The native desktop session is inactive. Refresh the target with computer_observe to obtain new references."
         case "background_unavailable":
             return "Observe the same window and try a supported element action. A foreground click requires an explicit request and verified focus."
         default:
             return nil
         }
-    }
-    private func session(_ id: String) async throws {
-        if sessions.contains(id) { return }
-        _ = try await invoke("start_session", ["session": .string(id)])
-        sessions.insert(id)
     }
     func diagnostics(initialize: Bool = true) async -> JSONObject {
         if !initialize { return lastDiagnostics }
@@ -339,7 +343,16 @@ actor NativeDriver: DesktopNativeDriver {
         guard result.number("exit_code") == 0, result.bool("timed_out") != true else { throw DesktopError(code: "app_launch_failed", message: "Application launch failed") }
     }
     func observe(session id: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject {
-        try await session(id)
+        // A named SDK session can idle out while its outer control session is active.
+        // A fresh read may revive it. Input must never revive it using previous references.
+        sessions[id] = .observing  // Also owns cleanup if start is cancelled after SDK activation.
+        windowInputs.removeValue(forKey: id)
+        _ = try await invoke("start_session", ["session": .string(id)])
+        let observation = try await readState(session: id, target: target, screenshot: screenshot)
+        sessions[id] = .observed
+        return observation
+    }
+    private func readState(session id: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject {
         let desktop = target.bool("desktop") == true
         if desktop && !screenshot { return ["elements": .array([])] }
         var args = target
@@ -397,7 +410,6 @@ actor NativeDriver: DesktopNativeDriver {
                 observation["capture_issue"] = .string("Capture of the overlapping window could not be verified. Refresh this window or use a supported element action.")
             }
         }
-        windowInputs.removeValue(forKey: id)
         if let pid = target.number("pid"), let windowID = target.number("window_id") {
             let frame = Self.windowFrame(observation.object("window_bounds"))
             observation["window_pixel_target"] = .bool(stack.contains { $0.pid == pid && $0.id == windowID && !$0.transparent && $0.frame == frame })
@@ -597,7 +609,7 @@ actor NativeDriver: DesktopNativeDriver {
         var display: CGDirectDisplayID = 0, displays: UInt32 = 0
         if foreground {
             guard frame.contains(destination) else {
-                throw DesktopError(code: "window_point_near_edge", message: "The screenshot point is too close to the window edge", hint: "Choose a point farther inside the intended control in the current screenshot.")
+                throw DesktopError(code: "window_point_near_edge", message: "The screenshot point is too close to the window edge", hint: "Call computer_observe with screenshot=true and omit both pid and window_id to refresh this window. Use the new observation_id and choose a point farther inside the intended control.")
             }
             guard CGGetDisplaysWithPoint(point, 1, &display, &displays) == .success, displays > 0,
                   CGDisplayBounds(display).contains(destination) else {
@@ -634,7 +646,9 @@ actor NativeDriver: DesktopNativeDriver {
     }
 
     func act(session id: String, action: JSONObject) async throws -> JSONObject {
-        try await session(id)
+        guard sessions[id] == .observed else {
+            throw DesktopError(code: "stale_observation", message: "No observed desktop session is available", hint: "Call computer_observe before acting.")
+        }
         let (tool, wire) = try Self.actionRequest(session: id, action: action)
         let input = windowInputs.removeValue(forKey: id)
         if tool == "click", wire["capture_id"] != nil,
@@ -662,7 +676,7 @@ actor NativeDriver: DesktopNativeDriver {
     }
     func release(session id: String) async {
         windowInputs.removeValue(forKey: id)
-        guard sessions.remove(id) != nil, !closed else { return }
+        guard sessions.removeValue(forKey: id) != nil, !closed else { return }
         _ = try? await invoke("end_session", ["session": .string(id)], timeout: 5000)
     }
     func shutdown() async {

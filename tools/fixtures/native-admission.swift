@@ -18,19 +18,34 @@ actor AdmissionDriver: DesktopNativeDriver {
         }
         return ["driver": .object(["ready": .bool(true)]), "permissions": .object(["screen": .bool(true), "input": .bool(true)])]
     }
-    func apps() async throws -> [JSONObject] {
-        if let failure {
-            emitJSON(["event": .string("effect"), "id": .string(failure)])
-            if failure == "generic" { throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "private fixture command"]) }
-            throw DesktopError(code: failure, message: "private fixture driver detail", outcome: "unknown")
+    private func throwFailure() throws {
+        guard let failure else { return }
+        emitJSON(["event": .string("effect"), "id": .string(failure)])
+        if failure == "generic" {
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "private fixture command"])
         }
-        return []
+        if failure == "permission_denied" {
+            _ = try NativeDriver.decodeReply(["isError": .bool(true), "structuredContent": .object([
+                "code": .string(failure), "message": .string("private fixture driver detail")
+            ])].encoded())
+        }
+        throw DesktopError(code: failure, message: "private fixture driver detail", outcome: "outcome_unknown")
     }
-    func windows(pid: Double?) async throws -> [JSONObject] { [] }
+    func apps() async throws -> [JSONObject] { try throwFailure(); return [] }
+    func windows(pid: Double?) async throws -> [JSONObject] { try throwFailure(); return [] }
     func focusedWindow(pid: Double, candidates: [JSONObject]) async throws -> Double? { nil }
     func open(bundleID: String) async throws { throw DesktopError(code: "fixture_forbidden", message: "No real applications in fixture") }
-    func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject { throw DesktopError(code: "fixture_forbidden", message: "No real desktop in fixture") }
-    func act(session: String, action: JSONObject) async throws -> JSONObject { throw DesktopError(code: "fixture_forbidden", message: "No real input in fixture") }
+    func observe(session: String, target: JSONObject, screenshot: Bool) async throws -> JSONObject {
+        try throwFailure()
+        return [
+            "elements": .array([.object(["token": .string("fixture-token"), "role": .string("AXButton"), "actions": .array([.string("AXPress")])])]),
+            "background_input": .object(["routes": .array([.object(["route": .string("accessibility"), "status": .string("available")])])])
+        ]
+    }
+    func act(session: String, action: JSONObject) async throws -> JSONObject {
+        try throwFailure()
+        throw DesktopError(code: "fixture_forbidden", message: "No real input in fixture")
+    }
     func release(session: String) async {}
     func shutdown() async { releaseAll() }
 }
@@ -38,7 +53,7 @@ actor AdmissionDriver: DesktopNativeDriver {
 @main struct AdmissionFixture {
     static func main() async throws {
         let storage = NativeStorage(stateDir: CommandLine.arguments[1])
-        let config = try storage.configure(url: CommandLine.arguments[2], key: "abr_device_fixture", capabilities: ["files": true, "screen": true])
+        let config = try storage.configure(url: CommandLine.arguments[2], key: "abr_device_fixture", capabilities: ["files": true, "screen": true, "input": true])
         let driver = AdmissionDriver()
         // Use a dedicated injected driver so no real desktop SDK is initialized.
         let client = DeviceClient(storage: storage, config: config, key: "abr_device_fixture", contract: try NativeContract.load(), executor: NativeExecutor(native: driver))

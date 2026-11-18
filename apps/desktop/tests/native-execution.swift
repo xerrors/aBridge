@@ -114,6 +114,7 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
 }
 @main struct NativeExecutionTests {
     static func main() async throws {
+        try await sdkObservationRecoveryTest()
         try await computerTests(); try await fileTests(); try await shellTests()
         let smoke = try await NativeDriver.smoke()
         check(smoke.bool("embedded") == true && smoke.number("desktop_actions") == 0 && smoke.number("authorizations") == 0, "ABI read-only smoke")
@@ -123,6 +124,46 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         do { _ = try await closedDriver.apps(); fatalError("Closed driver must refuse construction") }
         catch let error as DesktopError { check(error.code == "driver_closed", "Closed driver refuses subsequent calls") }
         print("PASS native execution: focus, references, window selection, cancellation, observation waits, files, shell groups, UTF-8, bounded output, SDK ABI")
+    }
+    static func sdkObservationRecoveryTest() async throws {
+        let driver = NativeDriver()
+        let session = "sdk-observation-recovery"
+        let sdkSession: JSONObject = ["session": .string(session)]
+        let target: JSONObject = ["desktop": .bool(true)]
+        let missingWindow: JSONObject = ["pid": .number(Double(Int32.max)), "window_id": .number(Double(UInt32.max))]
+        // An absent frame prevents this synthetic click from reaching the SDK even on regression.
+        let action: JSONObject = [
+            "action": .string("click"), "target": .object(missingWindow),
+            "capture_id": .string("nonexistent-capture"), "x": .number(0), "y": .number(0)
+        ]
+
+        _ = try await driver.observe(session: session, target: target, screenshot: false)
+        _ = try await driver.invoke("end_session", sdkSession)
+        try await refusal("session_ended") { try await driver.invoke("get_session", sdkSession) }
+
+        _ = try await driver.observe(session: session, target: target, screenshot: false)
+        let active = try await driver.invoke("get_session", sdkSession)
+        check(active.object("structuredContent")?.string("state") == "active", "A fresh observation revives the independently ended SDK session")
+
+        _ = try await driver.invoke("end_session", sdkSession)
+        try await refusal("window_id_not_found") {
+            try await driver.observe(session: session, target: missingWindow, screenshot: false)
+        }
+        try await refusal("stale_observation") { try await driver.act(session: session, action: action) }
+        let failedReadSession = try await driver.invoke("get_session", sdkSession)
+        check(failedReadSession.object("structuredContent")?.string("state") == "active", "A failed read leaves the recovered SDK session available for cleanup")
+        await driver.release(session: session)
+        try await refusal("session_ended") { try await driver.invoke("get_session", sdkSession) }
+
+        let unusedSession = "sdk-action-without-observation"
+        try await refusal("stale_observation") { try await driver.act(session: unusedSession, action: action) }
+        do {
+            _ = try await driver.invoke("get_session", ["session": .string(unusedSession)])
+            fatalError("Input must not create an SDK session")
+        } catch let error as DesktopError {
+            check(error.code == "session_not_started" && error.outcome == "refused", "A structured SDK refusal confirms the session was never started")
+        }
+        await driver.shutdown()
     }
     static func computerTests() async throws {
         let menuDriver = FixtureDriver()
@@ -136,11 +177,19 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         do { _ = try NativeDriver.decodeReply(refusalReply.encoded()); fatalError("Expected typed refusal") }
         catch let error as DesktopError { check(error.code == "action_refused" && error.outcome == "refused" && !error.message.contains("sensitive"), "Typed refusal preserves code and sanitizes native detail") }
         do { _ = try NativeDriver.decodeReply(["isError": .bool(true)].encoded()); fatalError("Expected unknown outcome") }
-        catch let error as DesktopError { check(error.outcome == "outcome_unknown", "Unconfirmed SDK results use the shared unknown-outcome contract") }
-        do {
-            _ = try NativeDriver.decodeReply(["isError": .bool(true), "structuredContent": .object(["code": .string("element_disabled"), "effect": .string("refused")])].encoded())
-            fatalError("Expected explicit SDK refusal")
-        } catch let error as DesktopError { check(error.code == "element_disabled" && error.outcome == "refused", "An explicit refusal stays distinct from an unknown input outcome") }
+        catch let error as DesktopError { check(error.code == "outcome_unknown" && error.outcome == "outcome_unknown", "Unstructured SDK errors use the shared unknown-outcome contract") }
+        let explicitRefusals: [(String, JSONObject)] = [
+            ("element_disabled", ["code": .string("element_disabled"), "effect": .string("refused")]),
+            ("fixture_policy_denied", ["status": .string("refused"), "refusal": .object(["code": .string("fixture_policy_denied")])])
+        ]
+        for (code, structured) in explicitRefusals {
+            do {
+                _ = try NativeDriver.decodeReply(["isError": .bool(true), "structuredContent": .object(structured)].encoded())
+                fatalError("Expected explicit SDK refusal")
+            } catch let error as DesktopError {
+                check(error.code == code && error.outcome == "refused", "An explicit refusal stays distinct from an unknown input outcome")
+            }
+        }
         let shared: JSONObject = ["target": .object(["pid": .number(10), "window_id": .number(20)]), "native_ref": .string("fixture-token"), "capture_id": .string("fixture-capture"), "modifiers": .array([.string("cmd")])]
         let (typeTool, typeWire) = try NativeDriver.actionRequest(session: "wire", action: shared.merging(["action": .string("type"), "text": .string("fixture")]) { _, new in new })
         check(typeTool == "type_text" && Set(typeWire.keys) == ["session", "target", "element_token", "text"], "Element typing only sends its tool fields")
@@ -207,6 +256,18 @@ func actArgs(_ observation: JSONObject, _ action: JSONObject = ["type": .string(
         try await refusal("outcome_unknown") { try await computer.execute(session: "unknown", tool: "computer_act", arguments: actArgs(failureObservation, click)) }
         try await refusal("stale_observation") { try await computer.execute(session: "unknown", tool: "computer_act", arguments: actArgs(failureObservation, click)) }
         await driver.configure("failAction", false)
+
+        let beforeFailedRefresh = try await computer.execute(session: "window", tool: "computer_observe", arguments: [:])
+        let actionsBeforeRefresh = await driver.counts().0
+        await driver.configure("failObservation")
+        try await refusal("fixture") { try await computer.execute(session: "window", tool: "computer_observe", arguments: [:]) }
+        try await refusal("stale_observation") { try await computer.execute(session: "window", tool: "computer_act", arguments: actArgs(beforeFailedRefresh, click)) }
+        check(await driver.counts().0 == actionsBeforeRefresh, "A failed observation never permits writes with prior references")
+        await driver.configure("failObservation", false)
+        let refreshed = try await computer.execute(session: "window", tool: "computer_observe", arguments: [:])
+        check(refreshed.string("observation_id") != nil && refreshed["observation_id"] != beforeFailedRefresh["observation_id"], "Read recovery issues a fresh observation ID")
+        check(await driver.counts().0 == actionsBeforeRefresh, "Read recovery does not replay the rejected write")
+
         await computer.closeSession("window")
         try await refusal("session_closed") { try await computer.execute(session: "window", tool: "computer_observe", arguments: ["pid": .number(10)]) }
         try await foregroundTests(); try await windowTests(); try await waitTests()

@@ -178,12 +178,20 @@ actor NativeComputer {
                 let windows = try await native.windows(pid: pid).filter { $0.number("pid") == pid && ($0.number("window_id") ?? 0) > 0 }
                 try assertOpen(session)
                 if windows.isEmpty { throw DesktopError(code: "window_unavailable", message: "No window is available; refresh computer_windows") }
-                if windows.count > 1 { throw DesktopError(code: "window_selection_required", message: "Multiple windows are available; provide pid and window_id from computer_windows") }
+                if windows.count > 1 {
+                    let selected = targets[session]
+                    let canReuse = selected?.number("pid") == pid && windows.contains { $0["window_id"] == selected?["window_id"] }
+                    let hint = canReuse
+                        ? "To refresh the selected window, omit both pid and window_id. To select another, pass both values from computer_windows."
+                        : "Call computer_windows for this PID, then pass the selected pid and window_id to computer_observe."
+                    throw DesktopError(code: "window_selection_required", message: "Multiple windows are available for this PID", hint: hint)
+                }
                 target = ["pid": .number(pid), "window_id": windows[0]["window_id"]!]
             }
         } else if args.bool("desktop") == true { target = ["desktop": .bool(true)] }
         else if let previous = targets[session], previous.number("pid") != nil { target = previous }
         else { throw DesktopError(code: "target_required", message: "Provide pid and window_id, or set desktop=true") }
+        observations.removeValue(forKey: session)
         let screenshot = args.bool("screenshot") != false
         let desktop = target.bool("desktop") == true
         let windowFocus = target.number("pid").flatMap { pid in target.number("window_id").map { "\(pid):\($0)" } }
@@ -288,7 +296,14 @@ actor NativeComputer {
     }
     private func act(_ session: String, _ args: JSONObject) async throws -> JSONObject {
         try assertOpen(session)
-        guard let observation = observations[session], args.string("observation_id") == observation.id, now() - observation.created <= 120 else { throw DesktopError(code: "stale_observation", message: "The observation is no longer current", hint: "Call computer_observe on the same target and copy the new observation_id.") }
+        guard let observation = observations[session], args.string("observation_id") == observation.id else {
+            throw DesktopError(code: "stale_observation", message: "The observation is no longer current", hint: "Observe the intended target again and use its new observation_id and references.")
+        }
+        if now() - observation.created > 120 {
+            observations.removeValue(forKey: session)
+            let target = observation.target.bool("desktop") == true ? "with desktop=true" : "on the same window"
+            throw DesktopError(code: "stale_observation", message: "The observation exceeded its 120-second lifetime", hint: "Call computer_observe \(target) and use its new observation_id and references.")
+        }
         let desktop = observation.target.bool("desktop") == true
         let focusHint = "Bring the intended window to the front, then refresh it with computer_observe."
         if desktop && observation.focus == nil { throw DesktopError(code: "focus_unavailable", message: "Desktop focus is unconfirmed", hint: focusHint) }

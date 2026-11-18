@@ -263,20 +263,30 @@ actor DeviceClient {
         try await writeStatus()
     }
     private func execute(_ frame: JSONObject, arguments: JSONObject, connection identity: UUID) async {
-        let id = frame.string("operation_id")!
+        let id = frame.string("operation_id")!, tool = frame.string("tool")!
         var result: JSONObject = [:], outcome = "executed", failure: JSONObject?
         do {
             try Task.checkCancellation()
-            result = try await executor.execute(id: id, session: frame.string("session_id")!, tool: frame.string("tool")!, arguments: arguments)
+            result = try await executor.execute(id: id, session: frame.string("session_id")!, tool: tool, arguments: arguments)
             try Task.checkCancellation()
             if config.paused || config.revoked == true { throw CancellationError() }
         } catch {
-            if let e = error as? DesktopError, !Task.isCancelled, ["refused", "failed"].contains(e.outcome), !["outcome_unknown", "operation_cancelled"].contains(e.code) { outcome = e.outcome; failure = e.json }
-            else {
+            let nativeFailure = error as? DesktopError
+            let cancelled = Task.isCancelled || error is CancellationError || nativeFailure?.code == "operation_cancelled"
+            let timedOut = nativeFailure?.code == "driver_timeout"
+            if let nativeFailure, !cancelled, ["refused", "failed"].contains(nativeFailure.outcome), nativeFailure.code != "outcome_unknown" {
+                outcome = nativeFailure.outcome
+                failure = nativeFailure.json
+            } else if !cancelled, ["computer_apps", "computer_windows", "computer_observe"].contains(tool) {
+                // These tools do not deliver input, so a missing driver result is a read failure.
+                outcome = "failed"
+                failure = [
+                    "code": .string(timedOut ? "driver_timeout" : "driver_error"),
+                    "message": .string(timedOut ? "The desktop driver timed out while reading desktop state" : "The desktop driver could not read desktop state"),
+                ]
+            } else {
                 outcome = "outcome_unknown"
-                let cancelled = Task.isCancelled || error is CancellationError || (error as? DesktopError)?.code == "operation_cancelled"
-                let nativeFailure = error as? DesktopError
-                let causeCode = cancelled ? "operation_cancelled" : nativeFailure?.code == "driver_timeout" ? "execution_timeout" : nativeFailure != nil ? "execution_unconfirmed" : "execution_error"
+                let causeCode = cancelled ? "operation_cancelled" : timedOut ? "execution_timeout" : nativeFailure != nil ? "execution_unconfirmed" : "execution_error"
                 failure = ["code": .string(cancelled ? "operation_cancelled" : "outcome_unknown"), "message": .string("Execution result is unknown; the operation will not be replayed"), "cause": .object(["code": .string(causeCode), "message": .string(cancelled ? "Execution was interrupted by cancellation" : "The device could not confirm execution")])]
             }
             result = [:]

@@ -226,7 +226,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "computer_act",
-    "Act once using the current observation_id and available_actions. Prefer a supported element_ref action. Window screenshot clicks default to background. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. A covering window can be reported in error.desktop. If the action returns unverifiable or unknown, verify the expected change before continuing. Use result.observation directly, including any new window target. Set screenshot=true for visual follow-up. wait_after_ms defaults to 2000.",
+    "Act once using the current observation_id and available_actions. After a delay, refresh the target first: observations last at most 120 seconds and screenshot captures can expire sooner. Prefer a supported element_ref action. Window screenshot clicks default to background. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. A covering window can be reported in error.desktop. If the action returns unverifiable or unknown, verify the expected change before continuing. Use result.observation directly, including any new window target. Set screenshot=true for visual follow-up. wait_after_ms defaults to 2000.",
     computerActSchema.safeExtend(base),
     (a) => exec("computer_act", a),
   );

@@ -86,7 +86,7 @@ test(
                   protocol: "abridge/1",
                   device_id: "fixture",
                   connection_epoch: 1,
-                  capabilities: ["files", "screen"],
+                  capabilities: ["files", "screen", "input"],
                   owner_name: "Fixture",
                   lease_seconds: 30,
                   heartbeat_interval: 10,
@@ -268,30 +268,106 @@ test(
           await f.close();
         }
       });
-      await t.test("uncertain driver failures are valid redacted receipts and never replay", async () => {
+      await t.test(
+        "desktop read failures return redacted failure receipts and preserve explicit refusals",
+        async () => {
+          const f = await fixture();
+          try {
+            for (const { failure, tool, args, status, code } of [
+              {
+                failure: "driver_timeout",
+                tool: "computer_apps",
+                args: {},
+                status: "failed",
+                code: "driver_timeout",
+              },
+              {
+                failure: "private_sdk_failure",
+                tool: "computer_windows",
+                args: { pid: 10 },
+                status: "failed",
+                code: "driver_error",
+              },
+              {
+                failure: "generic",
+                tool: "computer_observe",
+                args: { pid: 10, window_id: 20, screenshot: false },
+                status: "failed",
+                code: "driver_error",
+              },
+              {
+                failure: "permission_denied",
+                tool: "computer_apps",
+                args: {},
+                status: "refused",
+                code: "permission_denied",
+              },
+            ]) {
+              await f.fail(failure);
+              const frame = {
+                ...f.frame(`read_${tool}_${status}`),
+                tool,
+                arguments: args,
+                session_capabilities: ["screen"],
+              };
+              f.send(frame);
+              const receipt = await f.result(frame.operation_id);
+              assert.equal(receipt.status, status);
+              assert.equal((receipt.error as Value).code, code);
+              assert.equal(JSON.stringify(receipt).includes("private"), false);
+              f.send(frame);
+              const duplicate = await f.result(frame.operation_id, 2);
+              assert.equal(duplicate.status, status);
+              assert.equal((duplicate.error as Value).code, "duplicate_operation");
+              assert.equal(
+                f.events.filter((event) => event.event === "effect" && event.id === failure).length,
+                1,
+              );
+            }
+          } finally {
+            await f.close();
+          }
+        },
+      );
+      await t.test("unconfirmed input remains unknown and its identity never replays", async () => {
         const f = await fixture();
         try {
-          for (const failure of ["driver_timeout", "driver_error", "generic"]) {
-            await f.fail(failure);
-            const frame = {
-              ...f.frame(failure),
-              tool: "computer_apps",
-              arguments: {},
-              session_capabilities: ["screen"],
-            };
-            f.send(frame);
-            const receipt = await f.result(failure);
-            assert.equal(receipt.status, "outcome_unknown");
-            assert.equal(JSON.stringify(receipt).includes("private"), false);
-            f.send(frame);
-            const duplicate = await f.result(failure, 2);
-            assert.equal(duplicate.status, "outcome_unknown");
-            assert.equal((duplicate.error as Value).code, "duplicate_operation");
-            assert.equal(
-              f.events.filter((event) => event.event === "effect" && event.id === failure).length,
-              1,
-            );
-          }
+          f.send({
+            ...f.frame("observe"),
+            tool: "computer_observe",
+            arguments: { pid: 10, window_id: 20, screenshot: false },
+            session_capabilities: ["screen"],
+          });
+          const observed = await f.result("observe");
+          assert.equal(observed.status, "executed");
+          const observationId = (observed.result as Value).observation_id;
+          assert.equal(typeof observationId, "string");
+          await f.fail("driver_timeout");
+          const frame = {
+            ...f.frame("input_timeout"),
+            tool: "computer_act",
+            arguments: {
+              observation_id: observationId,
+              action: { type: "click", element_ref: "e1" },
+              observe_after: false,
+            },
+            session_capabilities: ["input"],
+          };
+          f.send(frame);
+          const receipt = await f.result(frame.operation_id);
+          assert.equal(receipt.status, "outcome_unknown");
+          const error = receipt.error as Value;
+          assert.equal(error.code, "outcome_unknown");
+          assert.equal((error.cause as Value).code, "execution_timeout");
+          assert.equal(JSON.stringify(receipt).includes("private"), false);
+          f.send(frame);
+          const duplicate = await f.result(frame.operation_id, 2);
+          assert.equal(duplicate.status, "outcome_unknown");
+          assert.equal((duplicate.error as Value).code, "duplicate_operation");
+          assert.equal(
+            f.events.filter((event) => event.event === "effect" && event.id === "driver_timeout").length,
+            1,
+          );
         } finally {
           await f.close();
         }
