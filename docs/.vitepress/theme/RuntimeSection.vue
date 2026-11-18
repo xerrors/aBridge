@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { Blocks, Cable, Terminal } from "@lucide/vue";
+import codex from "../../assets/brand/agents/codex-color.svg";
+import claude from "../../assets/brand/agents/claudecode-color.svg";
+import cursor from "../../assets/brand/agents/cursor.svg";
+import gemini from "../../assets/brand/agents/geminicli-color.svg";
+import opencode from "../../assets/brand/agents/opencode.svg";
+import yuxi from "../../assets/brand/agents/yuxi.svg";
 import { withBase } from "vitepress";
 import bridge from "../../assets/brand/bridge.svg";
 import wordmark from "../../assets/brand/wordmark.svg";
@@ -8,6 +13,14 @@ import macos from "../../assets/brand/platforms/macos.svg";
 import linux from "../../assets/brand/platforms/linux.svg";
 import android from "../../assets/brand/platforms/android.svg";
 
+const agents = [
+  { name: "Codex CLI", icon: codex },
+  { name: "Claude Code", icon: claude },
+  { name: "Cursor", icon: cursor },
+  { name: "Gemini CLI", icon: gemini },
+  { name: "OpenCode", icon: opencode },
+  { name: "Yuxi", icon: yuxi },
+];
 const devices = [
   { name: "Chrome", icon: chrome, capability: "浏览器扩展" },
   { name: "macOS", icon: macos, capability: "桌面应用" },
@@ -23,215 +36,214 @@ const devices = [
       <a class="quiet-link" :href="withBase('/architecture.html')">阅读架构文档</a>
     </div>
     <p class="section-lede">Agent 通过 MCP 发出请求，aBridge 核对权限，再交给你选定的设备执行。</p>
-    <figure class="topology">
-      <div class="connection-map">
-        <ul class="endpoints agents" aria-label="Agent 接入示例">
-          <li><Terminal aria-hidden="true" />Codex CLI</li>
-          <li><Blocks aria-hidden="true" />Yuxi</li>
-          <li><Cable aria-hidden="true" />其他 MCP 客户端</li>
-        </ul>
-        <div class="wires inbound">
-          <span>MCP</span>
-          <svg viewBox="0 0 160 224" preserveAspectRatio="none" aria-hidden="true">
-            <path d="M0 56 H16 C64 56 46 112 95 112 H160 M0 112 H95 M0 168 H16 C64 168 46 112 95 112" />
-          </svg>
-        </div>
+    <div class="topology" role="group" aria-label="支持 MCP 的 Agent 通过自托管的 aBridge 连接设备客户端">
+      <ul class="honeycomb" aria-label="Agent 客户端示例">
+        <li v-for="agent in agents" :key="agent.name">
+          <img :src="agent.icon" alt="" /><strong>{{ agent.name }}</strong>
+        </li>
+      </ul>
+      <div class="bridge-lane">
+        <span class="protocol">MCP</span>
         <div class="server-node">
-          <img class="hub-mark" :src="bridge" alt="" /><img class="hub-word" :src="wordmark" alt="aBridge" />
-          <span>自托管服务</span>
+          <img class="hub-mark" :src="bridge" alt="" /><img
+            class="hub-name"
+            :src="wordmark"
+            alt="aBridge"
+          /><small>自托管服务</small>
         </div>
-        <div class="wires outbound">
-          <span>WebSocket</span>
-          <svg viewBox="0 0 160 224" preserveAspectRatio="none" aria-hidden="true">
-            <path
-              d="M0 112 H45 C91 112 80 28 137 28 H160 M45 112 C91 112 87 84 137 84 H160 M45 112 C91 112 87 140 137 140 H160 M45 112 C91 112 80 196 137 196 H160"
-            />
-          </svg>
-        </div>
-        <ul class="endpoints devices" aria-label="设备客户端">
-          <li v-for="device in devices" :key="device.name">
-            <img :src="device.icon" alt="" /><strong>{{ device.name }}</strong
-            ><small>{{ device.capability }}</small>
-          </li>
-        </ul>
+        <span class="protocol">WebSocket</span>
       </div>
-      <figcaption>
-        <strong>以查看项目看板为例</strong
-        ><span
-          >Agent 选中获准访问的 Chrome。扩展在专用标签页中打开看板，沿用你的登录状态，再通过 aBridge
-          返回结果。</span
-        >
-      </figcaption>
-    </figure>
+      <ul class="destinations" aria-label="设备客户端">
+        <li v-for="device in devices" :key="device.name">
+          <img :src="device.icon" alt="" /><strong>{{ device.name }}</strong
+          ><small>{{ device.capability }}</small>
+        </li>
+      </ul>
+    </div>
   </section>
 </template>
-
 <style scoped>
 .topology {
-  margin: 28px 0 0;
-  border: 1px solid #d9e4ee;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #f6f9fc;
-}
-.connection-map {
+  isolation: isolate;
+  position: relative;
   display: grid;
-  grid-template-columns: max-content minmax(44px, 1fr) 152px minmax(70px, 1.15fr) max-content;
+  grid-template-columns: minmax(220px, 1.12fr) minmax(220px, 1.26fr) minmax(190px, 0.78fr);
   align-items: center;
-  max-width: 1080px;
-  margin: auto;
-  padding: 34px clamp(20px, 3vw, 44px);
+  gap: clamp(10px, 2vw, 32px);
+  padding: 36px clamp(16px, 3vw, 44px);
+  margin-top: 26px;
+  border-radius: 18px;
+  background: #f6f9fd;
+  overflow: hidden;
 }
-.endpoints {
+.topology::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 8%;
+  right: 25%;
+  top: 50%;
+  height: 58%;
+  transform: translateY(-50%);
+  background: linear-gradient(95deg, #edf5ff00 0%, #dfedfd 32%, #d2e5fc 71%, #bcd9f8 100%);
+  clip-path: polygon(0 27%, 79% 27%, 79% 0, 100% 50%, 79% 100%, 79% 73%, 0 73%);
+}
+.honeycomb,
+.destinations {
   list-style: none;
-  padding: 0;
   margin: 0;
+  padding: 0;
 }
-.endpoints li {
-  display: flex;
-  align-items: center;
-  height: 56px;
-  gap: 10px;
-  font-size: 17px;
-  font-weight: 580;
+.honeycomb {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 88px));
+  justify-content: center;
+  column-gap: 0;
+  row-gap: 4px;
+  padding: 0 12px 45px;
 }
-.agents {
-  padding-right: 12px;
+.honeycomb li {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 5px;
+  height: 90px;
+  margin-inline: -10%;
+  filter: drop-shadow(0 2px 2px #45618b15);
 }
-.agents svg {
-  width: 21px;
-  height: 21px;
-  stroke-width: 1.65;
-  color: #46576a;
+.honeycomb li:before,
+.honeycomb li:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  clip-path: polygon(23% 0, 77% 0, 100% 50%, 77% 100%, 23% 100%, 0 50%);
+  background: #d8e2ee;
 }
-.devices {
-  padding-left: 14px;
+.honeycomb li:after {
+  inset: 1px;
+  background: white;
 }
-.devices img {
-  width: 24px;
-  height: 24px;
+.honeycomb li:nth-child(3n + 2) {
+  transform: translateY(52%);
+}
+.honeycomb img {
+  width: 31px;
+  height: 31px;
   object-fit: contain;
 }
-.devices strong {
-  font-weight: 600;
+.honeycomb strong {
+  font-size: 12px;
+  line-height: 1.25;
+  font-weight: 580;
 }
-.devices small {
-  font-size: 13px;
-  font-weight: 400;
-  color: #516377;
-  margin-left: 4px;
+.bridge-lane {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(7px, 1.4vw, 22px);
+}
+.protocol {
+  font:
+    12px ui-monospace,
+    monospace;
+  color: #365c82;
 }
 .server-node {
   display: grid;
   justify-items: center;
   align-content: center;
-  height: 152px;
-  background: white;
-  border: 1px solid #a8c7e9;
-  border-radius: 18px;
-  box-shadow: 0 3px 0 #dfeaf5;
+  gap: 8px;
+  flex: none;
+  width: clamp(98px, 9vw, 128px);
+  aspect-ratio: 1;
+  border-radius: 24%;
+  background: #fff;
+  box-shadow:
+    0 2px 2px #345d8b12,
+    0 10px 24px #3f76af20,
+    inset 0 0 0 1px #bed2e9;
 }
 .hub-mark {
-  width: 54px;
-  margin-bottom: 10px;
+  width: 36%;
 }
-.hub-word {
-  width: 84px;
+.hub-name {
+  width: 59%;
 }
-.server-node span {
-  color: #52667b;
-  font-size: 13px;
-  margin-top: 9px;
+.server-node small,
+.destinations small {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #556a7e;
 }
-.wires {
-  position: relative;
-  height: 224px;
-  color: #476480;
+.destinations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 25px 12px;
 }
-.wires svg {
-  width: 100%;
-  height: 100%;
-  fill: none;
-  stroke: #82a8ce;
+.destinations li {
+  display: grid;
+  justify-items: center;
+  align-content: start;
 }
-.wires path {
-  vector-effect: non-scaling-stroke;
-  stroke-width: 1.5;
+.destinations img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  margin-bottom: 7px;
 }
-.wires span {
-  position: absolute;
-  bottom: calc(50% + 7px);
-  font:
-    13px ui-monospace,
-    monospace;
-  background: #f6f9fc;
-  padding: 0 3px;
-}
-.inbound span {
-  right: 4px;
-}
-.outbound span {
-  left: 4px;
-}
-figcaption {
-  display: flex;
-  align-items: baseline;
-  gap: 24px;
-  border-top: 1px solid #dce5ec;
-  background: white;
-  padding: 18px clamp(20px, 3vw, 44px);
-  font-size: 14px;
-  line-height: 1.75;
-  color: #4b5b6a;
-}
-figcaption strong {
-  flex-shrink: 0;
-  color: #1c3349;
+.destinations strong {
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 600;
 }
 @media (max-width: 760px) {
-  .connection-map {
-    display: flex;
-    flex-direction: column;
-    padding: 24px 16px;
-    gap: 0;
+  .topology {
+    grid-template-columns: 1fr;
+    padding: 24px 12px;
+    gap: 20px;
   }
-  .endpoints {
-    display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px 14px;
+  .topology::before {
+    inset: 18% 18% 12%;
+    width: auto;
+    height: auto;
+    transform: none;
+    clip-path: polygon(30% 0, 70% 0, 70% 72%, 90% 72%, 50% 100%, 10% 72%, 30% 72%);
+    background: linear-gradient(#e8f2ff00, #d2e7ff);
+  }
+  .honeycomb {
+    grid-template-columns: repeat(3, 80px);
+    gap: 4px;
     padding: 0;
   }
-  .endpoints li {
-    font-size: 14px;
-    height: 30px;
-    gap: 5px;
+  .honeycomb li {
+    margin-inline: 0;
+    height: 64px;
+    gap: 2px;
   }
-  .devices small {
-    display: none;
+  .honeycomb li:nth-child(3n + 2) {
+    transform: none;
   }
-  .wires {
-    height: 42px;
-    border-left: 1px solid #82a8ce;
+  .honeycomb li:nth-child(n + 4) {
+    transform: translateX(12%);
   }
-  .wires span {
-    left: 8px;
-    right: auto;
-    bottom: 14px;
+  .honeycomb img {
+    width: 21px;
+    height: 21px;
   }
-  .wires svg {
-    display: none;
+  .destinations {
+    grid-template-columns: repeat(4, 1fr);
+    width: 100%;
+    gap: 4px;
   }
-  .server-node {
-    width: 148px;
-    height: 135px;
+  .destinations img {
+    width: 25px;
+    height: 25px;
   }
-  figcaption {
-    display: block;
-  }
-  figcaption strong {
-    display: block;
-    margin-bottom: 4px;
+  .bridge-lane {
+    gap: 12px;
   }
 }
 </style>

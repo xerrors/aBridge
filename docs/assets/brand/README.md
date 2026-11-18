@@ -8,3 +8,7 @@
 详细规范见 [设计与资产](../../design.md)。
 
 `npm run icons` 同时同步商店宣传图 `docs/assets/store/promo.svg` 与 `promo.jpg`，字标不单独编辑。
+
+## Agent 客户端图标
+
+官网使用 `agents/` 中的本地 SVG。Codex、Claude Code、Cursor、Gemini CLI 和 OpenCode 图标取自 [Lobe Icons](https://github.com/lobehub/lobe-icons/tree/34270bc208d7122778dc00b30bd460f97ea03216/packages/static-svg/icons)，授权见同目录的 `LICENSE-lobe-icons`。Yuxi 图标取自 [Yuxi 项目的 favicon](https://github.com/xerrors/Yuxi/blob/main/frontend/public/favicon.svg)。产品名称和标识归相应权利人所有。

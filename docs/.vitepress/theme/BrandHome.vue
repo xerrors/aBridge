@@ -85,8 +85,8 @@ const selected = ref(clients[0]);
     </section>
     <RuntimeSection />
     <section class="device-section" aria-labelledby="client-title">
-      <div class="device-heading">
-        <h2 id="client-title">接入你的设备</h2>
+      <h2 id="client-title">接入你的设备</h2>
+      <div class="client-explorer">
         <div class="client-switch" role="group" aria-label="选择客户端">
           <button
             v-for="client in clients"
@@ -95,24 +95,28 @@ const selected = ref(clients[0]);
             :aria-pressed="selected.name === client.name"
             @click="selected = client"
           >
-            <img :src="client.icon" alt="" />{{ client.name }}
+            <img :src="client.icon" alt="" /><span
+              >{{ client.name }}<small>{{ client.type }}</small></span
+            ><ChevronRight :size="16" aria-hidden="true" />
           </button>
         </div>
-      </div>
-      <div class="device-detail" aria-live="polite">
-        <div class="device-copy">
-          <small>{{ selected.type }}</small>
-          <h3>{{ selected.title }}</h3>
-          <p>{{ selected.summary }}</p>
-          <a class="quiet-link" :href="withBase(selected.link)">查看接入说明</a>
-        </div>
-        <div class="example">
-          <small>任务示例</small>
-          <blockquote>“{{ selected.prompt }}”</blockquote>
-          <div class="capabilities">
-            <span v-for="cap in selected.capabilities" :key="cap">{{ cap }}</span>
+        <div class="device-detail" aria-live="polite">
+          <div class="device-meta">
+            <img :src="selected.icon" alt="" /><span>{{ selected.requirement }}</span>
           </div>
-          <p>{{ selected.requirement }}</p>
+          <h3>{{ selected.title }}</h3>
+          <p class="device-summary">{{ selected.summary }}</p>
+          <div class="device-task">
+            <small>任务示例</small>
+            <blockquote>{{ selected.prompt }}</blockquote>
+          </div>
+          <div class="device-bottom">
+            <span>{{ selected.capabilities.join(" · ") }}</span><a
+              class="device-link"
+              :href="withBase(selected.link)"
+              >接入{{ selected.name }} <ChevronRight :size="15" aria-hidden="true"
+            /></a>
+          </div>
         </div>
       </div>
     </section>
