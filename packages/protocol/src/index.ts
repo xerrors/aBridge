@@ -399,24 +399,13 @@ export const browserActionSchema = z.discriminatedUnion("type", [
   browserSelectSchema,
   browserScrollSchema,
 ]);
-export const browserLocateActSchema = z
-  .object({
-    frame_selector: z.string().min(1).max(2000).optional(),
-    selector: z.string().min(1).max(2000),
-    action: z.discriminatedUnion("type", [
-      browserClickSchema.omit({ element_ref: true }),
-      browserFillSchema.omit({ element_ref: true }),
-      browserHoverSchema.omit({ element_ref: true }),
-      browserPressSchema.omit({ element_ref: true }),
-      browserSelectSchema.omit({ element_ref: true }),
-      browserScrollSchema.omit({ element_ref: true }),
-    ]),
-  })
-  .strict();
 export const browserReadSchema = z
   .object({
     frame_selector: z.string().min(1).max(2000).optional(),
-    mode: z.enum(["text", "tables"]).default("text"),
+    mode: z
+      .enum(["text", "tables"])
+      .optional()
+      .describe("Defaults to text on a new read, or the saved format when continuing a snapshot."),
     snapshot_id: snapshotIdSchema.optional(),
     offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
     limit: z.number().int().min(1).max(24000).default(12000),
@@ -429,7 +418,11 @@ export const browserWaitSchema = z
     selector: z.string().min(1).max(2000).optional(),
     text: z.string().min(1).max(2000).optional(),
     state: z.enum(["visible", "hidden", "attached", "detached", "value"]).default("visible"),
-    value: z.string().max(60000).optional(),
+    value: z
+      .string()
+      .max(60000)
+      .optional()
+      .describe("Exact field value; requires state=value and a unique selector target."),
     timeout_ms: z.number().int().min(0).max(20000).default(10000),
   })
   .strict()
@@ -437,7 +430,32 @@ export const browserWaitSchema = z
   .refine(
     (a) => a.state !== "value" || (a.selector !== undefined && a.value !== undefined),
     "Value wait requires selector and value",
-  );
+  )
+  .refine((a) => a.value === undefined || a.state === "value", "value requires state=value");
+export const browserLocateActSchema = z
+  .object({
+    frame_selector: z.string().min(1).max(2000).optional(),
+    selector: z.union([
+      z.string().min(1).max(2000),
+      z
+        .object({
+          within: z.string().min(1).max(2000).optional(),
+          role: z.string().min(1).max(100),
+          name: z.string().max(2000),
+        })
+        .strict(),
+    ]),
+    verify: browserWaitSchema.optional(),
+    action: z.discriminatedUnion("type", [
+      browserClickSchema.omit({ element_ref: true }),
+      browserFillSchema.omit({ element_ref: true }),
+      browserHoverSchema.omit({ element_ref: true }),
+      browserPressSchema.omit({ element_ref: true }),
+      browserSelectSchema.omit({ element_ref: true }),
+      browserScrollSchema.omit({ element_ref: true }),
+    ]),
+  })
+  .strict();
 export const browserEvaluateSchema = z
   .object({
     frame_selector: z.string().min(1).max(2000).optional(),
@@ -525,12 +543,27 @@ export const browserOpenSchema = z
   .object({ url: z.string().min(1).max(8192), screenshot: z.boolean().default(false) })
   .strict();
 export const browserObserveSchema = z
-  .object({ screenshot: z.boolean().default(false), query: browserQuerySchema.optional() })
+  .object({
+    screenshot: z.boolean().default(false),
+    query: browserQuerySchema.optional(),
+    element_offset: z
+      .number()
+      .int()
+      .min(0)
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional()
+      .describe(
+        "Skip this many matching controls in a fresh scan, using the same query as the previous page.",
+      ),
+  })
   .strict();
 export const browserActSchema = z
   .object({
     observation_id: observationIdSchema,
     action: browserActionSchema,
+    verify: browserWaitSchema
+      .optional()
+      .describe("After input, wait for this expected page condition and report whether it matched."),
     ...actionObservationShape,
   })
   .strict()

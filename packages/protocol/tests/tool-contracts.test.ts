@@ -35,6 +35,8 @@ test("tool parsing preserves defaults and rejects invalid combinations before ex
     { tool: "computer_observe", arguments: { window_id: 1 } },
     { tool: "computer_observe", arguments: { desktop: true, pid: 1 } },
     { tool: "browser_wait", arguments: { selector: "#field", state: "value" } },
+    { tool: "browser_wait", arguments: { selector: "#field", value: "3" } },
+    { tool: "browser_act", arguments: { ...action.arguments, verify: { selector: "#field", value: "3" } } },
     { tool: "browser_open", arguments: { url: "https://example.test", observe_after: false } },
     { tool: "browser_act", arguments: { ...action.arguments, screenshot: true, observe_after: false } },
   ])

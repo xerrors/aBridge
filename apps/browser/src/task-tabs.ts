@@ -6,6 +6,8 @@ interface AXValue {
   value?: unknown;
 }
 interface AXNode {
+  nodeId?: string;
+  parentId?: string;
   ignored?: boolean;
   backendDOMNodeId?: number;
   role?: AXValue;
@@ -46,7 +48,33 @@ interface AttachAttempt {
   promise: Promise<void>;
   cleanup?: Promise<void>;
 }
+interface OpenedTab {
+  tab_id: number;
+  url_omitted?: boolean;
+  title?: string;
+  url?: string;
+  recovery?: { action: "browser_open" };
+}
+function captureOpenedTab(
+  entry: OpenedTab,
+  tab: Pick<chrome.tabs.Tab, "url" | "pendingUrl" | "title" | "status">,
+) {
+  const url = tab.url && tab.url !== "about:blank" ? tab.url : tab.pendingUrl;
+  if (!url || !/^https?:\/\//i.test(url) || (entry.url && url !== entry.url)) return;
+  if (url.length > 2000) {
+    entry.url_omitted = true;
+    return;
+  }
+  delete entry.url_omitted;
+  entry.url = url;
+  entry.recovery = { action: "browser_open" };
+  if (tab.url === url && tab.status !== "loading" && tab.title) entry.title = tab.title.slice(0, 160);
+}
 export interface TaskTab {
+  openedTabs?: OpenedTab[];
+  capturingTabs?: boolean;
+  childUrlDeadline?: number;
+  invalidatedObservation?: { id: string; reason: string };
   id: string;
   tabId: number | null;
   observation: Observation | null;
@@ -60,6 +88,8 @@ export interface TaskTab {
     url: string;
     truncated: boolean;
     coverage: string;
+    selector?: string;
+    frameSelector?: string;
   };
   denied?: boolean;
   creation?: Promise<void>;
@@ -136,9 +166,37 @@ export class TaskTabs {
     this.chrome = chrome;
     this.navigationTimeout = navigationTimeout;
     for (const tabId of ownedTabs) this.ownedTabIds.add(tabId);
-    const onUpdated: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (id, change) => {
+    // The source navigation event also identifies target=_blank links with implicit noopener.
+    const targetCreated = chrome.webNavigation?.onCreatedNavigationTarget;
+    const onTargetCreated: Parameters<
+      typeof chrome.webNavigation.onCreatedNavigationTarget.addListener
+    >[0] = ({ sourceTabId, tabId, url }) => {
+      for (const session of this.taskRecords.values()) {
+        if (!session.capturingTabs || session.tabId !== sourceTabId) continue;
+        const entries = (session.openedTabs ??= []);
+        if (entries.length === 3 || entries.some((entry) => entry.tab_id === tabId)) return;
+        const entry: OpenedTab = { tab_id: tabId };
+        captureOpenedTab(entry, { url });
+        entries.push(entry);
+      }
+    };
+    targetCreated?.addListener(onTargetCreated);
+    this.releaseListeners.push(() => targetCreated?.removeListener(onTargetCreated));
+    const onUpdated: Parameters<typeof chrome.tabs.onUpdated.addListener>[0] = (id, change, tab) => {
+      for (const session of this.taskRecords.values()) {
+        const child = session.openedTabs?.find((entry) => entry.tab_id === id);
+        if (!child || !tab || child.url_omitted) continue;
+        // A new target may still be about:blank when the input receipt returns.
+        const awaitingMetadata = performance.now() < (session.childUrlDeadline ?? 0);
+        if (session.capturingTabs || awaitingMetadata) captureOpenedTab(child, tab);
+      }
       for (const session of this.taskRecords.values())
         if (session.tabId === id && (change.status === "loading" || change.url)) {
+          if (session.observation)
+            session.invalidatedObservation = {
+              id: session.observation.id,
+              reason: change.url ? "页面地址已变化" : "页面开始重新加载",
+            };
           session.observation = null;
           session.revision++;
           if (change.url && change.url !== "about:blank") {
@@ -153,6 +211,9 @@ export class TaskTabs {
     chrome.tabs.onUpdated.addListener(onUpdated);
     this.releaseListeners.push(() => chrome.tabs.onUpdated.removeListener(onUpdated));
     const onRemoved: Parameters<typeof chrome.tabs.onRemoved.addListener>[0] = (id) => {
+      for (const session of this.taskRecords.values())
+        if (session.openedTabs)
+          session.openedTabs = session.openedTabs.filter((entry) => entry.tab_id !== id);
       this.contexts.delete(id);
       this.ownedTabIds.delete(id);
       void this.persistOwnership().catch(() => {});
@@ -431,6 +492,7 @@ export class TaskTabs {
       session.observation = null;
       session.revision++;
       session.denied = false;
+      session.openedTabs = undefined;
       try {
         await this.chrome.tabs.update(session.tabId!, { url });
         if (isCancelled()) throw fail("operation_cancelled", "导航期间任务已取消；不要重放");

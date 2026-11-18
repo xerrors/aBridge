@@ -1,7 +1,9 @@
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import { BrowserBridge } from "../src/bridge.ts";
 import {
+  captureContent,
   prepareInput,
   validateInput,
   validateSelect,
@@ -29,6 +31,7 @@ function fixture() {
     now = 1000,
     rejectWrite = false;
   const chrome = {
+    webNavigation: { onCreatedNavigationTarget: event() },
     tabs: {
       onUpdated: event(),
       onRemoved: event(),
@@ -141,6 +144,56 @@ test("refs resolve backend node handles and click uses native CDP input", async 
   });
   assert.equal(replay.error.code, "stale_observation");
 });
+test("a condition timeout preserves the dispatched input receipt", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  let matched = false;
+  f.chrome.debugger.sendCommand = async (target, method, params) =>
+    method === "Runtime.evaluate" && params.expression.includes("checkCondition")
+      ? { result: { value: matched } }
+      : send(target, method, params);
+  for (matched of [false, true]) {
+    const obs = (await f.request("observe")).result;
+    const result = await f.request("act", "s1", {
+      observation_id: obs.observation_id,
+      action: { type: "click", element_ref: "e1" },
+      observe_after: false,
+      verify: { selector: "#variant input", state: "value", value: "3", timeout_ms: 10 },
+    });
+    assert.equal(result.status, "executed");
+    assert.equal(result.result.input_dispatched, true);
+    assert.equal(result.result.verification.matched, matched);
+    if (!matched) assert.equal(result.result.verification.error.code, "wait_timeout");
+  }
+  assert.equal(
+    f.calls.filter((c) => c[0] === "Input.dispatchMouseEvent" && c[2].type === "mousePressed").length,
+    2,
+  );
+});
+test("value verification rejects ambiguous fields without losing the input receipt", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.expression.includes("checkCondition")) {
+      const document = { querySelectorAll: () => [{ value: "1" }, { value: "3" }] };
+      return { result: { value: runInNewContext(params.expression, { document }) } };
+    }
+    return send(target, method, params);
+  };
+  const response = await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "click", element_ref: "e1" },
+    observe_after: false,
+    verify: { selector: ".quantity", state: "value", value: "3" },
+  });
+  assert.equal(response.status, "executed");
+  assert.equal(response.result.input_dispatched, true);
+  assert.equal(response.result.verification.matched, false);
+  assert.equal(response.result.verification.error.code, "target_not_unique");
+});
+
 test("cross-session, expired and navigation-invalidated references never write", async () => {
   const f = fixture();
   await f.request("open", "s1", { url: "https://example.com/" });
@@ -547,6 +600,39 @@ test("observation reports text and interactive-list truncation explicitly", asyn
   assert.ok(result.text.length <= 4000);
   assert.ok(JSON.stringify(result).length < 7500);
   assert.ok(result.elements.length < 700);
+  assert.equal(result.scan.ax_nodes, 700);
+  assert.equal(result.elements_returned, result.elements.length);
+  const names = result.elements.map((element) => element.name);
+  let offset = result.next_element_offset;
+  while (offset !== undefined) {
+    assert.equal(offset, names.length);
+    const next = (await f.request("observe", "s1", { element_offset: offset })).result;
+    names.push(...next.elements.map((element) => element.name));
+    offset = next.next_element_offset;
+  }
+  assert.deepEqual(
+    names,
+    Array.from({ length: 700 }, (_, i) => `Button ${i}`),
+  );
+  const empty = (await f.request("observe", "s1", { query: "missing" })).result;
+  assert.ok(empty.page_summary);
+  assert.equal(empty.elements_total, 0);
+});
+
+test("observe preserves a full-size excerpt when the controls and URL fit", async () => {
+  const f = fixture(),
+    url = "https://example.com/" + "a".repeat(1600),
+    text = "x".repeat(3997);
+  await f.request("open", "s1", { url });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) =>
+    method === "Runtime.evaluate" && params.expression.includes("document.body?.innerText")
+      ? { result: { value: { text, truncated: false, base_uri: url } } }
+      : send(target, method, params);
+  const obs = (await f.request("observe")).result;
+  assert.equal(obs.text, text);
+  assert.ok(obs.elements.length > 0);
+  assert.ok(JSON.stringify(obs).length <= 7000);
 });
 
 test("closed-loop open and actions return fresh observations and keep successful action on read failure", async () => {
@@ -1052,6 +1138,93 @@ test("saved text snapshots page without recapturing changed content and isolate 
   );
 });
 
+test("escaped observation previews fit the envelope while retaining a usable ref on each page", async () => {
+  const f = fixture();
+  const url = "https://example.com/" + "u".repeat(1930);
+  await f.request("open", "s1", { url });
+  const send = f.chrome.debugger.sendCommand;
+  const escaped = (code) => String.fromCharCode(code).repeat(240);
+  f.tabs.get(2).title = escaped(3);
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: [1, 2].map((i) => ({
+          backendDOMNodeId: i,
+          role: { value: "textbox" },
+          name: { value: "Find" + escaped(1) },
+          description: { value: escaped(2) },
+          value: { value: escaped(4) },
+        })),
+      };
+    if (method === "Runtime.evaluate" && params.returnByValue)
+      return { result: { value: { text: escaped(5) + "Find", base_uri: url } } };
+    if (method === "DOM.describeNode") return { node: { attributes: ["type", escaped(6)] } };
+    return send(target, method, params);
+  };
+  const request = { query: "Find" };
+  const first = (await f.request("observe", "s1", request)).result;
+  assert.equal(first.elements.length, 1);
+  assert.equal(first.next_element_offset, 1);
+  assert.equal(first.truncated, true);
+  assert.ok(JSON.stringify(first).length <= 7000);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.refs.get(first.elements[0].element_ref), 1);
+  const second = (await f.request("observe", "s1", { ...request, element_offset: first.next_element_offset }))
+    .result;
+  assert.equal(second.elements.length, 1);
+  assert.ok(JSON.stringify(second).length <= 7000);
+  assert.equal(second.next_element_offset, undefined);
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation.refs.get(second.elements[0].element_ref), 2);
+});
+
+test("escaped snapshot text continues at the encoded page budget without losing characters", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  const content = "\u0001".repeat(12000);
+  f.chrome.debugger.sendCommand = async (target, method, params) =>
+    method === "Runtime.evaluate" && params.expression.includes("captureContent")
+      ? { result: { value: content } }
+      : send(target, method, params);
+  let page = (await f.request("read")).result;
+  let text = page.text;
+  assert.equal(page.next_offset, 3999);
+  while (page.next_offset !== null) {
+    page = (await f.request("read", "s1", { snapshot_id: page.snapshot_id, offset: page.next_offset }))
+      .result;
+    assert.ok(JSON.stringify(page.text).length <= 24000);
+    text += page.text;
+  }
+  assert.equal(text, content);
+});
+
+test("nested table rows and cells retain their owning table", () => {
+  class Table {
+    constructor(rows) {
+      this.rows = rows;
+    }
+  }
+  const cell = (innerText) => ({ innerText, rowSpan: 1, colSpan: 1 });
+  const inner = new Table([{ cells: [cell("SKU")] }]);
+  const outer = new Table([{ cells: [cell("Product SKU")] }]);
+  const body = { querySelectorAll: () => [outer, inner] };
+  const read = new Function(
+    "document",
+    "HTMLTableElement",
+    "selector",
+    "return (" + captureContent.toString() + ")(selector, 'table')",
+  );
+  const document = { body, querySelector: () => outer };
+  const all = read(document, Table, undefined);
+  assert.deepEqual(
+    all.map(({ table, row, cells }) => [table, row, cells.map((c) => c.text)]),
+    [
+      [0, 0, ["Product SKU"]],
+      [1, 0, ["SKU"]],
+    ],
+  );
+  assert.deepEqual(read(document, Table, "#outer"), all.slice(0, 1));
+});
+
 test("table snapshots preserve row and merged-cell metadata with pagination", async () => {
   const f = fixture();
   await f.request("open", "s1", { url: "https://example.com/" });
@@ -1070,6 +1243,42 @@ test("table snapshots preserve row and merged-cell metadata with pagination", as
   assert.equal(first.rows[0].cells[0].row_span, 2);
   assert.equal(first.next_offset, 200);
   assert.equal(first.coverage, "loaded_main_document");
+  const continuation = { snapshot_id: first.snapshot_id, offset: first.next_offset };
+  const last = (await f.request("read", "s1", continuation)).result;
+  assert.equal(last.cached, true);
+  assert.equal(last.mode, "tables");
+  assert.deepEqual(last.rows, rows.slice(200));
+  assert.equal(last.next_offset, null);
+  for (const changedScope of [{ selector: "#other" }, { frame_selector: "#other-frame" }]) {
+    const refused = await f.request("read", "s1", { ...continuation, ...changedScope });
+    assert.equal(refused.error.code, "invalid_params");
+  }
+  const pastEnd = (await f.request("read", "s1", { ...continuation, offset: 999 })).result;
+  assert.deepEqual(pastEnd.rows, []);
+  assert.equal(pastEnd.offset, rows.length);
+  assert.equal(pastEnd.next_offset, null);
+  assert.equal(
+    (await f.request("read", "s1", { ...continuation, mode: "text" })).error.code,
+    "snapshot_missing",
+  );
+});
+
+test("wait allows the target iframe to mount before the condition matches", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  let polls = 0;
+  f.bridge.pageValue = async (_session, _expression, _timeout, frame) => {
+    assert.equal(frame, "#editor");
+    if (++polls === 1) throw Object.assign(new Error("Frame has not mounted"), { code: "target_missing" });
+    return true;
+  };
+  const receipt = await f.request("wait", "s1", {
+    frame_selector: "#editor",
+    selector: "#ready",
+    timeout_ms: 1000,
+  });
+  assert.equal(receipt.result.matched, true);
+  assert.equal(polls, 2);
 });
 
 test("condition waits poll without input, time out, and stop promptly when task closes", async () => {
@@ -1128,6 +1337,30 @@ test("locator actions resolve each target anew and reject ambiguous selectors", 
   const send = f.chrome.debugger.sendCommand;
   let ambiguous = false;
   f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Accessibility.getFullAXTree") {
+      const ax = { role: { value: "StaticText" }, name: { value: "Add" } };
+      return {
+        nodes: [
+          { ...ax, backendDOMNodeId: 101 },
+          { ...ax, backendDOMNodeId: 102 },
+          { ...ax, ignored: true, backendDOMNodeId: 103 },
+          { role: ax.role, description: ax.name, backendDOMNodeId: 104 },
+        ],
+      };
+    }
+    if (method === "DOM.resolveNode" && params.objectGroup === "abridge-locator-scope")
+      return { object: { objectId: String(params.backendNodeId) } };
+    if (method === "Runtime.callFunctionOn" && params.objectId === "100") {
+      assert.deepEqual(params.arguments, [{ objectId: "101" }, { objectId: "102" }]);
+      const doc = {};
+      const scope = { ownerDocument: doc, isConnected: true };
+      const host = { parentNode: scope };
+      const slot = { parentNode: { nodeType: 11, host } };
+      const slotted = { ownerDocument: doc, isConnected: true, assignedSlot: slot };
+      const other = { ownerDocument: {}, isConnected: true, parentNode: scope };
+      const check = Function("return (" + params.functionDeclaration + ")")();
+      return { result: { value: check.call(scope, slotted, other) } };
+    }
     if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
     if (method === "DOM.querySelectorAll") return { nodeIds: ambiguous ? [3, 4] : [3] };
     if (method === "DOM.describeNode") return { node: { backendNodeId: 100 } };
@@ -1139,10 +1372,102 @@ test("locator actions resolve each target anew and reject ambiguous selectors", 
         .executed,
       true,
     );
+  const semantic = await f.request("locate_act", "s1", {
+    selector: { within: "#row", role: "statictext", name: "Add" },
+    action: { type: "click" },
+  });
+  assert.equal(semantic.result.input_dispatched, true);
   ambiguous = true;
   assert.equal(
     (await f.request("locate_act", "s1", { selector: "button", action: { type: "click" } })).error.code,
     "target_not_unique",
+  );
+});
+
+test("scoped semantic locator checks later batches for duplicates before dispatch", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  const sizes = [];
+  let released = 0;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+    if (method === "DOM.querySelectorAll") return { nodeIds: [5] };
+    if (method === "DOM.describeNode") return { node: { backendNodeId: 5 } };
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: Array.from({ length: 23 }, (_, i) => ({
+          role: { value: "button" },
+          name: { value: "Add" },
+          backendDOMNodeId: i + 100,
+        })),
+      };
+    if (method === "DOM.resolveNode" && params.objectGroup === "abridge-locator-scope")
+      return { object: { objectId: String(params.backendNodeId) } };
+    if (method === "Runtime.callFunctionOn" && params.objectId === "5") {
+      sizes.push(params.arguments.length);
+      return { result: { value: params.arguments.map(({ objectId }) => ["100", "122"].includes(objectId)) } };
+    }
+    if (method === "Runtime.releaseObjectGroup" && params.objectGroup === "abridge-locator-scope") released++;
+    return send(target, method, params);
+  };
+  const response = await f.request("locate_act", "s1", {
+    selector: { within: "#sku", role: "button", name: "Add" },
+    action: { type: "click" },
+  });
+  assert.equal(response.error.code, "target_not_unique");
+  assert.deepEqual(sizes, [16, 7]);
+  assert.equal(released, 2);
+  assert.equal(
+    f.calls.some(([method]) => method.startsWith("Input.")),
+    false,
+  );
+});
+
+test("locator refusal distinguishes missing, invalid, ambiguous and transport failures before input", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const original = f.bridge.tabs.tasks.get("s1").observation;
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "DOM.getDocument") return { root: { nodeId: 1 } };
+    if (method === "DOM.querySelectorAll") {
+      if (["[", "#broken"].includes(params.selector)) throw Error("CDP lookup error");
+      return {
+        nodeIds: params.selector === "#missing" ? [] : params.selector === ".duplicate" ? [1, 2] : [1],
+      };
+    }
+    if (method === "DOM.describeNode") return { node: { backendNodeId: 100, frameId: "frame" } };
+    if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+    if (method === "Runtime.evaluate") {
+      if (params.objectGroup === "abridge-frame") return { result: { objectId: "frame" } };
+      return { result: { value: params.expression.includes('document.querySelector("[")') } };
+    }
+    if (method === "Runtime.callFunctionOn" && params.objectId === "frame")
+      return { result: { value: params.arguments[0].value === "[" ? "invalid_selector" : 0 } };
+    return send(target, method, params);
+  };
+  for (const [selector, frame_selector, status, code] of [
+    ["#missing", undefined, "refused", "target_missing"],
+    [{ role: "button", name: "Absent" }, undefined, "refused", "target_missing"],
+    [".duplicate", undefined, "refused", "target_not_unique"],
+    ["[", undefined, "refused", "invalid_selector"],
+    ["[", "#frame", "refused", "invalid_selector"],
+    ["#missing", "#frame", "refused", "target_missing"],
+    ["#broken", undefined, "failed", "browser_error"],
+  ]) {
+    const response = await f.request("locate_act", "s1", {
+      selector,
+      frame_selector,
+      action: { type: "click" },
+    });
+    assert.equal(response.status, status);
+    assert.equal(response.error.code, code);
+  }
+  assert.equal(f.bridge.tabs.tasks.get("s1").observation, original);
+  assert.equal(
+    f.calls.some(([method]) => method.startsWith("Input.")),
+    false,
   );
 });
 
@@ -1236,8 +1561,9 @@ test("same-origin frames evaluate in their default context and unsupported frame
         ...args,
         selector: "#name",
         action: { type: "fill", text: "framed" },
+        verify: { selector: "#name", state: "value", value: "framed" },
       })
-    ).result.executed,
+    ).result.verification.matched,
     true,
   );
   f.chrome.debugger.onEvent.emit({ tabId: 2 }, "Runtime.executionContextDestroyed", {
@@ -1247,7 +1573,7 @@ test("same-origin frames evaluate in their default context and unsupported frame
     (await f.request("evaluate", "s1", { ...args, expression: "6*7" })).error.code,
     "unsupported_frame",
   );
-  assert.equal(evaluations.length, 3, "Destroyed contexts cannot run in the main document");
+  assert.equal(evaluations.length, 4, "Destroyed contexts cannot run in the main document");
   unsupported = true;
   const before = f.calls.length;
   for (const method of ["read", "wait", "evaluate", "locate_act"]) {
@@ -1263,6 +1589,64 @@ test("same-origin frames evaluate in their default context and unsupported frame
   assert.equal(f.calls.slice(before).filter((call) => call[0].startsWith("Input.")).length, 0);
 });
 
+test("frame selector reports syntax, count and unsupported document before running page code", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  class Frame {
+    contentDocument = null;
+  }
+  const send = f.chrome.debugger.sendCommand;
+  let submitted = false;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Runtime.evaluate" && params.objectGroup === "abridge-frame") {
+      const document = {
+        querySelectorAll(selector) {
+          switch (selector) {
+            case "[":
+              throw new DOMException("invalid selector", "SyntaxError");
+            case ".missing":
+              return [];
+            case ".duplicate":
+              return [new Frame(), new Frame()];
+            case "#not-frame":
+              return [{}];
+            case "#cross-origin":
+              return [new Frame()];
+            default:
+              throw Error("document unavailable");
+          }
+        },
+      };
+      try {
+        return {
+          result: {
+            value: Function("document", "HTMLIFrameElement", `return ${params.expression}`)(document, Frame),
+          },
+        };
+      } catch (error) {
+        return { exceptionDetails: { text: error.message } };
+      }
+    }
+    if (method === "Runtime.evaluate") submitted = true;
+    return send(target, method, params);
+  };
+  for (const [selector, code, status] of [
+    ["[", "invalid_selector", "refused"],
+    [".missing", "target_missing", "refused"],
+    [".duplicate", "target_not_unique", "refused"],
+    ["#not-frame", "unsupported_frame", "refused"],
+    ["#cross-origin", "unsupported_frame", "refused"],
+    ["#unavailable", "locator_failed", "failed"],
+  ]) {
+    const result = await f.request("evaluate", "s1", {
+      frame_selector: selector,
+      expression: "window.executed=true",
+    });
+    assert.equal(result.status, status);
+    assert.equal(result.error.code, code);
+  }
+  assert.equal(submitted, false);
+});
 test("frame context tracking clears on context reset, detach and tab release", async () => {
   const f = fixture();
   await f.request("open", "s1", { url: "https://example.com/" });
@@ -1451,6 +1835,7 @@ test("observations include explicitly labelled generic controls", async () => {
   const result = await f.request("observe", "s1", { query: "点赞" });
   assert.equal(result.result.elements.length, 1);
   assert.equal(result.result.elements[0].name, "点赞（Q）");
+  assert.equal(result.result.elements[0].accessible_name, "");
 });
 
 test("closing during a held click cancels promptly without replaying input", async () => {
@@ -1895,6 +2280,56 @@ test("neutral visual targets keep original DOM identity and reject malformed geo
   );
 });
 
+test("native hit tests validate the target and every retargeted shadow host", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "click", element_ref: "e1" },
+    observe_after: false,
+  });
+  const sources = f.calls
+    .filter(
+      ([method, , params]) => method === "Runtime.callFunctionOn" && params.arguments?.[0]?.value === "click",
+    )
+    .map(([, , params]) => params.functionDeclaration);
+  const [validate, prepare] = sources.map((source) => Function("return (" + source + ")")());
+  const win = {
+    innerWidth: 200,
+    innerHeight: 200,
+    getComputedStyle: () => ({ visibility: "visible", display: "block" }),
+  };
+  win.top = win;
+  const doc = { defaultView: win };
+  const outerHost = { ownerDocument: doc, getRootNode: () => doc };
+  const outerRoot = { host: outerHost };
+  const innerHost = { ownerDocument: doc, getRootNode: () => outerRoot };
+  const innerRoot = { host: innerHost };
+  const target = {
+    nodeType: 1,
+    isConnected: true,
+    ownerDocument: doc,
+    getRootNode: () => innerRoot,
+    contains: () => false,
+    closest: () => null,
+    matches: () => false,
+    scrollIntoView() {},
+    getBoundingClientRect: () => ({ x: 10, y: 10, width: 20, height: 20 }),
+  };
+  for (const occluded of [null, innerRoot, outerRoot, doc]) {
+    innerRoot.elementFromPoint = () => (occluded === innerRoot ? {} : target);
+    outerRoot.elementFromPoint = () => (occluded === outerRoot ? {} : innerHost);
+    doc.elementFromPoint = () => (occluded === doc ? {} : outerHost);
+    if (occluded) {
+      assert.match(validate.call(target, "click"), /覆盖/);
+      assert.throws(() => prepare.call(target, "click"), /obscured/);
+    } else {
+      assert.equal(validate.call(target, "click"), null);
+      assert.deepEqual(prepare.call(target, "click"), { x: 20, y: 20 });
+    }
+  }
+});
+
 test("current visible occlusion is rejected without scroll, focus or native input", () => {
   let mutations = 0;
   const el = {
@@ -2216,4 +2651,138 @@ test("select exception with a string result remains unknown after the write and 
   assert.equal((await f.bridge.dispatch(request)).error.code, "duplicate_request");
   assert.equal((await f.request("act", "s1", request.params)).error.code, "task_tab_missing");
   assert.equal(writes, 1);
+});
+
+test("input reports only observed direct child tabs and keeps the task on its own tab", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased") {
+      f.chrome.webNavigation.onCreatedNavigationTarget.emit({
+        tabId: 20,
+        sourceTabId: 1,
+        url: "https://private.example/",
+      });
+      f.chrome.webNavigation.onCreatedNavigationTarget.emit({
+        tabId: 21,
+        sourceTabId: 2,
+        url: "https://example.com/details",
+      });
+      f.chrome.tabs.onUpdated.emit(
+        21,
+        { url: "https://example.com/details" },
+        {
+          id: 21,
+          title: "Details",
+          url: "https://example.com/details",
+        },
+      );
+    }
+    return send(target, method, params);
+  };
+  const action = await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "click", element_ref: "e1" },
+  });
+  assert.deepEqual(action.result.opened_tabs, [
+    {
+      tab_id: 21,
+      url: "https://example.com/details",
+      title: "Details",
+      recovery: { action: "browser_open" },
+    },
+  ]);
+  assert.equal((await f.request("observe")).result.opened_tabs[0].tab_id, 21);
+  f.chrome.tabs.onRemoved.emit(21);
+  assert.equal((await f.request("observe")).result.opened_tabs, undefined);
+  await f.request("close");
+  assert.deepEqual(f.removed, [2]);
+});
+
+test("a registered blank child can report its first URL after input returns", async () => {
+  const f = fixture();
+  const opened = await f.request("open", "s1", { url: "https://example.com/" });
+  const send = f.chrome.debugger.sendCommand;
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Input.dispatchMouseEvent" && params.type === "mouseReleased")
+      f.chrome.webNavigation.onCreatedNavigationTarget.emit({
+        tabId: 21,
+        sourceTabId: 2,
+        url: "about:blank",
+      });
+    if (method === "Runtime.evaluate" && params.expression.includes("checkCondition")) {
+      f.chrome.webNavigation.onCreatedNavigationTarget.emit({
+        tabId: 22,
+        sourceTabId: 2,
+        url: "https://example.com/unrelated-timer",
+      });
+      return { result: { value: true } };
+    }
+    return send(target, method, params);
+  };
+  const action = await f.request("act", "s1", {
+    observation_id: opened.result.observation.observation_id,
+    action: { type: "click", element_ref: "e1" },
+    observe_after: false,
+    verify: { selector: "#status" },
+  });
+  assert.deepEqual(action.result.opened_tabs, [{ tab_id: 21 }]);
+  const url = "https://example.com/details";
+  f.chrome.tabs.onUpdated.emit(
+    21,
+    { status: "loading" },
+    { id: 21, url: "about:blank", pendingUrl: url, title: "Please wait", status: "loading" },
+  );
+  assert.equal((await f.request("observe")).result.opened_tabs[0].title, undefined);
+  f.chrome.tabs.onUpdated.emit(
+    21,
+    { title: "Details" },
+    { id: 21, url, title: "Details", status: "complete" },
+  );
+  f.chrome.tabs.onUpdated.emit(
+    21,
+    { url: "https://example.com/unrelated" },
+    { id: 21, url: "https://example.com/unrelated", title: "Unrelated" },
+  );
+  assert.deepEqual((await f.request("observe")).result.opened_tabs[0], {
+    tab_id: 21,
+    url,
+    title: "Details",
+    recovery: { action: "browser_open" },
+  });
+});
+
+test("child tab URLs respect observation budget and preserve element pagination", async () => {
+  const f = fixture();
+  await f.request("open", "s1", { url: "https://example.com/" });
+  const original = f.chrome.debugger.sendCommand;
+  const urls = [1, 2, 3].map((id) => "https://example.com/" + String(id).repeat(1900));
+  const session = f.bridge.tabs.tasks.get("s1");
+  session.openedTabs = urls.map((url, tab_id) => ({ tab_id, url, recovery: { action: "browser_open" } }));
+  f.chrome.debugger.sendCommand = async (target, method, params) => {
+    if (method === "Accessibility.getFullAXTree")
+      return {
+        nodes: Array.from({ length: 300 }, (_, i) => ({
+          backendDOMNodeId: i + 1,
+          role: { value: "button" },
+          name: { value: "Button " + i },
+        })),
+      };
+    return original(target, method, params);
+  };
+  const first = (await f.request("observe")).result;
+  assert.ok(JSON.stringify(first).length <= 7000);
+  assert.deepEqual(
+    first.opened_tabs.map((tab) => tab.tab_id),
+    [0, 1, 2],
+  );
+  assert.ok(first.opened_tabs.some((tab) => tab.url_omitted));
+  for (const tab of first.opened_tabs) {
+    if (tab.url_omitted) assert.equal(tab.recovery, undefined);
+    else assert.equal(tab.url, urls[tab.tab_id]);
+  }
+  assert.equal(session.observation.refs.size, first.elements.length);
+  const next = (await f.request("observe", "s1", { element_offset: first.next_element_offset })).result;
+  assert.equal(next.elements[0].name, "Button " + first.elements.length);
 });

@@ -366,3 +366,79 @@ test("browser conditions compose selector and text and frame scope stays explici
     assert.equal(schema.safeParse({ ...args, frame_selector: "" }).success, false);
   }
 });
+
+test("native input receipt deadline includes the hold and verification budgets", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "abridge-receipt-budget-"));
+  const store = new Store(join(directory, "server.db"));
+  const now = Date.now() / 1000;
+  const control = new ControlService(
+    store,
+    () => now,
+    () => 0,
+  );
+  const frames: JsonObject[] = [];
+  try {
+    const user = await store.createUser("budget-fixture", "budget-fixture-password");
+    const device = store.createDevice(user.id, "Budget browser", ["browser"], "browser");
+    const { agentConnection } = store.createAgentConnection(user.id, "Receipt test", {
+      mode: "all",
+      capabilities: ["browser"],
+      overrides: [],
+    });
+    const ticket = await control.attachConnection(
+      device.key,
+      "browser",
+      { capabilities: { browser: true } },
+      {
+        async send(frame) {
+          frames.push(frame);
+        },
+        async close() {},
+      },
+    );
+    const session = control.openSession(agentConnection, device.device.id, ["browser"]);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+    for (const tool of ["browser_act", "browser_locate_act"] as const) {
+      const args = {
+        ...(tool === "browser_act"
+          ? { observation_id: "obs_12345678", wait_after_ms: 10000 }
+          : { selector: "#buy" }),
+        action: { type: "click", hold_ms: 10000, ...(tool === "browser_act" ? { element_ref: "e1" } : {}) },
+        verify: { selector: "#count", state: "value", value: "3", timeout_ms: 20000 },
+      };
+      const operation = control.execute(agentConnection, session.id, tool, args);
+      await nextTurn();
+      const frame = frames.at(-1)!;
+      assert.equal(frame.type, "dispatch");
+      assert.equal(frame.expires_at, now + 30);
+      await assert.rejects(control.waitOperation(agentConnection, String(frame.operation_id), 31), {
+        code: "invalid_wait",
+      });
+      t.mock.timers.tick(59999);
+      await nextTurn();
+      assert.equal(frames.at(-1), frame, "server must not cancel during the declared receipt budget");
+      if (tool === "browser_act") {
+        await control.receive(ticket, {
+          type: "result",
+          connection_epoch: ticket.epoch,
+          operation_id: frame.operation_id,
+          status: "executed",
+          result: { input_dispatched: true, verification: { matched: false } },
+        });
+        assert.equal((await operation).status, "executed");
+      } else {
+        t.mock.timers.tick(1);
+        assert.equal((await operation).error?.code, "result_timeout");
+      }
+    }
+    const read = control.execute(agentConnection, session.id, "browser_read", {});
+    await nextTurn();
+    t.mock.timers.tick(30000);
+    assert.equal((await read).error?.code, "result_timeout");
+  } finally {
+    await control.shutdown();
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

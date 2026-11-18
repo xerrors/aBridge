@@ -112,8 +112,23 @@ export function scrollElement(this: Node, deltaX: number, deltaY: number) {
   };
 }
 // Page-local functions are serialized explicitly; no extension globals enter the page.
+/** The same screen point must hit the target inside its root and each host from outside. */
+export function hitsInputTarget(element: Element, x: number, y: number, exact: boolean): boolean {
+  const doc = element.ownerDocument;
+  let expected = element;
+  for (;;) {
+    const root = (expected.getRootNode?.() ?? doc) as Document | ShadowRoot;
+    const hit = root.elementFromPoint(x, y);
+    if (!hit || (hit !== expected && (exact || !expected.contains(hit)))) return false;
+    if (root === doc) return true;
+    const host = (root as ShadowRoot).host;
+    if (!host || host.ownerDocument !== doc) return false;
+    expected = host;
+    exact = true;
+  }
+}
 /** Pure validation runs before focus/scroll or native input, so a known refusal keeps the task tab. */
-export function validateInput(this: Node, action: string): string | null {
+export function validateInput(this: Node, action: string, hitTest = hitsInputTarget): string | null {
   if (this.nodeType === 9)
     return action === "press" || action === "scroll" ? null : "页面根节点只支持按键或滚动，请选择具体元素";
   if (this.nodeType === 3 && (action === "fill" || action === "select"))
@@ -147,8 +162,7 @@ export function validateInput(this: Node, action: string): string | null {
     y = rect.y + rect.height / 2;
   // Only reject current in-viewport occlusion here: no scroll/focus/input has happened.
   if (x >= 0 && y >= 0 && x < win.innerWidth && y < win.innerHeight) {
-    const hit = doc.elementFromPoint(x, y);
-    if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit))) {
+    if (!hitTest(element, x, y, this.nodeType === 3)) {
       // A point can be inside the page viewport but outside a nested scrollport.
       // Let native preparation reveal that original target, then perform its final hit test.
       const canReveal = ["click", "fill", "hover", "press"].includes(action);
@@ -173,7 +187,11 @@ export function validateInput(this: Node, action: string): string | null {
   return null;
 }
 
-export function prepareInput(this: HTMLElement | Document | Text, action?: string) {
+export function prepareInput(
+  this: HTMLElement | Document | Text,
+  action?: string,
+  hitTest = hitsInputTarget,
+) {
   const rootKey = this.nodeType === 9 && action === "press";
   const element =
     this.nodeType === 9
@@ -199,9 +217,7 @@ export function prepareInput(this: HTMLElement | Document | Text, action?: strin
   if (element.matches(":disabled") || element.closest("[inert]")) throw new Error("Element is disabled");
   let x = Math.max(0, Math.min(win.innerWidth - 1, rect.x + rect.width / 2));
   let y = Math.max(0, Math.min(win.innerHeight - 1, rect.y + rect.height / 2));
-  const hit = doc.elementFromPoint(x, y);
-  if (!hit || (this.nodeType === 3 ? hit !== element : hit !== element && !element.contains(hit)))
-    throw new Error("Element is obscured");
+  if (!hitTest(element, x, y, this.nodeType === 3)) throw new Error("Element is obscured");
   let current = win;
   while (current !== current.top) {
     const frame = current.frameElement as HTMLElement | null;
@@ -219,7 +235,7 @@ export function prepareInput(this: HTMLElement | Document | Text, action?: strin
     const bounds = frame.getBoundingClientRect();
     x += bounds.left + frame.clientLeft;
     y += bounds.top + frame.clientTop;
-    if (frame.ownerDocument.elementFromPoint(x, y) !== frame) throw new Error("Frame is obscured");
+    if (!hitTest(frame, x, y, true)) throw new Error("Frame is obscured");
     current = frame.ownerDocument.defaultView!;
   }
   // Pointer input must keep native mouseDown → focus → mouseUp → click ordering.
@@ -254,15 +270,15 @@ export function captureContent(selector: string | undefined, format: string) {
   const root = selector ? document.querySelector(selector) : document.body;
   if (!root) throw new Error("Read target missing");
   if (format === "table") {
-    const tables = root.matches("table") ? [root] : [...root.querySelectorAll("table")];
+    const tables = root instanceof HTMLTableElement ? [root] : [...root.querySelectorAll("table")];
     return tables.flatMap((table, tableIndex) =>
-      [...table.querySelectorAll("tr")].map((row, rowIndex) => ({
+      [...table.rows].map((row, rowIndex) => ({
         table: tableIndex,
         row: rowIndex,
-        cells: [...row.querySelectorAll("th,td")].map((cell) => ({
-          text: (cell as HTMLElement).innerText,
-          row_span: (cell as HTMLTableCellElement).rowSpan,
-          col_span: (cell as HTMLTableCellElement).colSpan,
+        cells: [...row.cells].map((cell) => ({
+          text: cell.innerText,
+          row_span: cell.rowSpan,
+          col_span: cell.colSpan,
         })),
       })),
     );
@@ -274,6 +290,7 @@ export function checkCondition(
   text: string | undefined,
   state: string,
   value?: string,
+  verify = false,
 ) {
   const nodes = selector ? [...document.querySelectorAll(selector)] : [document.body];
   const matching = nodes.filter(
@@ -285,7 +302,10 @@ export function checkCondition(
           ""
         ).includes(text)),
   );
-  if (state === "value") return matching.some((node) => (node as HTMLInputElement).value === value);
+  // Negative conditions apply to every match. A positive verification must identify one target.
+  if (matching.length > 1 && (state === "value" || (verify && (state === "visible" || state === "attached"))))
+    return matching.length;
+  if (state === "value") return matching.length === 1 && (matching[0] as HTMLInputElement).value === value;
   const visible = matching.some((node) => {
     const style = getComputedStyle(node);
     return node.getClientRects().length > 0 && style.visibility !== "hidden" && style.display !== "none";
@@ -321,4 +341,44 @@ export function prepareFill(this: HTMLElement) {
     selection?.addRange(range);
   } else throw new Error("Element is not editable");
   return { select_all: false };
+}
+
+/** Serialized into the target document for bounded, read-only ambiguity diagnostics. */
+export function describeLocatorMatches(selector: string) {
+  const matches = document.querySelectorAll(selector);
+  const label = (el: Element) =>
+    el.localName +
+    (el.id ? "#" + el.id.slice(0, 48) : "") +
+    Array.from(el.classList)
+      .slice(0, 2)
+      .map((name) => "." + name.slice(0, 32))
+      .join("");
+  const candidates = Array.from({ length: Math.min(matches.length, 4) }, (_, i) => {
+    const el = matches[i];
+    const container =
+      el.parentElement?.closest('[id],[data-testid],article,li,tr,[role="row"],[role="listitem"]') ||
+      el.parentElement;
+    return {
+      element: label(el),
+      visible: el.checkVisibility({ visibilityProperty: true, opacityProperty: true }),
+      container: container ? label(container) : null,
+    };
+  });
+  return { count: matches.length, candidates };
+}
+
+/** Runs on a resolved container. Follow the composed tree without leaving its document. */
+export function composedMembership(this: Element, ...candidates: Node[]): boolean[] {
+  if (!this.isConnected) throw new Error("Locator container detached");
+  return candidates.map((candidate) => {
+    if (candidate.ownerDocument !== this.ownerDocument || !candidate.isConnected) return false;
+    let node: Node | null = candidate;
+    for (let depth = 0; node; depth++) {
+      if (node === this) return true;
+      if (depth >= 4096) throw new Error("Locator ancestry exceeds limit");
+      const slot: HTMLSlotElement | null = (node as Element | Text).assignedSlot;
+      node = slot ?? node.parentNode ?? (node.nodeType === 11 ? (node as ShadowRoot).host : null);
+    }
+    return false;
+  });
 }
