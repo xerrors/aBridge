@@ -4,6 +4,7 @@ import * as p from "./index.js";
 export function desktopContract() {
   const schemas = {
     operation: p.operationFrameSchema,
+    cancel: p.deviceCancelSchema,
     welcome: p.deviceWelcomeSchema,
     deviceBindingInput: p.deviceBindingInputSchema,
     deviceAuthorizationStart: p.deviceAuthorizationStartSchema,

@@ -12,12 +12,12 @@ import { MAX_DEVICE_OPERATIONS } from "@abridge/protocol";
 import { run } from "../lib/process.js";
 
 type Value = Record<string, unknown>;
-async function until(check: () => boolean, message: string) {
+async function until(check: () => boolean | Promise<boolean>, message: string) {
   for (let i = 0; i < 1000; i++) {
-    if (check()) return;
+    if (await check()) return;
     await delay(5);
   }
-  assert.ok(check(), message);
+  assert.ok(await check(), message);
 }
 test(
   "native admissions preserve cancellation, idempotency and session boundaries",
@@ -86,7 +86,7 @@ test(
                   protocol: "abridge/1",
                   device_id: "fixture",
                   connection_epoch: 1,
-                  capabilities: ["files", "screen"],
+                  capabilities: ["files", "screen", "input"],
                   owner_name: "Fixture",
                   lease_seconds: 30,
                   heartbeat_interval: 10,
@@ -144,12 +144,39 @@ test(
           path,
           frame,
           events,
+          event,
+          snapshot,
+          disconnect: () => peer!.terminate(),
+          observe(id: string, target: Value = {}, session = "session") {
+            send({
+              ...frame(id, session),
+              tool: "computer_observe",
+              arguments: { ...target, screenshot: false },
+              session_capabilities: ["screen"],
+            });
+          },
+          clickFrame(id: string, observationId: unknown) {
+            return {
+              ...frame(id),
+              tool: "computer_act",
+              arguments: {
+                observation_id: observationId,
+                action: { type: "click", element_ref: "e1" },
+                observe_after: false,
+              },
+              session_capabilities: ["input"],
+            };
+          },
           async fail(mode: string) {
             command({ command: "fail", id: mode });
             await event("failed", mode);
           },
-          async gate(id: string) {
-            command({ command: "arm", id });
+          async simulateAction(id: string, confirm: boolean) {
+            command({ command: "action", id, confirm });
+            await event("armed", id);
+          },
+          async gate(id: string, observation = false, holdAfterCancel = false) {
+            command({ command: "arm", id, observation, holdAfterCancel });
             await event("armed", id);
             return {
               entered: () => event("entered", id),
@@ -268,30 +295,267 @@ test(
           await f.close();
         }
       });
-      await t.test("uncertain driver failures are valid redacted receipts and never replay", async () => {
-        const f = await fixture();
-        try {
-          for (const failure of ["driver_timeout", "driver_error", "generic"]) {
-            await f.fail(failure);
+      await t.test(
+        "desktop read failures return redacted failure receipts and preserve explicit refusals",
+        async () => {
+          const f = await fixture();
+          try {
+            for (const { failure, tool, args, status, code } of [
+              {
+                failure: "driver_timeout",
+                tool: "computer_apps",
+                args: {},
+                status: "failed",
+                code: "driver_timeout",
+              },
+              {
+                failure: "private_sdk_failure",
+                tool: "computer_windows",
+                args: { pid: 10 },
+                status: "failed",
+                code: "driver_error",
+              },
+              {
+                failure: "generic",
+                tool: "computer_observe",
+                args: { pid: 10, window_id: 20, screenshot: false },
+                status: "failed",
+                code: "driver_error",
+              },
+              {
+                failure: "permission_denied",
+                tool: "computer_apps",
+                args: {},
+                status: "refused",
+                code: "permission_denied",
+              },
+            ]) {
+              await f.fail(failure);
+              const frame = {
+                ...f.frame(`read_${tool}_${status}`),
+                tool,
+                arguments: args,
+                session_capabilities: ["screen"],
+              };
+              f.send(frame);
+              const receipt = await f.result(frame.operation_id);
+              assert.equal(receipt.status, status);
+              assert.equal((receipt.error as Value).code, code);
+              assert.equal(JSON.stringify(receipt).includes("private"), false);
+              f.send(frame);
+              const duplicate = await f.result(frame.operation_id, 2);
+              assert.equal(duplicate.status, status);
+              assert.equal((duplicate.error as Value).code, "duplicate_operation");
+              assert.equal(
+                f.events.filter((event) => event.event === "effect" && event.id === failure).length,
+                1,
+              );
+            }
+          } finally {
+            await f.close();
+          }
+        },
+      );
+      await t.test(
+        "cancelling an in-flight desktop read permits a refresh of the selected window",
+        async () => {
+          const f = await fixture();
+          try {
+            const target = { pid: 10, window_id: 20 };
+            f.observe("initial", target);
+            const initial = await f.result("initial");
+            assert.equal(initial.status, "executed");
+            const slowRead = await f.gate("slow_read", true);
+            f.observe("slow");
+            await slowRead.entered();
+            f.send({ type: "cancel", operation_ids: ["slow"], reason: "Result deadline exceeded" });
+            await f.barrier();
+            f.send(f.clickFrame("stale", (initial.result as Value).observation_id));
+            assert.equal(((await f.result("stale")).error as Value).code, "stale_observation");
+            f.observe("refresh");
+            const fresh = await f.result("refresh");
+            assert.equal(fresh.status, "executed", JSON.stringify(fresh));
+            assert.deepEqual((fresh.result as Value).window, target);
+            assert.notEqual((fresh.result as Value).observation_id, (initial.result as Value).observation_id);
+            const stopped = await f.result("slow");
+            assert.equal(stopped.status, "cancelled");
+            assert.equal((stopped.error as Value).code, "operation_cancelled");
+            f.send({ type: "session_close", session_id: "session" });
+            await f.barrier();
+            f.observe("closed", target);
+            assert.equal(((await f.result("closed")).error as Value).code, "session_closed");
+            const revokedRead = await f.gate("revoked_read", true);
+            f.observe("revoked", target, "other");
+            await revokedRead.entered();
+            await f.control({ command: "capability", capability: "screen", enabled: false });
+            assert.equal((await f.result("revoked")).status, "cancelled");
+            f.observe("disabled", target, "other");
+            assert.equal(((await f.result("disabled")).error as Value).code, "capability_unavailable");
+            await f.control({ command: "capability", capability: "screen", enabled: true });
+            f.observe("ended", target, "other");
+            assert.equal(((await f.result("ended")).error as Value).code, "session_closed");
+          } finally {
+            await f.close();
+          }
+        },
+      );
+      await t.test(
+        "cancelling a queued read preserves the preceding observation and control traffic",
+        async () => {
+          const f = await fixture();
+          try {
+            const active = await f.gate("active", true);
+            f.observe("active", { pid: 10, window_id: 20 });
+            await active.entered();
+            f.observe("queued", { pid: 10, window_id: 21 });
+            await until(async () => (await f.snapshot()).active_operations === 2, "Both reads admitted");
+            f.send({ type: "cancel", operation_ids: ["queued"] });
+            await f.barrier();
+            await active.release();
+            assert.equal((await f.result("queued")).status, "cancelled");
+            const previous = await f.result("active");
+            assert.equal(previous.status, "executed");
+            f.send(f.clickFrame("retained", (previous.result as Value).observation_id));
+            assert.equal(((await f.result("retained")).error as Value).code, "fixture_forbidden");
+          } finally {
+            await f.close();
+          }
+        },
+      );
+      for (const interruption of [
+        "caller",
+        "unconfirmed",
+        "grant",
+        "caller_then_policy",
+        "session_close",
+        "pause",
+        "capability",
+        "disconnect",
+      ] as const) {
+        await t.test("confirmed action receipts during " + interruption, async () => {
+          const f = await fixture();
+          try {
+            f.observe("before", { pid: 10, window_id: 20 });
+            const observation = (await f.result("before")).result as Value;
+            const click = f.clickFrame("click", observation.observation_id);
             const frame = {
-              ...f.frame(failure),
-              tool: "computer_apps",
-              arguments: {},
-              session_capabilities: ["screen"],
+              ...click,
+              arguments: {
+                ...click.arguments,
+                observe_after: true,
+                wait_after_ms: interruption === "caller_then_policy" ? 0 : 10000,
+              },
+              session_capabilities: ["input", "screen"],
             };
+            const followUp =
+              interruption === "caller_then_policy" ? await f.gate("follow_up", true, true) : undefined;
+            await f.simulateAction("simulated", interruption !== "unconfirmed");
             f.send(frame);
-            const receipt = await f.result(failure);
-            assert.equal(receipt.status, "outcome_unknown");
-            assert.equal(JSON.stringify(receipt).includes("private"), false);
+            await f.event(interruption === "unconfirmed" ? "entered" : "delivered", "simulated");
+            if (followUp) await followUp.entered();
+            const cancel = { type: "cancel", operation_ids: ["click"] };
+            switch (interruption) {
+              case "caller":
+              case "unconfirmed":
+                f.send({ ...cancel, caller_operation_id: "click" });
+                break;
+              case "caller_then_policy":
+                f.send({ ...cancel, caller_operation_id: "click" });
+                await f.event("cancelling", "follow_up");
+                f.send({ ...cancel, reason: "Connection permissions changed" });
+                f.send({ ...cancel, caller_operation_id: "click" });
+                await f.barrier();
+                await followUp!.release();
+                break;
+              case "grant":
+                f.send({ ...cancel, reason: "Connection permissions changed" });
+                break;
+              case "session_close":
+                f.send({ type: "session_close", session_id: "session" });
+                break;
+              case "pause":
+                await f.control({ command: "pause" });
+                break;
+              case "capability":
+                await f.control({ command: "capability", capability: "screen", enabled: false });
+                break;
+              case "disconnect":
+                f.disconnect();
+                await until(
+                  () => f.messages.filter((message) => message.type === "hello").length >= 2,
+                  "Reconnected",
+                );
+                await f.barrier();
+                assert.equal(
+                  f.messages.some((message) => message.operation_id === "click"),
+                  false,
+                );
+                assert.equal(
+                  await run("/usr/bin/sqlite3", [
+                    join(f.directory, "operations.sqlite3"),
+                    "SELECT status FROM operations WHERE id='click'",
+                  ]),
+                  "outcome_unknown",
+                );
+                return;
+            }
+            const receipt = await f.result("click");
+            if (interruption === "caller") {
+              assert.equal(receipt.status, "executed");
+              assert.deepEqual(receipt.result, {
+                action_executed: true,
+                business_verified: false,
+                observation_error: {
+                  code: "operation_cancelled",
+                  message: "Action delivered; follow-up observation unavailable after cancellation",
+                },
+              });
+            } else {
+              assert.equal(receipt.status, "outcome_unknown");
+              assert.deepEqual(receipt.result, {});
+            }
+            assert.equal(
+              receipt.error && (receipt.error as Value).code,
+              interruption === "caller" ? undefined : "operation_cancelled",
+            );
             f.send(frame);
-            const duplicate = await f.result(failure, 2);
-            assert.equal(duplicate.status, "outcome_unknown");
+            const duplicate = await f.result("click", 2);
+            assert.equal(duplicate.status, receipt.status);
             assert.equal((duplicate.error as Value).code, "duplicate_operation");
             assert.equal(
-              f.events.filter((event) => event.event === "effect" && event.id === failure).length,
-              1,
+              f.events.filter((event) => event.event === "delivered").length,
+              interruption === "unconfirmed" ? 0 : 1,
             );
+          } finally {
+            await f.close();
           }
+        });
+      }
+      await t.test("unconfirmed input remains unknown and its identity never replays", async () => {
+        const f = await fixture();
+        try {
+          f.observe("observe", { pid: 10, window_id: 20 });
+          const observed = await f.result("observe");
+          assert.equal(observed.status, "executed");
+          const observationId = (observed.result as Value).observation_id;
+          assert.equal(typeof observationId, "string");
+          await f.fail("driver_timeout");
+          const frame = f.clickFrame("input_timeout", observationId);
+          f.send(frame);
+          const receipt = await f.result(frame.operation_id);
+          assert.equal(receipt.status, "outcome_unknown");
+          const error = receipt.error as Value;
+          assert.equal(error.code, "outcome_unknown");
+          assert.equal((error.cause as Value).code, "execution_timeout");
+          assert.equal(JSON.stringify(receipt).includes("private"), false);
+          f.send(frame);
+          const duplicate = await f.result(frame.operation_id, 2);
+          assert.equal(duplicate.status, "outcome_unknown");
+          assert.equal((duplicate.error as Value).code, "duplicate_operation");
+          assert.equal(
+            f.events.filter((event) => event.event === "effect" && event.id === "driver_timeout").length,
+            1,
+          );
         } finally {
           await f.close();
         }

@@ -9,6 +9,7 @@ import {
   deviceSummaryDetailsSchema,
   requiredCapabilities,
   operationFrameSchema,
+  deviceCancelSchema,
   parseDeviceToolRequest,
   operationIdPattern,
   deviceErrorSchema,
@@ -51,6 +52,7 @@ const FINAL_STATES = new Set<OperationState>([
 const safeId = /^[A-Za-z0-9_-]{1,100}$/;
 interface Pending {
   operation: Operation;
+  cancelledByCaller?: boolean;
   required: Capability[];
   promise: Promise<OperationResponse>;
   resolve(response: OperationResponse): void;
@@ -587,9 +589,12 @@ export class ControlService {
     if (this.pending.has(id)) {
       // Request cancellation without adding an unbounded send to the response deadline.
       void this.cancelMatching(device.id, "Result deadline exceeded", { operationId: id });
-      this.finish(id, "outcome_unknown", undefined, {
+      const screenRead = required.length === 1 && required[0] === "screen";
+      this.finish(id, screenRead ? "failed" : "outcome_unknown", undefined, {
         code: "result_timeout",
-        message: "No terminal receipt; observe the target before continuing",
+        message: screenRead
+          ? "No desktop read result arrived before the deadline. Request a fresh read in this session."
+          : "No terminal receipt; observe the target before continuing",
       });
       return this.operationStatus(current, id);
     }
@@ -597,14 +602,25 @@ export class ControlService {
   }
   async cancelOperation(agentConnection: AgentConnection, id: string): Promise<OperationResponse> {
     const operation = this.authorizedOperation(agentConnection, id);
-    await this.cancelMatching(operation.device_id, "Cancelled by caller", { operationId: id });
+    const active = this.store.session(operation.session_id)?.status === "active";
+    const pending = this.pending.get(id);
+    if (active && pending) pending.cancelledByCaller = true;
+    await this.cancelMatching(operation.device_id, "Cancelled by caller", {
+      operationId: id,
+      callerRequested: active,
+    });
     const response = await this.waitOperation(agentConnection, id, 15);
     return this.pending.has(id) ? { ...response, status: "cancel_requested" } : response;
   }
   private async cancelMatching(
     deviceId: string,
     reason: string,
-    scope: { operationId?: string; sessionId?: string; agentConnectionId?: string } = {},
+    scope: {
+      operationId?: string;
+      sessionId?: string;
+      agentConnectionId?: string;
+      callerRequested?: boolean;
+    } = {},
   ): Promise<void> {
     const ids = [...this.pending.values()]
       .filter(
@@ -623,12 +639,16 @@ export class ControlService {
     for (const id of ids) this.browserExecutions.cancel(id, reason);
     const connection = this.deviceConnections.get(deviceId);
     if (ids.length && connection)
-      await this.safeSend(connection, {
-        type: "cancel",
-        operation_ids: ids,
-        connection_epoch: connection.epoch,
-        reason,
-      });
+      await this.safeSend(
+        connection,
+        deviceCancelSchema.parse({
+          type: "cancel",
+          operation_ids: ids,
+          connection_epoch: connection.epoch,
+          ...(scope.callerRequested && { caller_operation_id: scope.operationId }),
+          reason,
+        }),
+      );
   }
   async stopDevice(
     deviceId: string,
@@ -945,6 +965,18 @@ export class ControlService {
     } else if (message.type === "result") {
       if (typeof message.status !== "string" || !FINAL_STATES.has(message.status as OperationState))
         throw new BridgeError("invalid_result", "Invalid terminal operation state", 422);
+      if (
+        pending.cancelledByCaller &&
+        pending.operation.tool === "computer_act" &&
+        message.status === "executed" &&
+        this.store.session(pending.operation.session_id)?.status !== "active"
+      ) {
+        this.finish(message.operation_id, "outcome_unknown", undefined, {
+          code: "operation_cancelled",
+          message: "Session ended before the action receipt arrived; the operation will not be replayed",
+        });
+        return;
+      }
       const baseError =
         object(message.error) &&
         typeof message.error.code === "string" &&

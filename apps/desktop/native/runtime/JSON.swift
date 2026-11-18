@@ -49,13 +49,15 @@ struct DesktopError: Error, LocalizedError, Sendable {
     let message: String
     let outcome: String
     let hint: String?
-    init(code: String, message: String, outcome: String = "refused", hint: String? = nil) {
-        self.code = code; self.message = message; self.outcome = outcome; self.hint = hint
+    let desktop: JSONObject?
+    init(code: String, message: String, outcome: String = "refused", hint: String? = nil, desktop: JSONObject? = nil) {
+        self.code = code; self.message = message; self.outcome = outcome; self.hint = hint; self.desktop = desktop
     }
     var errorDescription: String? { message }
     var json: JSONObject {
         var result: JSONObject = ["code": .string(code), "message": .string(message)]
         if let hint { result["hint"] = .string(hint) }
+        if let desktop { result["desktop"] = .object(desktop) }
         return result
     }
 }

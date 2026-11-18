@@ -329,8 +329,21 @@ export const computerActionSchema = z.discriminatedUnion("type", [
 ]);
 // Operation diagnostics stay bounded across clients, server and script receipts.
 const operationErrorDetailSchema = z.object({ code: z.string().max(100), message: z.string().max(2000) });
+const desktopWindowDiagnosticSchema = z.object({
+  pid: z.number().int().positive(),
+  window_id: z.number().int().positive(),
+  app_name: z.string().max(120).optional(),
+  title: z.string().max(120).optional(),
+});
 export const operationErrorSchema = operationErrorDetailSchema.extend({
   hint: z.string().max(240).optional(),
+  desktop: z
+    .object({
+      target: desktopWindowDiagnosticSchema,
+      blocker: desktopWindowDiagnosticSchema.optional(),
+      recovery: z.enum(["observe_blocker", "clear_occlusion"]),
+    })
+    .optional(),
   cause: operationErrorDetailSchema.optional(),
   connection: connectionLossSchema.optional(),
   cleanup_error: operationErrorDetailSchema.optional(),
@@ -492,7 +505,7 @@ export const computerObserveSchema = portable(
         pid: computerPidSchema
           .optional()
           .describe(
-            "Application PID. Without window_id, observe the application's only window; if multiple windows exist, use computer_windows to select one.",
+            "macOS application PID. Omit window_id to refresh this session's selected window for that PID or select the application's only window. For a new selection among multiple windows, use computer_windows.",
           ),
         window_id: computerWindowIdSchema
           .optional()
@@ -684,6 +697,13 @@ export const operationFrameSchema = deviceDispatchEnvelopeSchema.extend({
   tool: z.enum(Object.keys(TOOL_CAPABILITIES) as [DeviceTool, ...DeviceTool[]]),
 });
 export type OperationFrame = z.infer<typeof operationFrameSchema>;
+export const deviceCancelSchema = z.object({
+  type: z.literal("cancel"),
+  connection_epoch: z.number().int().positive(),
+  operation_ids: z.array(z.string().min(1)),
+  caller_operation_id: z.string().min(1).optional(),
+  reason: z.string().optional(),
+});
 export const epochSchema = z.number().int().nonnegative();
 
 /** Shared device envelopes; consumers validate capability-specific tool admission. */
