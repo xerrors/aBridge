@@ -98,13 +98,33 @@ type DeviceState = {
   accessibilityActive: boolean;
   model: string;
   androidVersion: string;
+  appVersion: string;
+  debug: boolean;
 };
+type UpdateState = {
+  type: "update";
+  status: "idle" | "checking" | "latest" | "available" | "error";
+  version?: string;
+  message?: string;
+};
+
 type Request =
-  | { type: "ready" | "accessibility" | "directory" | "revokeDirectory" | "unbind" | "exit" }
+  | {
+      type:
+        | "ready"
+        | "accessibility"
+        | "directory"
+        | "revokeDirectory"
+        | "unbind"
+        | "exit"
+        | "checkUpdate"
+        | "updateNotes"
+        | "downloadUpdate";
+    }
   | { type: "bind"; address: string; key: string }
   | { type: "access"; allowed: boolean }
   | { type: "capability"; name: Capability; enabled: boolean };
-type Reply = DeviceState | { type: "bound" | "back" } | { type: "error"; message: string };
+type Reply = DeviceState | UpdateState | { type: "bound" | "back" } | { type: "error"; message: string };
 
 declare global {
   interface Window {
@@ -128,20 +148,16 @@ const connectionLabel: Record<Connection, string> = {
   Unbound: "尚未绑定",
 };
 
-type Panel = "permissions" | "device" | "unbind";
+type Panel = "permissions" | "unbind";
 
 function DeviceDialog({
   panel,
   close,
   state,
-  select,
-  edit,
 }: {
   panel: Panel | null;
   close: () => void;
   state: DeviceState;
-  select: (panel: Panel) => void;
-  edit: () => void;
 }) {
   const permissions = panel === "permissions";
   const confirming = panel === "unbind";
@@ -172,16 +188,14 @@ function DeviceDialog({
           gap={12}
         >
           <Dialog.Title color={ink} fontWeight="700" fontSize={20}>
-            {permissions ? "能力设置" : confirming ? "解除本机绑定？" : "设备详情"}
+            {permissions ? "能力设置" : "解除本机绑定？"}
           </Dialog.Title>
           <Dialog.Description color={secondary} fontSize={13}>
             {permissions
               ? state.agentAllowed
                 ? "关闭开关可随时收回对应能力"
                 : "所选能力在允许 Agent 访问后生效"
-              : confirming
-                ? "此设备将停止接收 aBridge 操作。"
-                : `${state.model} · Android ${state.androidVersion}`}
+              : "此设备将停止接收 aBridge 操作。"}
           </Dialog.Description>
           {permissions ? (
             <YStack borderWidth={1} borderColor={line} borderRadius={12} overflow="hidden">
@@ -197,7 +211,7 @@ function DeviceDialog({
                 </React.Fragment>
               ))}
             </YStack>
-          ) : confirming ? (
+          ) : (
             <Button
               height={44}
               color="#A5262B"
@@ -206,32 +220,6 @@ function DeviceDialog({
             >
               解除绑定
             </Button>
-          ) : (
-            <YStack gap={8}>
-              <Text color={ink} fontSize={14}>
-                服务器地址
-              </Text>
-              <Text color={secondary} fontSize={13}>
-                {state.server}
-              </Text>
-              <Button height={44} onPress={() => run({ type: "accessibility" })}>
-                {state.accessibilityActive ? "无障碍设置（已开启）" : "打开无障碍设置"}
-              </Button>
-              <Button height={44} onPress={() => run({ type: "directory" })}>
-                {state.directoryAuthorized ? "更换工作目录" : "选择工作目录"}
-              </Button>
-              {state.directoryAuthorized && (
-                <Button height={44} onPress={() => run({ type: "revokeDirectory" })}>
-                  撤销目录授权
-                </Button>
-              )}
-              <Button height={44} onPress={edit}>
-                修改连接
-              </Button>
-              <Button height={44} color="#A5262B" onPress={() => select("unbind")}>
-                解除本机绑定
-              </Button>
-            </YStack>
           )}
           <Dialog.Close asChild>
             <Button height={44} borderWidth={0} backgroundColor={neutral} color={ink} fontSize={14}>
@@ -260,9 +248,14 @@ function BindingForm({
   const [address, setAddress] = useState(state.server);
   const [key, setKey] = useState("");
   const [validation, setValidation] = useState("");
+  const cleartext = /^http:\/\//i.test(address.trim());
+  const debugAddress =
+    state.debug && /^http:\/\/(?:127\.0\.0\.1|10\.0\.2\.2)(?:[:/]|$)/i.test(address.trim());
+  const addressBlocked = cleartext && !debugAddress;
   function submit() {
     const cleanAddress = address.trim();
     const cleanKey = key.trim();
+    if (addressBlocked) return;
     if (!cleanAddress || !cleanKey) {
       setValidation("请填写 Server 地址和 Device Key");
       return;
@@ -274,9 +267,11 @@ function BindingForm({
   }
   return (
     <YStack gap={12}>
-      <Text color={ink} fontSize={27} fontWeight="750">
-        连接设备
-      </Text>
+      {!editing && (
+        <Text color={ink} fontSize={27} fontWeight="750">
+          连接设备
+        </Text>
+      )}
       <Text color={ink} fontSize={14}>
         服务器地址
       </Text>
@@ -287,10 +282,31 @@ function BindingForm({
         autoCorrect={false}
         keyboardType="url"
         value={address}
+        aria-invalid={addressBlocked}
+        borderColor={addressBlocked ? "#A5262B" : undefined}
         onChangeText={setAddress}
         placeholder="https://bridge.example.com"
         minHeight={48}
       />
+      {cleartext && (
+        <YStack gap={2}>
+          <Text color={addressBlocked ? "#A5262B" : secondary} fontSize={13} aria-live="polite">
+            {addressBlocked
+              ? "此地址使用 HTTP。请输入以 https:// 开头的服务器地址。"
+              : "当前地址仅用于 USB 或模拟器调试。其他服务器请使用 HTTPS。"}
+          </Text>
+          <Button
+            height={44}
+            alignSelf="flex-start"
+            backgroundColor="transparent"
+            borderWidth={0}
+            color={blue}
+            onPress={() => setAddress(address.trim().replace(/^http:\/\//i, "https://"))}
+          >
+            改为 HTTPS
+          </Button>
+        </YStack>
+      )}
       <Text color={ink} fontSize={14}>
         Device Key
       </Text>
@@ -312,10 +328,10 @@ function BindingForm({
       )}
       <Button
         height={48}
-        backgroundColor={blue}
+        backgroundColor={pending || addressBlocked ? neutral : blue}
         borderWidth={0}
-        color={white}
-        disabled={pending}
+        color={pending || addressBlocked ? secondary : white}
+        disabled={pending || addressBlocked}
         onPress={submit}
       >
         {pending ? "绑定中" : "绑定设备"}
@@ -329,12 +345,61 @@ function BindingForm({
   );
 }
 
+function SettingsSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <YStack gap={7}>
+      <Text color={secondary} fontSize={13} fontWeight="600" marginHorizontal={4}>
+        {title}
+      </Text>
+      <YStack backgroundColor={white} borderWidth={1} borderColor={line} borderRadius={12}>
+        {children}
+      </YStack>
+    </YStack>
+  );
+}
+
+function SettingsRow({
+  title,
+  detail,
+  onPress,
+  disabled,
+}: {
+  title: string;
+  detail?: string;
+  onPress?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <ListItem
+      title={title}
+      subTitle={detail}
+      minHeight={46}
+      borderRadius={12}
+      backgroundColor={white}
+      iconAfter={onPress && !disabled ? <Text color={blue}>›</Text> : undefined}
+      disabled={disabled}
+      onPress={onPress}
+    />
+  );
+}
+
 function AccessScreen() {
   const [state, setState] = useState<DeviceState>();
   const [panel, setPanel] = useState<Panel | null>(null);
   const [editing, setEditing] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const [updatePage, setUpdatePage] = useState(false);
+  const [update, setUpdate] = useState<UpdateState>({ type: "update", status: "idle" });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  function back() {
+    setError("");
+    if (panel) setPanel(null);
+    else if (editing) setEditing(false);
+    else if (updatePage) setUpdatePage(false);
+    else if (settings) setSettings(false);
+    else send({ type: "exit" });
+  }
 
   useEffect(() => {
     const bridge = window.aBridgeNative;
@@ -344,26 +409,25 @@ function AccessScreen() {
       if (message.type === "state") {
         setState(message);
         if (!message.bound) setEditing(false);
+      } else if (message.type === "update") {
+        setUpdate(message);
       } else if (message.type === "bound") {
         setError("");
         setPending(false);
         setEditing(false);
+        setSettings(false);
       } else if (message.type === "error") {
         setError(message.message);
         setPending(false);
       } else if (message.type === "back") {
-        if (panel) setPanel(null);
-        else if (editing) {
-          setEditing(false);
-          setError("");
-        } else send({ type: "exit" });
+        back();
       }
     };
     send({ type: "ready" });
     return () => {
       bridge.onmessage = null;
     };
-  }, [panel, editing]);
+  }, [panel, editing, settings, updatePage]);
 
   const allowed = state?.agentAllowed ?? false;
   const effective =
@@ -414,15 +478,35 @@ function AccessScreen() {
       paddingBottom={24}
     >
       <XStack minHeight={49} justifyContent="space-between" alignItems="center" marginBottom={19}>
-        <XStack gap={7} alignItems="center">
-          <img src="./bridge.svg" width="24" height="17" alt="" />
-          <Text color={ink} fontSize={21} fontWeight="700">
-            aBridge
-          </Text>
-        </XStack>
-        {state?.bound && !editing && (
+        {settings || editing ? (
+          <XStack gap={8} alignItems="center">
+            <Button
+              backgroundColor="transparent"
+              borderWidth={0}
+              height={44}
+              width={44}
+              aria-label="返回"
+              color={blue}
+              fontSize={26}
+              onPress={back}
+            >
+              ‹
+            </Button>
+            <Text color={ink} fontSize={20} fontWeight="700">
+              {editing ? (state?.bound ? "修改连接" : "连接设备") : updatePage ? "应用更新" : "设置"}
+            </Text>
+          </XStack>
+        ) : (
+          <XStack gap={7} alignItems="center">
+            <img src="./bridge.svg" width="24" height="17" alt="" />
+            <Text color={ink} fontSize={21} fontWeight="700">
+              aBridge
+            </Text>
+          </XStack>
+        )}
+        {state && !settings && !editing && (
           <Button
-            aria-label="设备详情"
+            aria-label="设置"
             height={44}
             paddingHorizontal={10}
             borderWidth={0}
@@ -432,10 +516,10 @@ function AccessScreen() {
             fontWeight="600"
             onPress={() => {
               setError("");
-              setPanel("device");
+              setSettings(true);
             }}
           >
-            设备详情
+            设置
           </Button>
         )}
       </XStack>
@@ -447,6 +531,114 @@ function AccessScreen() {
       )}
       {!state ? (
         <Text color={secondary}>正在载入设备状态</Text>
+      ) : settings && !editing ? (
+        updatePage && update.status === "available" ? (
+          <YStack gap={15}>
+            <YStack
+              backgroundColor={white}
+              borderColor={line}
+              borderWidth={1}
+              borderRadius={12}
+              padding={16}
+              gap={9}
+            >
+              <Text color={ink} fontSize={22} fontWeight="700">
+                发现新版本
+              </Text>
+              <Text color={blue} fontWeight="600">
+                可更新至 {update.version}
+              </Text>
+              <Text color={secondary} fontSize={13}>
+                当前版本 {state.appVersion}
+              </Text>
+              <Button
+                backgroundColor="transparent"
+                borderWidth={0}
+                alignSelf="flex-start"
+                color={blue}
+                onPress={() => send({ type: "updateNotes" })}
+              >
+                查看更新说明
+              </Button>
+            </YStack>
+            <Button
+              backgroundColor={blue}
+              color={white}
+              height={48}
+              onPress={() => send({ type: "downloadUpdate" })}
+            >
+              下载更新
+            </Button>
+            <Text color={secondary} fontSize={13} aria-live="polite">
+              {update.message ?? "下载后打开 APK，由 Android 安装器确认更新。"}
+            </Text>
+          </YStack>
+        ) : (
+          <YStack gap={19}>
+            <SettingsSection title="连接">
+              <SettingsRow
+                title="服务器地址"
+                detail={state.bound ? state.server : "尚未绑定"}
+                onPress={() => setEditing(true)}
+              />
+              <Separator borderColor={line} />
+              <SettingsRow title={connectionLabel[state.connection]} />
+            </SettingsSection>
+            <SettingsSection title="权限">
+              <SettingsRow title="Agent 能力" onPress={() => setPanel("permissions")} />
+              <Separator borderColor={line} />
+              <SettingsRow
+                title="工作目录"
+                detail={state.directoryAuthorized ? "已授权，点击更换" : "未授权"}
+                onPress={() => send({ type: "directory" })}
+              />
+              {state.directoryAuthorized && (
+                <SettingsRow title="撤销目录授权" onPress={() => send({ type: "revokeDirectory" })} />
+              )}
+              <Separator borderColor={line} />
+              <SettingsRow
+                title="无障碍设置"
+                detail={state.accessibilityActive ? "已开启" : "未开启"}
+                onPress={() => send({ type: "accessibility" })}
+              />
+            </SettingsSection>
+            <SettingsSection title="应用">
+              <SettingsRow title="aBridge 版本" detail={`当前版本 ${state.appVersion}`} />
+              <Separator borderColor={line} />
+              <SettingsRow
+                title={
+                  update.status === "checking"
+                    ? "正在检查更新…"
+                    : update.status === "available"
+                      ? "查看可用更新"
+                      : "检查更新"
+                }
+                detail={
+                  update.status === "latest"
+                    ? "已是最新版本"
+                    : update.status === "error"
+                      ? update.message
+                      : undefined
+                }
+                disabled={update.status === "checking"}
+                onPress={() =>
+                  update.status === "available" ? setUpdatePage(true) : send({ type: "checkUpdate" })
+                }
+              />
+            </SettingsSection>
+            {state.bound && (
+              <Button
+                backgroundColor="transparent"
+                borderWidth={0}
+                alignSelf="flex-start"
+                color="#A5262B"
+                onPress={() => setPanel("unbind")}
+              >
+                解除设备绑定
+              </Button>
+            )}
+          </YStack>
+        )
       ) : !state.bound || editing ? (
         <BindingForm
           key={editing ? "edit" : "bind"}
@@ -528,7 +720,7 @@ function AccessScreen() {
             }
             iconAfter={
               <Text color={blue} fontWeight="600" fontSize={13}>
-                设置
+                ›
               </Text>
             }
             aria-label="设置 Agent 能力"
@@ -545,18 +737,9 @@ function AccessScreen() {
             borderRadius={12}
             backgroundColor={white}
           />
-          <DeviceDialog
-            panel={panel}
-            close={() => setPanel(null)}
-            state={state}
-            select={setPanel}
-            edit={() => {
-              setPanel(null);
-              setEditing(true);
-            }}
-          />
         </>
       )}
+      {state && <DeviceDialog panel={panel} close={() => setPanel(null)} state={state} />}
     </YStack>
   );
 }

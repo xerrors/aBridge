@@ -25,6 +25,12 @@ import androidx.webkit.WebViewFeature
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 internal val Context.devicePreferences get() = getSharedPreferences("device", Context.MODE_PRIVATE)
@@ -56,6 +62,9 @@ class SettingsActivity : ComponentActivity() {
     private val workspace by lazy { WorkspaceFiles(this) }
     private var webView: WebView? = null
     private var reply: JavaScriptReplyProxy? = null
+    private val updatesScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var availableUpdate: AppUpdates.Release? = null
+    private var updateStatus = JSONObject().put("type", "update").put("status", "idle")
     private val settingsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refresh() }
     private val directoryPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) result.data?.let(::acceptDirectory)
@@ -124,12 +133,17 @@ class SettingsActivity : ComponentActivity() {
 
     private fun handle(request: JSONObject) {
         when (request.optString("type")) {
-            "ready" -> refresh()
+            "ready" -> {
+                refresh()
+                send(updateStatus)
+            }
             "bind" -> {
                 val address = serverAddress(request.optString("address"))
                 val key = request.optString("key").trim()
                 if (address == null || key.isEmpty() || key.length > 512 || key.any { it !in '!'..'~' }) {
-                    sendError("请输入有效的 Server 地址和 Device Key")
+                    if (address == null && request.optString("address").trim().startsWith("http://", ignoreCase = true))
+                        sendError("此地址使用 HTTP。请输入以 https:// 开头的服务器地址。")
+                    else sendError("请输入有效的 Server 地址和 Device Key")
                     return
                 }
                 bind(address, key)
@@ -146,6 +160,9 @@ class SettingsActivity : ComponentActivity() {
             "directory" -> directoryPicker.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE))
             "revokeDirectory" -> revokeDirectory()
             "unbind" -> unbind()
+            "checkUpdate" -> checkUpdate()
+            "updateNotes" -> availableUpdate?.let { openUpdatePage(it.notes) }
+            "downloadUpdate" -> availableUpdate?.let { openUpdatePage(it.download) }
             "exit" -> finish()
         }
     }
@@ -158,12 +175,45 @@ class SettingsActivity : ComponentActivity() {
         send(JSONObject().put("type", "error").put("message", message))
     }
 
+    private fun sendUpdate(status: String, message: String? = null) {
+        updateStatus = JSONObject().put("type", "update").put("status", status)
+            .put("version", availableUpdate?.version).put("message", message)
+        send(updateStatus)
+    }
+
+    private fun checkUpdate() {
+        if (updateStatus.optString("status") == "checking") return
+        availableUpdate = null
+        sendUpdate("checking")
+        updatesScope.launch {
+            try {
+                availableUpdate = withContext(Dispatchers.IO) { AppUpdates.find() }
+                sendUpdate(if (availableUpdate == null) "latest" else "available")
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: IllegalStateException) {
+                sendUpdate("error", failure.message ?: "检查更新失败，请稍后重试")
+            } catch (_: Exception) {
+                sendUpdate("error", "检查更新失败，请检查网络后重试")
+            }
+        }
+    }
+
+    private fun openUpdatePage(url: String) {
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: android.content.ActivityNotFoundException) {
+            sendUpdate("available", "未找到可打开更新链接的浏览器")
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         refresh()
     }
 
     override fun onDestroy() {
+        updatesScope.cancel()
         preferences.unregisterOnSharedPreferenceChangeListener(settingsListener)
         reply = null
         webView?.let { view ->
@@ -241,6 +291,8 @@ class SettingsActivity : ComponentActivity() {
             .put("enabledCapabilities", JSONArray(enabled.map { it.preference }))
             .put("directoryAuthorized", workspace.authorizedTree() != null)
             .put("accessibilityActive", serviceActive)
+            .put("appVersion", BuildConfig.VERSION_NAME)
+            .put("debug", BuildConfig.DEBUG)
             .put("model", Build.MODEL)
             .put("androidVersion", Build.VERSION.RELEASE))
     }

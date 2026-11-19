@@ -31,7 +31,12 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
       - run: npm run build
-      - run: apps/android/gradlew -p apps/android --no-daemon assembleDebug assembleRelease lintDebug
+      - run: apps/android/gradlew -p apps/android --no-daemon assembleDebug assembleRelease lintDebug testDebugUnitTest
+      - name: Check Release APK size
+        run: |
+          size=$(wc -c < "apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk")
+          echo "Unsigned Release APK: $size bytes"
+          test "$size" -le 500000
       - name: Upload installable Debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
