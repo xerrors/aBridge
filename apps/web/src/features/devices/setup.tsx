@@ -1,43 +1,122 @@
-import { ArrowLeft, ArrowUpRight, Check, ChevronDown, RefreshCw } from "lucide-preact";
-import { useCredentialGuard } from "../../lib/credential-guard.js";
-import { useRef, useState } from "preact/hooks";
+import { ArrowLeft, ArrowRight, ArrowUpRight, ExternalLink, KeyRound, RefreshCw } from "lucide-preact";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
+import type { ComponentChildren } from "preact";
+import type { Capability, DeviceKind } from "@abridge/protocol";
 import { z } from "zod";
-import { api } from "../../lib/api.js";
-import type { Device, RunAction } from "../../lib/types.js";
 import { ActionButton, CopyButton } from "../../components/actions.js";
-import { DeviceIcon } from "../../components/icons.js";
 import { Field, Form } from "../../components/forms.js";
+import { DeviceIcon, platformLabels } from "../../components/icons.js";
+import { api } from "../../lib/api.js";
+import { useCredentialGuard } from "../../lib/credential-guard.js";
+import { capabilityLabels } from "../../lib/labels.js";
+import type { Device, RunAction } from "../../lib/types.js";
+
+const platforms = ["macos", "windows", "linux", "android", "browser"] as const;
+type Platform = (typeof platforms)[number];
+const release = "https://github.com/xerrors/aBridge/releases/latest";
+const clients: Record<
+  Exclude<Platform, "windows">,
+  {
+    kind: DeviceKind;
+    requirements: string;
+    download: { href: string; label: string };
+    installGuide?: string;
+    capabilities: Capability[];
+    browserAuthorization?: string;
+    tokenInstructions: ComponentChildren;
+  }
+> = {
+  macos: {
+    kind: "computer",
+    requirements: "macOS 14+，Apple Silicon",
+    download: { href: release, label: "下载 macOS 客户端" },
+    capabilities: ["screen", "input", "shell", "files"],
+    browserAuthorization: "在 macOS 客户端设置中填写服务地址，点击「在浏览器授权」，并用当前账户确认。",
+    tokenInstructions:
+      "在 macOS 客户端设置的「绑定方式」中选择 Device Token，填入服务地址和凭证，再点击「验证并连接」。",
+  },
+  linux: {
+    kind: "computer",
+    requirements: "Linux CLI，amd64 / arm64",
+    download: { href: release, label: "下载 Linux CLI" },
+    installGuide: "https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md#安装与绑定",
+    capabilities: ["shell", "files"],
+    tokenInstructions: (
+      <>
+        在解压目录运行 <code>./abridge-client setup --url &lt;服务地址&gt;</code>，按提示粘贴 Device Token。
+        绑定后运行 <code>./abridge-client service install</code> 启动用户服务，或用{" "}
+        <code>./abridge-client run</code> 前台运行。
+      </>
+    ),
+  },
+  android: {
+    kind: "computer",
+    requirements: "Android 11+，开发预览",
+    download: {
+      href: "https://github.com/xerrors/aBridge/blob/main/apps/android/README.md",
+      label: "查看 APK 下载与构建说明",
+    },
+    capabilities: ["screen", "input", "files"],
+    tokenInstructions:
+      "在 Android App 中填写 HTTPS 服务地址和 Device Key，点击「绑定设备」。开启 aBridge 无障碍服务后，回到 App 点击「允许 Agent 操作」。",
+  },
+  browser: {
+    kind: "browser",
+    requirements: "Chrome 116+，每个浏览器个人资料单独绑定",
+    download: {
+      href: "https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc",
+      label: "安装浏览器扩展",
+    },
+    capabilities: ["browser"],
+    browserAuthorization: "打开扩展面板，填写服务地址，点击「在浏览器授权」，并用当前账户确认。",
+    tokenInstructions:
+      "在扩展面板的「绑定方式」中选择 Device Token，填入服务地址和凭证，再点击「验证并连接」。",
+  },
+};
 
 export function DeviceSetupPage({
   devices,
   refresh,
   run,
   notify,
-  initialKind,
+  initialPlatform,
 }: {
   devices: Device[];
   refresh: () => Promise<void>;
   run: RunAction;
   notify: (message: string) => void;
-  initialKind?: string;
+  initialPlatform?: string;
 }) {
-  const [kind, setKind] = useState<"computer" | "browser">(
-    initialKind === "browser" ? "browser" : "computer",
-  );
-  const initial = useRef(new Set(devices.map((device) => device.id)));
+  const platform = platforms.find((value) => value === initialPlatform) ?? "macos";
+  const client = platform === "windows" ? undefined : clients[platform];
+  const [method, setMethod] = useState(client?.browserAuthorization ? "browser" : "token");
   const [saved, setSaved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [credential, setCredential] = useState<{ id: string; key: string }>();
-  const added = devices.filter(
-    (device) => !initial.current.has(device.id) && device.status !== "revoked" && device.kind === kind,
-  );
-  const connected = added.find(
-    (device) => device.status === "online" && (!credential || device.id === credential.id),
-  );
+  const device = credential && devices.find(({ id }) => id === credential.id);
+  const revoked = device?.status === "revoked";
+  const unsaved = Boolean(credential && !saved && !revoked);
+  const connectionStatus = {
+    online: `${device?.name} 已连接${device?.paused ? "（已暂停）" : ""}`,
+    offline: "等待客户端连接…",
+    revoked: "设备已解绑，凭证已失效。",
+    unknown: "设备连接状态未知。",
+  };
+  const tokenField = useRef<HTMLInputElement>(null);
+  const androidNeedsAddress =
+    platform === "android" &&
+    (location.protocol !== "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname));
+
   useCredentialGuard(
-    submitting || Boolean(credential && !saved && !connected),
-    "设备凭据尚未保存。离开后无法再次查看，仍要离开吗？",
+    submitting || unsaved,
+    submitting
+      ? "正在生成设备凭证。现在离开可能无法查看凭证，仍要离开吗？"
+      : "设备凭证尚未保存。离开后无法再次查看，仍要离开吗？",
   );
+  useLayoutEffect(() => {
+    if (credential && method === "token") tokenField.current?.focus();
+  }, [credential, method]);
+
   return (
     <div class="task-page">
       <a class="device-back" href="#devices">
@@ -45,155 +124,208 @@ export function DeviceSetupPage({
         我的设备
       </a>
       <div class="page-title">
-        <div>
-          <h1>添加设备</h1>
-        </div>
+        <h1>添加设备</h1>
       </div>
-      <div class="device-setup-layout">
-        <div class="device-type-selector">
-          <div class="type-options">
-            {(["computer", "browser"] as const).map((value) => (
-              <button
-                key={value}
-                aria-pressed={kind === value}
-                disabled={Boolean(credential) || submitting}
-                onClick={() => setKind(value)}
-              >
-                <DeviceIcon kind={value} platform={value === "computer" ? "macos" : "chrome"} />
-                <span>{value === "computer" ? "电脑" : "浏览器"}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <section class="device-install" aria-label="设备连接步骤">
-          {connected ? (
-            <div class="setup-success">
-              <span class="success-mark">
-                <Check aria-hidden="true" />
-              </span>
-              <h2>设备已连接</h2>
-              <p>{connected.name} 已添加到你的账户。</p>
-              <div class="actions">
-                <a class="button" href={`#devices/${encodeURIComponent(connected.id)}`}>
-                  查看设备
-                </a>
-                <a class="button primary" href="#connections/new">
-                  连接 Agent
+      <div class="type-options" role="group" aria-label="设备平台">
+        {platforms.map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={platform === value}
+            disabled={submitting}
+            onClick={() => {
+              if (value !== platform) location.hash = `devices/new/${value}`;
+            }}
+          >
+            <DeviceIcon
+              kind={value === "browser" ? "browser" : "computer"}
+              platform={value === "browser" ? "chrome" : value}
+            />
+            <span>{value === "browser" ? "浏览器扩展" : platformLabels[value]}</span>
+          </button>
+        ))}
+      </div>
+      {client ? (
+        <ol class="setup-journey" aria-label="设备连接步骤">
+          <li>
+            <div class="setup-step">
+              <div class="setup-install">
+                <div>
+                  <h2>安装客户端</h2>
+                  <p class="small muted">{client.requirements}</p>
+                  {client.installGuide && (
+                    <a class="small" href={client.installGuide} target="_blank" rel="noreferrer">
+                      安装与校验说明
+                    </a>
+                  )}
+                </div>
+                <a class="button" href={client.download.href} target="_blank" rel="noreferrer">
+                  {client.download.label}
+                  <ArrowUpRight aria-hidden="true" />
                 </a>
               </div>
             </div>
-          ) : (
-            <>
-              <ol class="setup-journey">
-                <li>
-                  <div>
-                    <h2>安装客户端</h2>
-                    <p>{kind === "computer" ? "macOS 14+ · Apple Silicon" : "Chrome 及兼容浏览器"}</p>
-                    <a
-                      class="button"
-                      href={
-                        kind === "computer"
-                          ? "https://github.com/xerrors/aBridge/releases"
-                          : "https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc"
-                      }
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {kind === "computer" ? "下载 Mac 客户端" : "安装浏览器扩展"}{" "}
-                      <ArrowUpRight aria-hidden="true" />
-                    </a>
-                  </div>
-                </li>
-                <li>
-                  <div>
-                    <h2>服务地址</h2>
-                    <p>{kind === "computer" ? "Mac 客户端设置" : "浏览器扩展面板"}</p>
+          </li>
+          <li>
+            <div class="setup-step setup-binding">
+              <h2>绑定设备</h2>
+              {client.browserAuthorization && (
+                <div class="setup-methods" role="group" aria-label="绑定方式">
+                  <button
+                    type="button"
+                    aria-pressed={method === "browser"}
+                    disabled={submitting || unsaved}
+                    onClick={() => setMethod("browser")}
+                  >
+                    <ExternalLink aria-hidden="true" />
+                    浏览器授权
+                  </button>
+                  <button type="button" aria-pressed={method === "token"} onClick={() => setMethod("token")}>
+                    <KeyRound aria-hidden="true" />
+                    设备凭证
+                  </button>
+                </div>
+              )}
+              <div class="setup-address">
+                {androidNeedsAddress ? (
+                  <>
+                    <span>服务地址</span>
+                    <p class="small muted">Android 真机请填写设备能访问的 HTTPS 服务地址。</p>
+                  </>
+                ) : (
+                  <>
+                    <label for="setup-server-address">服务地址</label>
                     <div class="copy-field">
-                      <input aria-label="服务地址" readOnly value={location.origin} />
+                      <input id="setup-server-address" readOnly value={location.origin} />
                       <CopyButton value={location.origin} run={run} className="secondary">
                         复制地址
                       </CopyButton>
                     </div>
-                  </div>
-                </li>
-                <li>
-                  <div>
-                    <h2>授权连接</h2>
-                    <p>在客户端点击“在浏览器授权”。</p>
-                    <div class="waiting-status" role="status">
-                      <span class="dot" />
-                      {added.length ? "设备已添加，等待客户端连接…" : "等待设备连接…"}
-                    </div>
-                    <ActionButton
-                      action={refresh}
-                      icon={<RefreshCw aria-hidden="true" />}
-                      run={run}
-                      className="text-button"
-                      busyLabel="检查中…"
-                      successLabel="已检查"
-                    >
-                      刷新
-                    </ActionButton>
-                  </div>
-                </li>
-              </ol>
-              <details class="manual-setup">
-                <summary>
-                  使用设备凭据手动绑定
-                  <ChevronDown aria-hidden="true" />
-                </summary>
-                {kind === "computer" && <p class="small muted">Linux CLI 使用这里生成的设备凭据绑定。</p>}
-                {credential ? (
-                  <>
-                    <p class="secret-notice">仅显示一次，请保存到客户端。</p>
-                    <textarea class="key-area" aria-label="Device Token" readOnly value={credential.key} />
-                    <CopyButton value={credential.key} run={run}>
-                      复制设备凭据
-                    </CopyButton>
-                    <label class="inline-check credential-saved">
-                      <input
-                        type="checkbox"
-                        checked={saved}
-                        onChange={(event) => setSaved(event.currentTarget.checked)}
-                      />
-                      我已保存设备凭据
-                    </label>
                   </>
-                ) : (
-                  <Form
-                    label="生成设备凭据"
-                    onSubmit={async (form) => {
-                      setSubmitting(true);
-                      try {
-                        const result = await api(
-                          "/api/devices",
-                          z.object({ id: z.string(), key: z.string() }),
-                          {
-                            name: form.get("name"),
-                            kind,
-                            capabilities:
-                              kind === "computer" ? ["screen", "input", "shell", "files"] : ["browser"],
-                          },
-                        );
-                        setCredential(result);
-                        await refresh().catch(() => notify("设备已创建，列表刷新失败；请先保存凭据。"));
-                      } finally {
-                        setSubmitting(false);
-                      }
-                    }}
-                  >
-                    <Field name="name" label="设备名称" />
-                    <dl class="manual-capabilities">
-                      <dt>授权能力</dt>
-                      <dd>{kind === "computer" ? "屏幕、键鼠、Shell、文件" : "浏览器"}</dd>
-                    </dl>
-                  </Form>
                 )}
-              </details>
-            </>
-          )}
+              </div>
+              {method === "browser" ? (
+                <div class="setup-authorization">
+                  <p>{client.browserAuthorization}</p>
+                  <a href="#devices">
+                    授权后到设备列表确认上线 <ArrowRight aria-hidden="true" />
+                  </a>
+                </div>
+              ) : (
+                <section class="setup-token" aria-labelledby="setup-token-title">
+                  <h3 id="setup-token-title">设备凭证</h3>
+                  <p class="setup-token-instructions">{client.tokenInstructions}</p>
+                  {credential ? (
+                    <>
+                      {!revoked && (
+                        <>
+                          <p class="small muted">凭证仅在这里显示一次。请复制到客户端。</p>
+                          <div class="copy-field">
+                            <input aria-label="设备凭证" ref={tokenField} readOnly value={credential.key} />
+                            <CopyButton value={credential.key} run={run}>
+                              复制设备凭证
+                            </CopyButton>
+                          </div>
+                          <label class="inline-check">
+                            <input
+                              type="checkbox"
+                              checked={saved}
+                              onChange={(event) => setSaved(event.currentTarget.checked)}
+                            />
+                            我已保存设备凭证
+                          </label>
+                        </>
+                      )}
+                      <div class="setup-device-state">
+                        <p class="waiting-status" role="status">
+                          <span
+                            class={`dot ${device?.paused ? "paused" : (device?.status ?? "")}`}
+                            aria-hidden="true"
+                          />
+                          {connectionStatus[device?.status ?? "unknown"]}
+                        </p>
+                        {device?.status === "online" ? (
+                          <div class="actions">
+                            <a class="button" href={`#devices/${encodeURIComponent(device.id)}`}>
+                              查看设备
+                            </a>
+                            <a class="button primary" href="#connections/new">
+                              连接 Agent
+                            </a>
+                          </div>
+                        ) : revoked ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCredential(undefined);
+                              setSaved(false);
+                            }}
+                          >
+                            重新添加设备
+                          </button>
+                        ) : (
+                          <ActionButton
+                            action={refresh}
+                            icon={<RefreshCw aria-hidden="true" />}
+                            run={run}
+                            className="text-button"
+                            busyLabel="检查中…"
+                            successLabel="已检查"
+                          >
+                            检查连接
+                          </ActionButton>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <Form
+                      label="生成设备凭证"
+                      onSubmit={async (form) => {
+                        setSubmitting(true);
+                        try {
+                          const result = await api(
+                            "/api/devices",
+                            z.object({ id: z.string(), key: z.string() }),
+                            {
+                              name: form.get("name"),
+                              kind: client.kind,
+                              capabilities: client.capabilities,
+                            },
+                          );
+                          setCredential(result);
+                        } finally {
+                          setSubmitting(false);
+                        }
+                        void refresh().catch(() => notify("设备凭证已生成，暂时无法刷新连接状态。"));
+                      }}
+                    >
+                      <Field name="name" label="设备名称" />
+                      <p class="small muted">
+                        设备能力：
+                        {client.capabilities
+                          .map((value) =>
+                            platform === "android" && value === "input"
+                              ? "触摸输入"
+                              : capabilityLabels[value],
+                          )
+                          .join("、")}
+                      </p>
+                    </Form>
+                  )}
+                </section>
+              )}
+            </div>
+          </li>
+        </ol>
+      ) : (
+        <section class="setup-unavailable" aria-labelledby="windows-setup-title">
+          <h2 id="windows-setup-title">Windows 原生客户端尚未发布</h2>
+          <p class="small muted">你可以通过 Chrome 扩展接入 Windows 上的浏览器。</p>
+          <a class="button" href="#devices/new/browser">
+            添加浏览器扩展 <ArrowRight aria-hidden="true" />
+          </a>
         </section>
-      </div>
+      )}
     </div>
   );
 }

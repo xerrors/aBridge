@@ -148,7 +148,7 @@ export function DevicesPage({
               <button onClick={addDevice}>
                 <DeviceIcon kind="computer" />
                 <span>
-                  添加电脑<span class="small muted">macOS 或 Linux</span>
+                  添加客户端<span class="small muted">macOS、Linux 或 Android</span>
                 </span>
                 <ChevronRight aria-hidden="true" />
               </button>
