@@ -57,12 +57,6 @@
   font-weight: 400;
   margin-top: 4px;
 }
-.manual-setup > summary > .lucide {
-  color: var(--muted);
-}
-.manual-setup[open] > summary > .lucide {
-  transform: rotate(180deg);
-}
 .device-overview {
   margin-bottom: 24px;
 }
@@ -158,35 +152,32 @@
 }
 .type-options {
   display: flex;
+  flex-wrap: wrap;
+  gap: 0 24px;
   border-bottom: 1px solid var(--line);
-  gap: 32px;
   margin-bottom: 8px;
 }
 .type-options button {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 0 16px;
+  gap: 8px;
+  padding: 0 0 12px;
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
   color: var(--muted);
-  font-size: 14px;
 }
+.type-options button:hover:not(:disabled),
 .type-options button[aria-pressed="true"] {
   color: var(--ink);
-  border-bottom-color: var(--ink);
+}
+.type-options button[aria-pressed="true"] {
+  border-bottom-color: var(--blue);
 }
 .type-options .device-icon {
-  height: 25px;
-  width: 25px;
+  height: 24px;
+  width: 24px;
   background: transparent;
   border: 0;
-}
-.type-options .device-icon svg {
-  width: 20px;
-  height: 20px;
 }
 .setup-journey {
   margin: 0;
@@ -198,7 +189,7 @@
   counter-increment: setup;
   display: flex;
   gap: 16px;
-  padding: 28px 0;
+  padding: 24px 0;
   border-bottom: 1px solid var(--line);
 }
 .setup-journey > li::before {
@@ -212,41 +203,91 @@
   border-radius: 50%;
   font-size: 11px;
   flex: none;
-  margin-top: 1px;
 }
-.setup-journey > li > div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 5px 24px;
+.setup-step {
   flex: 1;
   min-width: 0;
 }
-.setup-journey h2 {
-  font-size: 14px;
-  font-weight: 500;
+.setup-journey h2,
+.setup-unavailable h2 {
+  font-size: 15px;
+  font-weight: 600;
   letter-spacing: 0;
 }
-.setup-journey p {
-  font-size: 12px;
+.setup-install,
+.setup-device-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+}
+.setup-install p {
+  margin-top: 4px;
+}
+.setup-install a.small {
+  display: inline-block;
+  margin-top: 4px;
+}
+.setup-binding {
+  display: grid;
+  gap: 16px;
+}
+.setup-methods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.setup-methods button[aria-pressed="true"] {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: #edf4ff;
+}
+.setup-address {
+  display: grid;
+  gap: 6px;
+}
+.setup-address label,
+.setup-address > span {
+  font-size: 13px;
+  font-weight: 500;
+}
+.setup-authorization {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  font-size: 13px;
   color: var(--muted);
-  grid-column: 1;
 }
-.setup-journey .button {
-  grid-column: 2;
-  grid-row: 1 / 3;
+.setup-authorization a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-decoration: none;
 }
-.setup-journey .copy-field {
-  grid-column: 1 / -1;
-  margin-top: 14px;
+.setup-token {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
 }
-.setup-journey .waiting-status {
-  grid-column: 1;
-  margin-top: 16px;
+.setup-token-instructions {
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
-.setup-journey .text-button {
-  grid-column: 2;
-  grid-row: 1 / 4;
+.setup-token .field {
+  margin-bottom: 8px;
+}
+.setup-token .dialog-actions {
+  justify-content: flex-start;
+  margin-top: 12px;
+}
+.setup-device-state {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
 }
 .waiting-status {
   display: inline-flex;
@@ -255,51 +296,11 @@
   font-size: 12px;
   color: var(--muted);
 }
-.manual-setup {
-  margin-top: 24px;
-}
-.manual-setup summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  list-style: none;
-  min-height: 40px;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
-}
-.manual-setup summary::-webkit-details-marker {
-  display: none;
-}
-.manual-setup > p {
-  margin: 18px 0;
-}
-.manual-setup form {
-  margin-top: 22px;
-  max-width: 440px;
-}
-.manual-setup > button {
-  margin-top: 12px;
-}
-.setup-success {
+.setup-unavailable {
   display: grid;
   justify-items: start;
-  gap: 18px;
-  padding: 36px 0;
-}
-.success-mark {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  color: var(--blue);
-  background: #edf4ff;
-  font-size: 18px;
-}
-.setup-success p {
-  color: var(--muted);
+  gap: 10px;
+  padding: 24px 0;
 }
 .access-row .cap {
   padding: 0;
@@ -398,17 +399,6 @@
   .device-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-}
-.manual-capabilities {
-  display: flex;
-  gap: 24px;
-  font-size: 12px;
-  color: var(--muted);
-  margin: 20px 0;
-}
-.manual-capabilities dd {
-  margin: 0;
-  color: var(--ink);
 }
 .device-capability-list li > span:first-child {
   display: inline-flex;

@@ -168,9 +168,9 @@ function ManagementApp() {
               <OverviewPage data={data} />
             ) : visibleTab === "devices" && route.id === "new" ? (
               <DeviceSetupPage
-                key={identityRevision}
+                key={route.section}
                 devices={data.devices}
-                initialKind={route.section}
+                initialPlatform={route.section}
                 refresh={refresh}
                 run={run}
                 notify={notify}

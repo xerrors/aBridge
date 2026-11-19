@@ -77,7 +77,24 @@ export function CopyButton({
       run={run}
       action={async () => {
         try {
-          await navigator.clipboard.writeText(value);
+          if (navigator.clipboard) {
+            await navigator.clipboard.writeText(value);
+            return;
+          }
+          // Insecure LAN origins do not expose the Clipboard API.
+          const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          const field = document.createElement("textarea");
+          field.value = value;
+          field.readOnly = true;
+          field.style.cssText = "position: fixed; left: 0; top: 0; opacity: 0; pointer-events: none;";
+          (previous?.closest("dialog[open]") ?? document.body).append(field);
+          try {
+            field.select();
+            if (!document.execCommand("copy")) throw new Error();
+          } finally {
+            field.remove();
+            previous?.focus({ preventScroll: true });
+          }
         } catch {
           throw new Error("复制失败，请选中文本后手动复制。");
         }
