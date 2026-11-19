@@ -24,6 +24,14 @@ android {
     buildFeatures {
         buildConfig true
     }
+    buildTypes.configureEach {
+        minifyEnabled = true
+        proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+    }
+    packaging {
+        // Compress DEX in standalone APKs to reduce the download size.
+        dex.useLegacyPackaging = true
+    }
     sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/contract').get().asFile)
     sourceSets.main.assets.srcDir('ui/dist')
 }
