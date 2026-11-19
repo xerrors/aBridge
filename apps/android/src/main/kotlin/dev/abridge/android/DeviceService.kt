@@ -102,7 +102,8 @@ class DeviceService : AccessibilityService() {
 
     private fun connect() {
         if (!active || socket != null || prefs.getBoolean("revoked", false)) return
-        val url = prefs.getString("url", null)?.let(::serverAddress) ?: return
+        val url = approvedServerAddress(prefs.getString("url", "").orEmpty(),
+            prefs.getString("confirmed_http_url", null)) ?: return
         val key = prefs.getString("key", null) ?: return
         setState("connecting")
         val request = Request.Builder().url("$url/ws/device").header("Authorization", "Bearer $key").build()
