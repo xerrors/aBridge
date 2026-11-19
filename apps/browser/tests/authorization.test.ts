@@ -69,6 +69,38 @@ test("extension exchanges one code bound to its private PKCE verifier and callba
   assert.deepEqual(fixture.calls[0]!.body.capabilities, ["browser"]);
 });
 
+test("binding failures preserve HTTP status and explain empty or unexpected Server responses", async () => {
+  for (const [response, message] of [
+    [new Response(null, { status: 502 }), /HTTP 502.*服务地址/],
+    [new Response(null), /响应为空.*HTTP 200/],
+    [new Response("<html>fixture</html>"), /响应不符合 aBridge 接口.*HTTP 200/],
+    [Response.json({ unrelated: true }), /响应不符合 aBridge 接口.*HTTP 200/],
+    [
+      Response.json({ error: { code: "invalid_origin", message: "请检查 Server URL" } }, { status: 403 }),
+      /请检查 Server URL.*HTTP 403/,
+    ],
+  ] as const) {
+    await assert.rejects(
+      run({
+        calls: [],
+        fetcher: async () => response,
+        open: async () => assert.fail("unexpected response cannot open an authorization window"),
+      }),
+      message,
+    );
+  }
+  await assert.rejects(
+    run({
+      calls: [],
+      fetcher: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+      open: async () => assert.fail("network failure cannot open an authorization window"),
+    }),
+    /无法连接 Server.*地址、端口/,
+  );
+});
+
 test("foreign callbacks, duplicate state/code, denial and missing codes never exchange credentials", async () => {
   for (const callback of [
     (request: Record<string, unknown>) => `https://evil.fixture/?code=${code}&state=${request.state}`,

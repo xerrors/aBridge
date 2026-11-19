@@ -12,141 +12,21 @@
       <header class="popup-header">
         <div class="brand">
           <img class="brand-symbol" src="icons/brand.svg" alt="" />
-          <div>
-            <img class="brand-wordmark" src="icons/wordmark.svg" alt="aBridge" /><span class="brand-caption"
-              >for Browser</span
-            >
-          </div>
+          <img class="brand-wordmark" src="icons/wordmark.svg" alt="aBridge" />
         </div>
-        <div class="header-actions">
-          <button id="refresh" class="icon-button" aria-label="刷新连接状态" title="刷新连接状态">
-            <svg viewBox="0 0 24 24">
-              <path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" />
-            </svg></button
-          ><button
-            id="settings"
-            class="icon-button"
-            aria-label="展开连接设置"
-            title="连接设置"
-            aria-expanded="false"
-            aria-controls="settings-panel"
-          >
-            <svg viewBox="0 0 24 24">
-              <path
-                d="m9 3-.6 2.5-2.2 1.3-2.4-.7-2 3.5 1.8 1.8v2.6l-1.8 1.8 2 3.5 2.4-.7 2.2 1.3L9 22h4l.6-2.5 2.2-1.3 2.4.7 2-3.5-1.8-1.8V11l1.8-1.8-2-3.5-2.4.7-2.2-1.3L13 3Z"
-              />
-              <circle cx="11" cy="12.5" r="3" />
-            </svg>
-          </button>
-        </div>
+        <p id="connection" class="status-chip" role="status">
+          <span class="status-dot" aria-hidden="true"></span><span id="status-label">读取中…</span>
+        </p>
       </header>
-      <section id="connection" class="connection-summary loading" aria-live="polite">
-        <div class="device-row">
-          <div class="device-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <rect x="3" y="4" width="18" height="16" rx="3" />
-              <path d="M3 9h18M7 6.5h.01M10 6.5h.01" />
-            </svg>
-          </div>
-          <div class="device-identity">
-            <h1 id="device-name">当前浏览器</h1>
-            <div class="status-chip">
-              <span class="status-dot"></span><span id="status-label">正在检查</span>
-            </div>
-          </div>
-        </div>
-        <p id="error" class="error-message" role="alert" hidden></p>
-      </section>
-      <section id="ready-controls" class="popup-controls" hidden>
-        <div class="control-row">
-          <button id="pause" class="primary" type="button">
-            <svg class="control-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path id="pause-icon" d="M6 4v8M10 4v8" /></svg
-            ><span id="pause-label">暂停访问</span>
-          </button>
-          <button id="stop" class="secondary" type="button">
-            <svg class="control-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="4.5" y="4.5" width="7" height="7" rx="1" /></svg
-            ><span>停止任务</span>
-          </button>
-        </div>
-      </section>
-      <section id="settings-panel" class="popup-settings" aria-labelledby="settings-title" hidden>
-        <h2 id="settings-title">连接设置</h2>
-        <div id="registered-info" hidden>
-          <form id="rename" class="device-rename">
-            <label for="device-label">浏览器名称</label>
-            <div class="device-rename-row">
-              <input id="device-label" maxlength="120" required />
-              <button id="rename-save" class="secondary" type="submit">保存</button>
-            </div>
-          </form>
-          <dl class="device-information">
-            <dt>Server 地址</dt>
-            <dd id="saved-server"></dd>
-          </dl>
-          <button id="unbind" class="danger-button full-width" type="button">解除绑定</button>
-        </div>
-        <form id="register" hidden>
-          <label
-            >Server 地址<input
-              id="server"
-              type="url"
-              required
-              placeholder="https://abridge.example.com"
-              autocomplete="url"
-          /></label>
-          <label
-            >绑定方式<select id="binding-method">
-              <option value="browser">浏览器授权</option>
-              <option value="token">Device Token</option>
-            </select></label
-          >
-          <div id="token-fields" hidden>
-            <label
-              >Device Token<input
-                id="device-token"
-                type="password"
-                autocomplete="off"
-                maxlength="4096"
-                placeholder="abr_device_…"
-            /></label>
-            <label><input id="show-token" type="checkbox" />显示 Token</label>
-            <p class="hint">使用管理台为浏览器设备生成的 Token，不是 Agent Key 或管理员 Token。</p>
-          </div>
-          <div id="browser-fields">
-            <div class="profile-name-heading">
-              <label for="label">浏览器名称</label>
-              <button id="profile-account" class="secondary" type="button">使用 Profile 账户</button>
-            </div>
-            <input id="label" maxlength="80" required placeholder="例如：Chrome · 工作账号" />
-          </div>
-          <p id="authorization-status" class="hint" role="status" hidden>
-            请在打开的浏览器窗口中确认授权。关闭此面板不影响授权。
-          </p>
-          <div class="form-actions">
-            <button id="submit" class="primary full-width" type="submit">在浏览器授权</button>
-            <button id="cancel-authorization" class="secondary full-width" type="button" hidden>
-              取消授权
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <details id="diagnostics" class="popup-diagnostics">
-        <summary>连接诊断</summary>
-        <dl id="connection-details" class="diagnostic-list"></dl>
-      </details>
-    </main>
-    <dialog id="http-warning">
-      <h2>连接未加密的 Server？</h2>
-      <p id="http-address" class="hint"></p>
-      <p>此连接使用 HTTP，设备 Token、操作内容和截图可能被网络中的其他人读取。建议使用 HTTPS。</p>
-      <div class="form-actions">
-        <button id="http-cancel" type="button" autofocus>取消</button
-        ><button id="http-continue" type="button">仍然连接</button>
+      <h1 id="device-name">当前浏览器</h1>
+      <p id="error" class="error-message" role="alert" hidden></p>
+      <div class="popup-actions">
+        <button id="pause" class="primary" type="button" hidden>暂停访问</button>
+        <button id="open-connection" class="secondary" type="button" hidden>管理连接</button>
+        <button id="stop" class="secondary" type="button" hidden>停止任务</button>
+        <button id="retry" class="secondary" type="button" hidden>重试读取状态</button>
       </div>
-    </dialog>
+    </main>
     <script src="popup.js" type="module"></script>
   </body>
 </html>

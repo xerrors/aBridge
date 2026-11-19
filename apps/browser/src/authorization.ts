@@ -5,8 +5,8 @@ import {
 } from "@abridge/protocol";
 import { z } from "zod";
 import { fail } from "./types.js";
+import { requestBinding } from "./binding-request.js";
 
-const errorSchema = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
 const secret = () =>
   btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
     .replaceAll("+", "-")
@@ -48,38 +48,36 @@ export async function authorizeBrowser(options: {
   if (options.signal.aborted) cancel();
   let requestId: string | undefined;
   let timeout: ReturnType<typeof setTimeout> | undefined;
-  async function request(path: string, body: object, method = "POST", signal = controller.signal) {
-    const response = await fetcher(options.server + path, {
-      method,
-      credentials: "omit",
-      redirect: "error",
-      signal,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const value: unknown = await response.json();
-    if (!response.ok) {
-      const error = errorSchema.safeParse(value);
-      throw fail(
-        error.success ? error.data.error.code : "authorization_failed",
-        error.success ? error.data.error.message : "授权请求失败，请重新尝试",
-      );
-    }
-    return value;
+  function request<T>(
+    path: string,
+    schema: z.ZodType<T>,
+    body: object,
+    method = "POST",
+    signal = controller.signal,
+  ) {
+    return requestBinding(
+      fetcher,
+      options.server + path,
+      {
+        method,
+        signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      schema,
+    );
   }
   try {
     controller.signal.throwIfAborted();
-    const start = deviceAuthorizationStartSchema.parse(
-      await request("/api/device-authorizations", {
-        kind: "browser",
-        name: options.name,
-        capabilities: ["browser"],
-        redirect_uri: options.redirectUri,
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        state,
-      }),
-    );
+    const start = await request("/api/device-authorizations", deviceAuthorizationStartSchema, {
+      kind: "browser",
+      name: options.name,
+      capabilities: ["browser"],
+      redirect_uri: options.redirectUri,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state,
+    });
     requestId = start.id;
     const page = new URL(start.authorization_url);
     if (
@@ -127,13 +125,11 @@ export async function authorizeBrowser(options: {
     const codes = callback.searchParams.getAll("code");
     if (codes.length !== 1 || !/^[A-Za-z0-9_-]{32,128}$/.test(codes[0]!))
       throw fail("invalid_callback", "授权页面未返回有效的授权码");
-    const token = deviceAuthorizationTokenSchema.parse(
-      await request("/api/device-authorizations/token", {
-        code: codes[0],
-        code_verifier: verifier,
-        redirect_uri: options.redirectUri,
-      }),
-    );
+    const token = await request("/api/device-authorizations/token", deviceAuthorizationTokenSchema, {
+      code: codes[0],
+      code_verifier: verifier,
+      redirect_uri: options.redirectUri,
+    });
     if (token.kind !== "browser" || token.capabilities.length !== 1 || token.capabilities[0] !== "browser")
       throw fail("invalid_device", "Server 返回了不匹配的设备授权");
     return token;
@@ -141,6 +137,7 @@ export async function authorizeBrowser(options: {
     if (requestId)
       await request(
         `/api/device-authorizations/${requestId}`,
+        z.unknown(),
         { code_verifier: verifier },
         "DELETE",
         AbortSignal.timeout(5000),

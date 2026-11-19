@@ -77,7 +77,7 @@ const manifest = JSON.parse(await readFile(join(extension, "manifest.json"), "ut
 manifest.version = packageInfo.version;
 await writeFile(join(extension, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 await build({
-  entryPoints: ["worker", "popup"].map((name) => join(root, "apps/browser/src", name + ".ts")),
+  entryPoints: ["worker", "popup", "connection"].map((name) => join(root, "apps/browser/src", name + ".ts")),
   outdir: extension,
   bundle: true,
   plugins: [workspaceSources],

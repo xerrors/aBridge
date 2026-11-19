@@ -18,7 +18,7 @@ npm exec --yes \
 
 ## 绑定浏览器
 
-在准备交给 Agent 使用的 Chrome Profile 中安装 [aBridge 扩展](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc)。打开扩展，填写 Server 地址 `http://127.0.0.1:8765`，按提示完成绑定。
+在准备交给 Agent 使用的 Chrome Profile 中安装 [aBridge 扩展](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc)。打开扩展并点击「连接浏览器」，在绑定标签页填写 Server 地址 `http://127.0.0.1:8765`，按提示完成绑定。
 
 回到管理台的「设备」页，确认刚绑定的浏览器已上线。每个 Chrome Profile 都可以单独授权。其他设备的安装步骤见 [macOS App](../deployment.md#macos-app)、[Linux CLI](../deployment.md#linux-cli) 和 [Android 预览](https://github.com/xerrors/aBridge/blob/main/apps/android/README.md)。
 
