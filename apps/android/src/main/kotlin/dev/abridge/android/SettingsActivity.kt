@@ -1,6 +1,7 @@
 package dev.abridge.android
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
@@ -38,8 +39,14 @@ internal val Context.devicePreferences get() = getSharedPreferences("device", Co
 internal fun serverAddress(raw: String): String? {
     val url = raw.trim().toHttpUrlOrNull() ?: return null
     if (url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null) return null
-    if (!url.isHttps && !(BuildConfig.DEBUG && url.host in listOf("10.0.2.2", "127.0.0.1"))) return null
     return url.toString().trimEnd('/')
+}
+
+internal fun approvedServerAddress(raw: String, confirmedHttp: String?, debug: Boolean = BuildConfig.DEBUG): String? {
+    val address = serverAddress(raw) ?: return null
+    if (address.startsWith("https://") || address == confirmedHttp) return address
+    // Previously saved local Debug bindings already used an explicit loopback destination.
+    return address.takeIf { debug && it.toHttpUrlOrNull()?.host in listOf("127.0.0.1", "10.0.2.2") }
 }
 
 internal enum class ConnectionStatus(val label: String) {
@@ -62,6 +69,7 @@ class SettingsActivity : ComponentActivity() {
     private val workspace by lazy { WorkspaceFiles(this) }
     private var webView: WebView? = null
     private var reply: JavaScriptReplyProxy? = null
+    private var httpDialog: AlertDialog? = null
     private val updatesScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var availableUpdate: AppUpdates.Release? = null
     private var updateStatus = JSONObject().put("type", "update").put("status", "idle")
@@ -141,14 +149,11 @@ class SettingsActivity : ComponentActivity() {
                 val address = serverAddress(request.optString("address"))
                 val key = request.optString("key").trim()
                 if (address == null || key.isEmpty() || key.length > 512 || key.any { it !in '!'..'~' }) {
-                    if (address == null && request.optString("address").trim().startsWith("http://", ignoreCase = true))
-                        sendError("此地址使用 HTTP。请输入以 https:// 开头的服务器地址。")
-                    else sendError("请输入有效的 Server 地址和 Device Key")
+                    sendError("请输入有效的服务器地址和 Device Key")
                     return
                 }
-                bind(address, key)
-                send(JSONObject().put("type", "bound"))
-                refresh()
+                if (address.startsWith("http://")) confirmHttpBinding(address, key)
+                else if (httpDialog == null) bind(address, key)
             }
             "access" -> (request.opt("allowed") as? Boolean)?.let(::setAgentAccess)
             "capability" -> {
@@ -214,6 +219,8 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onDestroy() {
         updatesScope.cancel()
+        httpDialog?.dismiss()
+        httpDialog = null
         preferences.unregisterOnSharedPreferenceChangeListener(settingsListener)
         reply = null
         webView?.let { view ->
@@ -224,9 +231,30 @@ class SettingsActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun confirmHttpBinding(address: String, key: String) {
+        if (httpDialog != null) return
+        var accepted = false
+        httpDialog = AlertDialog.Builder(this)
+            .setTitle("使用未加密的 HTTP 连接？")
+            .setMessage("Device Key 和操作数据将通过 HTTP 明文传输。请仅在信任的网络中继续。\n\n$address")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("使用 HTTP 绑定") { _, _ ->
+                accepted = true
+                bind(address, key)
+            }
+            .setOnDismissListener {
+                httpDialog = null
+                if (!accepted && !isDestroyed) send(JSONObject().put("type", "bindingCancelled"))
+            }
+            .show()
+    }
+
     private fun bind(address: String, key: String) {
         preferences.edit().putString("url", address).putString("key", key)
+            .putString("confirmed_http_url", address.takeIf { it.startsWith("http://") })
             .putBoolean("paused", true).putBoolean("revoked", false).commit()
+        send(JSONObject().put("type", "bound"))
+        refresh()
     }
 
     private fun setAgentAccess(allowed: Boolean) {
@@ -239,7 +267,7 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun unbind() {
-        preferences.edit().remove("key").putBoolean("paused", true).commit()
+        preferences.edit().remove("key").remove("confirmed_http_url").putBoolean("paused", true).commit()
     }
 
     private fun acceptDirectory(data: Intent) {
@@ -292,7 +320,6 @@ class SettingsActivity : ComponentActivity() {
             .put("directoryAuthorized", workspace.authorizedTree() != null)
             .put("accessibilityActive", serviceActive)
             .put("appVersion", BuildConfig.VERSION_NAME)
-            .put("debug", BuildConfig.DEBUG)
             .put("model", Build.MODEL)
             .put("androidVersion", Build.VERSION.RELEASE))
     }

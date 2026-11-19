@@ -99,7 +99,6 @@ type DeviceState = {
   model: string;
   androidVersion: string;
   appVersion: string;
-  debug: boolean;
 };
 type UpdateState = {
   type: "update";
@@ -124,7 +123,11 @@ type Request =
   | { type: "bind"; address: string; key: string }
   | { type: "access"; allowed: boolean }
   | { type: "capability"; name: Capability; enabled: boolean };
-type Reply = DeviceState | UpdateState | { type: "bound" | "back" } | { type: "error"; message: string };
+type Reply =
+  | DeviceState
+  | UpdateState
+  | { type: "bound" | "back" | "bindingCancelled" }
+  | { type: "error"; message: string };
 
 declare global {
   interface Window {
@@ -249,13 +252,9 @@ function BindingForm({
   const [key, setKey] = useState("");
   const [validation, setValidation] = useState("");
   const cleartext = /^http:\/\//i.test(address.trim());
-  const debugAddress =
-    state.debug && /^http:\/\/(?:127\.0\.0\.1|10\.0\.2\.2)(?:[:/]|$)/i.test(address.trim());
-  const addressBlocked = cleartext && !debugAddress;
   function submit() {
     const cleanAddress = address.trim();
     const cleanKey = key.trim();
-    if (addressBlocked) return;
     if (!cleanAddress || !cleanKey) {
       setValidation("请填写 Server 地址和 Device Key");
       return;
@@ -263,7 +262,6 @@ function BindingForm({
     setValidation("");
     (document.activeElement as HTMLElement | null)?.blur();
     bind(cleanAddress, cleanKey);
-    setKey("");
   }
   return (
     <YStack gap={12}>
@@ -282,18 +280,14 @@ function BindingForm({
         autoCorrect={false}
         keyboardType="url"
         value={address}
-        aria-invalid={addressBlocked}
-        borderColor={addressBlocked ? "#A5262B" : undefined}
         onChangeText={setAddress}
         placeholder="https://bridge.example.com"
         minHeight={48}
       />
       {cleartext && (
         <YStack gap={2}>
-          <Text color={addressBlocked ? "#A5262B" : secondary} fontSize={13} aria-live="polite">
-            {addressBlocked
-              ? "此地址使用 HTTP。请输入以 https:// 开头的服务器地址。"
-              : "当前地址仅用于 USB 或模拟器调试。其他服务器请使用 HTTPS。"}
+          <Text color="#A5262B" fontSize={13} aria-live="polite">
+            HTTP 连接未加密。建议使用 HTTPS。
           </Text>
           <Button
             height={44}
@@ -328,10 +322,10 @@ function BindingForm({
       )}
       <Button
         height={48}
-        backgroundColor={pending || addressBlocked ? neutral : blue}
+        backgroundColor={pending ? neutral : blue}
         borderWidth={0}
-        color={pending || addressBlocked ? secondary : white}
-        disabled={pending || addressBlocked}
+        color={pending ? secondary : white}
+        disabled={pending}
         onPress={submit}
       >
         {pending ? "绑定中" : "绑定设备"}
@@ -416,6 +410,8 @@ function AccessScreen() {
         setPending(false);
         setEditing(false);
         setSettings(false);
+      } else if (message.type === "bindingCancelled") {
+        setPending(false);
       } else if (message.type === "error") {
         setError(message.message);
         setPending(false);
@@ -581,6 +577,11 @@ function AccessScreen() {
                 detail={state.bound ? state.server : "尚未绑定"}
                 onPress={() => setEditing(true)}
               />
+              {state.bound && state.server.startsWith("http://") && (
+                <Text color="#A5262B" fontSize={12} marginHorizontal={14} marginBottom={8}>
+                  HTTP 连接未加密
+                </Text>
+              )}
               <Separator borderColor={line} />
               <SettingsRow title={connectionLabel[state.connection]} />
             </SettingsSection>
