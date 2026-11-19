@@ -69,7 +69,9 @@ jobs:
         run: |
           npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
           apps/android/gradlew -p apps/android --no-daemon assembleRelease
-          bash tools/sign-android-release.sh
+          python3 -m venv "$RUNNER_TEMP/android-apk-build"
+          "$RUNNER_TEMP/android-apk-build/bin/python" -m pip install -r tools/android-apk-requirements.txt
+          ANDROID_APK_PYTHON="$RUNNER_TEMP/android-apk-build/bin/python" bash tools/sign-android-release.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'
         with:

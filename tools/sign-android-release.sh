@@ -13,17 +13,21 @@ output="dist/releases/aBridge-$version-android.apk"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 umask 077
+python="${ANDROID_APK_PYTHON:-python3}"
+unsigned='apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk'
 
 printf '%s' "$ANDROID_KEYSTORE_BASE64" | openssl base64 -d -A > "$work/release.keystore"
-"$build_tools/zipalign" -c 4 'apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk'
+"$python" tools/recompress-android-apk.py "$unsigned" "$work/repacked.apk"
+"$build_tools/zipalign" -f -P 16 4 "$work/repacked.apk" "$work/aligned.apk"
+"$build_tools/zipalign" -c -P 16 4 "$work/aligned.apk"
 "$build_tools/apksigner" sign \
   --ks "$work/release.keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
   --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
-  --out "$work/release.apk" 'apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk'
+  --v4-signing-enabled false --out "$work/release.apk" "$work/aligned.apk"
 "$build_tools/apksigner" verify "$work/release.apk"
 size=$(wc -c < "$work/release.apk")
-if (( size > 500000 )); then
-  echo "Signed Android APK is $size bytes and exceeds the 500,000-byte limit." >&2
+if (( size > 200000 )); then
+  echo "Signed Android APK is $size bytes and exceeds the 200,000-byte limit." >&2
   exit 1
 fi
 mkdir -p "$(dirname "$output")"
