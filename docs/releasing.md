@@ -75,7 +75,7 @@ npm run package:macos
 
 ## Android
 
-Set `ANDROID_SIGNING_ENABLED=true` and configure repository secrets `ANDROID_KEYSTORE_BASE64` (single-line Base64 of the release keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The tag workflow verifies the signed `aBridge-<version>-android.apk` and enforces a 500,000-byte size limit before including it in the GitHub Release.
+Set `ANDROID_SIGNING_ENABLED=true` and configure repository secrets `ANDROID_KEYSTORE_BASE64` (single-line Base64 of the release keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The tag workflow recompresses and aligns the standalone APK before signing. It verifies the signed `aBridge-<version>-android.apk` and enforces a 200,000-byte size limit before including it in the GitHub Release.
 
 Use the same signing key for subsequent releases to allow in-place upgrades. Android checks package identity, signing identity, and version when the user opens the downloaded APK. The Debug APK uses a development signature and is intended for testing.
 

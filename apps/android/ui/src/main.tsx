@@ -2,7 +2,8 @@ import "./webview-compat";
 import React, { useEffect, useState } from "react";
 import "./styles.css";
 import { createRoot } from "react-dom/client";
-import { defaultConfig } from "@tamagui/config/v6";
+import type { defaultConfig } from "@tamagui/config/v6";
+import { selectionStyles } from "@tamagui/config/v6-base";
 import {
   Button,
   Dialog,
@@ -17,7 +18,12 @@ import {
   createTamagui,
 } from "tamagui";
 
-const config = createTamagui(defaultConfig);
+// Vite embeds the upstream tokens and light theme family used by the app.
+declare const __ANDROID_TAMAGUI_CONFIG__: typeof defaultConfig;
+const config = createTamagui({
+  ...__ANDROID_TAMAGUI_CONFIG__,
+  settings: { ...__ANDROID_TAMAGUI_CONFIG__.settings, selectionStyles },
+});
 const ink = "#171A20";
 const secondary = "#535E6C";
 const line = "#E1E6EC";
@@ -745,8 +751,21 @@ function AccessScreen() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <TamaguiProvider config={config} defaultTheme="light">
-    <AccessScreen />
-  </TamaguiProvider>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+function connectNative(event: MessageEvent) {
+  if (event.data !== "aBridgeNative" || event.ports.length !== 1) return;
+  window.removeEventListener("message", connectNative);
+  window.aBridgeNative = event.ports[0];
+  render();
+}
+
+function render() {
+  root.render(
+    <TamaguiProvider config={config} defaultTheme="light">
+      <AccessScreen />
+    </TamaguiProvider>,
+  );
+}
+
+window.addEventListener("message", connectNative);

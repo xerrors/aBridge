@@ -1,16 +1,13 @@
 package dev.abridge.android
 
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import java.net.URI
+import javax.net.ssl.HttpsURLConnection
+import java.io.ByteArrayOutputStream
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 internal object AppUpdates {
     private const val REPOSITORY = "https://github.com/xerrors/aBridge"
     private val versionPattern = Regex("(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})")
-    private val client = OkHttpClient.Builder().followRedirects(false)
-        .callTimeout(12, TimeUnit.SECONDS).build()
-
     data class Release(val version: String, val notes: String, val download: String)
 
     private fun versionCode(version: String): Int =
@@ -19,14 +16,26 @@ internal object AppUpdates {
         } ?: error("版本格式无效")
 
     fun find(): Release? {
-        val request = Request.Builder().url("https://api.github.com/repos/xerrors/aBridge/releases/latest")
-            .header("Accept", "application/vnd.github+json").build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("检查更新失败，请稍后重试")
-            val body = response.body ?: error("更新源没有返回版本信息")
-            val source = body.source()
-            if (source.request(524289L)) error("版本信息超过大小限制")
-            return select(JSONObject(source.readUtf8()), BuildConfig.VERSION_NAME)
+        val conn = URI("https://api.github.com/repos/xerrors/aBridge/releases/latest").toURL().openConnection() as HttpsURLConnection
+        conn.instanceFollowRedirects = false
+        conn.connectTimeout = 6000
+        conn.readTimeout = 6000
+        conn.setRequestProperty("Accept", "application/vnd.github+json")
+        try {
+            if (conn.responseCode != 200) error("检查更新失败，请稍后重试")
+            val data = ByteArrayOutputStream()
+            conn.inputStream.use { stream ->
+                val chunk = ByteArray(8192)
+                while (true) {
+                    val size = stream.read(chunk)
+                    if (size < 0) break
+                    if (data.size() + size > 524288) error("版本信息超过大小限制")
+                    data.write(chunk, 0, size)
+                }
+            }
+            return select(JSONObject(data.toString("UTF-8")), BuildConfig.VERSION_NAME)
+        } finally {
+            conn.disconnect()
         }
     }
 

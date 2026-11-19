@@ -10,34 +10,45 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlin.coroutines.CoroutineContext
+import java.net.URI
+import java.nio.ByteBuffer
+import javax.net.ssl.SSLParameters
+import javax.net.ssl.SSLSocketFactory
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.drafts.Draft
+import org.java_websocket.drafts.Draft_6455
+import org.java_websocket.handshake.Handshakedata
+import org.java_websocket.handshake.ServerHandshake
 
 class DeviceService : AccessibilityService() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
-        .connectTimeout(10, TimeUnit.SECONDS).build()
+    private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+    private val uiDispatcher = object : CoroutineDispatcher() {
+        override fun isDispatchNeeded(context: CoroutineContext) =
+            android.os.Looper.myLooper() != ui.looper
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            ui.post(block)
+        }
+    }
+    private val scope = CoroutineScope(SupervisorJob() + uiDispatcher)
+    private val fileExecutor = Executors.newSingleThreadExecutor()
     private val prefs by lazy { devicePreferences }
     private val contract by lazy { DeviceContract(this) }
     private val screen by lazy { ScreenInput(this, contract.limits.getInt("imageBytes")) }
     private val files by lazy { WorkspaceFiles(this) }
     private val journal by lazy { getSharedPreferences("operations", Context.MODE_PRIVATE) }
-    private var socket: WebSocket? = null
+    private var socket: WebSocketClient? = null
     private var maintenance: Job? = null
     private var reconnect: Job? = null
     private var epoch = 0L
@@ -88,6 +99,7 @@ class DeviceService : AccessibilityService() {
         prefs.unregisterOnSharedPreferenceChangeListener(listener)
         disconnect()
         scope.cancel()
+        fileExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -106,36 +118,50 @@ class DeviceService : AccessibilityService() {
             prefs.getString("confirmed_http_url", null)) ?: return
         val key = prefs.getString("key", null) ?: return
         setState("connecting")
-        val request = Request.Builder().url("$url/ws/device").header("Authorization", "Bearer $key").build()
-        socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) { scope.launch {
-                if (webSocket !== socket) return@launch
+        val tls = url.startsWith("https://")
+        val endpoint = URI((if (tls) "wss" else "ws") + url.substring(url.indexOf(':')) + "/ws/device")
+        val maxFrame = contract.limits.getInt("messageBytes")
+        var authorizationRejected = false
+        val draft = DeviceHandshake(maxFrame) { authorizationRejected = true }
+        val client = object : WebSocketClient(endpoint, draft,
+            mapOf("Authorization" to "Bearer $key"), 10000) {
+            override fun onSetSSLParameters(params: SSLParameters) {
+                super.onSetSSLParameters(params)
+                params.endpointIdentificationAlgorithm = "HTTPS"
+            }
+            override fun onOpen(response: ServerHandshake) { val self = this; scope.launch {
+                if (self !== this@DeviceService.socket) return@launch
                 send(JSONObject().put("type", "hello").put("protocol", contract.protocol)
                     .put("platform", "android").put("version", contract.version)
                     .put("capabilities", capabilities()).put("paused", paused()))
             } }
-            override fun onMessage(webSocket: WebSocket, text: String) { scope.launch {
-                if (webSocket !== socket) return@launch
+            override fun onMessage(text: String) { val self = this; scope.launch {
+                if (self !== this@DeviceService.socket) return@launch
                 try {
-                    require(text.toByteArray(Charsets.UTF_8).size <= contract.limits.getInt("messageBytes"))
+                    require(text.toByteArray(Charsets.UTF_8).size <= maxFrame)
                     receive(JSONObject(text))
                 } catch (e: Exception) {
                     Log.w("aBridge", "Invalid device frame: ${e.javaClass.simpleName}")
                     scheduleReconnect()
                 }
             } }
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) { scope.launch {
-                if (webSocket === socket) scheduleReconnect()
+            override fun onMessage(bytes: ByteBuffer) { val self = this; scope.launch {
+                if (self === this@DeviceService.socket) scheduleReconnect()
             } }
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { scope.launch {
-                if (webSocket === socket) scheduleReconnect()
+            override fun onClose(code: Int, reason: String, remote: Boolean) { val self = this; scope.launch {
+                if (self !== this@DeviceService.socket) return@launch
+                if (authorizationRejected || (remote && code == 4403)) revoke() else scheduleReconnect()
             } }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { scope.launch {
-                if (webSocket !== socket) return@launch
-                Log.w("aBridge", "Connection failed: ${response?.code ?: t.javaClass.simpleName}")
-                if (response?.code in setOf(401, 403)) revoke() else scheduleReconnect()
+            override fun onError(error: Exception) { val self = this; scope.launch {
+                if (self === this@DeviceService.socket) {
+                    Log.w("aBridge", "Connection failed: ${error.javaClass.simpleName}")
+                    if (authorizationRejected) revoke() else scheduleReconnect()
+                }
             } }
-        })
+        }
+        if (tls) client.setSocketFactory(SSLSocketFactory.getDefault())
+        socket = client
+        client.connect()
         maintenance = scope.launch {
             delay(10000)
             if (epoch == 0L) scheduleReconnect()
@@ -144,7 +170,7 @@ class DeviceService : AccessibilityService() {
 
     private fun send(frame: JSONObject) {
         val connection = socket ?: return
-        if (!connection.send(frame.toString())) scheduleReconnect()
+        if (runCatching { connection.send(frame.toString()) }.isFailure) scheduleReconnect()
     }
 
     private fun heartbeat() = send(JSONObject().put("type", "heartbeat").put("connection_epoch", epoch)
@@ -153,7 +179,7 @@ class DeviceService : AccessibilityService() {
     private fun disconnect() {
         val prior = socket
         socket = null
-        prior?.cancel()
+        prior?.closeConnection(1000, "Disconnected")
         maintenance?.cancel()
         reconnect?.cancel()
         epoch = 0
@@ -227,6 +253,14 @@ class DeviceService : AccessibilityService() {
         }
     }
 
+    private suspend fun fileOperation(tool: String, args: JSONObject, check: () -> Unit): JSONObject =
+        suspendCancellableCoroutine { continuation ->
+            val operation = fileExecutor.submit {
+                continuation.resumeWith(runCatching { files.execute(tool, args, check) })
+            }
+            continuation.invokeOnCancellation { operation.cancel(true) }
+        }
+
     private fun updateClock(frame: JSONObject) {
         val seconds = frame.get("server_time") as? Number ?: error("Missing server time")
         require(seconds.toDouble().isFinite() && seconds.toDouble() > 0)
@@ -291,7 +325,7 @@ class DeviceService : AccessibilityService() {
                     when (tool) {
                         "computer_observe" -> screen.observe(session, args, check)
                         "computer_act" -> screen.act(session, args, check)
-                        else -> withContext(Dispatchers.IO) { files.execute(tool, args, check) }
+                        else -> fileOperation(tool, args, check)
                     }
                 }
             } catch (e: Refusal) {
@@ -314,5 +348,24 @@ class DeviceService : AccessibilityService() {
         @Volatile var active = false
             private set
         private val identity = Regex("^[A-Za-z0-9_-]{1,100}$")
+    }
+}
+
+
+internal class DeviceHandshake(
+    private val frameLimit: Int,
+    private val onUnauthorized: () -> Unit,
+) : Draft_6455(emptyList(), frameLimit) {
+    override fun copyInstance() = DeviceHandshake(frameLimit, onUnauthorized)
+
+    override fun translateHandshake(buffer: ByteBuffer): Handshakedata {
+        // Java-WebSocket rejects non-101 status lines before it reports a parsed handshake.
+        val line = Draft.readStringLine(buffer.duplicate()).orEmpty()
+        val protocol = line.substringBefore(' ')
+        if (protocol == "HTTP/1.1" || protocol == "HTTP/1.0") {
+            val status = line.substringAfter(' ').substringBefore(' ')
+            if (status == "401" || status == "403") onUnauthorized()
+        }
+        return super.translateHandshake(buffer)
     }
 }

@@ -32,11 +32,17 @@ jobs:
       - run: npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
       - run: npm run build
       - run: apps/android/gradlew -p apps/android --no-daemon assembleDebug assembleRelease lintDebug testDebugUnitTest
-      - name: Check Release APK size
+      - name: Verify signed Release APK size
         run: |
-          size=$(wc -c < "apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk")
-          echo "Unsigned Release APK: $size bytes"
-          test "$size" -le 500000
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          python3 -m venv "$work/python"
+          "$work/python/bin/python" -m pip install -r tools/android-apk-requirements.txt
+          keytool -genkeypair -keystore "$work/check.keystore" -alias android -storepass sizecheck -keypass sizecheck \
+            -keyalg RSA -keysize 2048 -validity 1 -dname "CN=Android size check"
+          ANDROID_KEYSTORE_BASE64="$(openssl base64 -A -in "$work/check.keystore")" \
+          ANDROID_KEYSTORE_PASSWORD=sizecheck ANDROID_KEY_ALIAS=android ANDROID_KEY_PASSWORD=sizecheck \
+          ANDROID_APK_PYTHON="$work/python/bin/python" bash tools/sign-android-release.sh
       - name: Upload installable Debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

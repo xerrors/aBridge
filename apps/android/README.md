@@ -8,13 +8,13 @@ npm --prefix apps/android/ui ci --legacy-peer-deps
 apps/android/gradlew -p apps/android assembleDebug
 ```
 
-The Android build requires JDK 17 and Android SDK Platform 36. Gradle consumes the device contract generated from the shared protocol and bundles the Tamagui UI in the APK. The app requires Android System WebView with WebMessageListener support and has been tested on Android 11 with WebView 87. The debug APK is under `apps/android/build/outputs/apk/debug/`.
+The Android build requires JDK 17 and Android SDK Platform 36. Gradle consumes the device contract generated from the shared protocol and bundles the Tamagui UI in the APK. The app loads its bundled Tamagui interface in Android System WebView and connects it to the app using a message channel limited to the local page. The debug APK is under `apps/android/build/outputs/apk/debug/`.
 
 The [Android App workflow](../../.github/workflows/android.yml) builds Debug and Release APKs and runs Android Lint on pull requests and pushes to `main`. Download the installable Debug APK from the run's **abridge-android-debug** artifact.
 
 For normal use, install the signed Android APK from a GitHub Release when available. **设置 → 检查更新** checks the current version against the latest stable release and opens the official APK download. Open the downloaded APK to confirm the update in Android's installer. See the [Android release process](../../docs/releasing.md#android).
 
-Debug and Release APKs use R8 to remove unused code and compress the remaining DEX bytecode. Android extracts the bytecode during installation, so the APK size and installed storage usage differ.
+Debug and Release APKs use R8 to remove unused code and compress the remaining DEX bytecode. Release packaging recompresses the APK before signing and checks the complete signed file against a 200,000-byte budget. Android extracts the bytecode during installation, so the APK size and installed storage usage differ.
 
 Open the app, enter the server address and Device Key, and enable the aBridge accessibility service in Android Settings. HTTPS is recommended. Binding over HTTP requires explicit confirmation because the key and subsequent device traffic are unencrypted. This confirmation is tied to the saved address, and an HTTPS connection never falls back to HTTP. Configure capabilities and choose a working directory in **设置**. Select **允许 Agent 操作** to accept authorized requests or **暂停 Agent 操作** to close access. The device can stay connected in either mode, and local access changes take effect before the Server receives the update.
 

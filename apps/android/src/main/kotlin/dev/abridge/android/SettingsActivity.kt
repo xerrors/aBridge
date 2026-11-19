@@ -9,44 +9,48 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.webkit.WebMessage
+import android.webkit.WebMessagePort
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.TextView
-import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.webkit.JavaScriptReplyProxy
-import androidx.webkit.WebViewAssetLoader
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
+import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.window.OnBackInvokedDispatcher
+import java.net.IDN
+import java.net.URI
+import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 internal val Context.devicePreferences get() = getSharedPreferences("device", Context.MODE_PRIVATE)
 
 internal fun serverAddress(raw: String): String? {
-    val url = raw.trim().toHttpUrlOrNull() ?: return null
-    if (url.username.isNotEmpty() || url.password.isNotEmpty() || url.query != null || url.fragment != null) return null
-    return url.toString().trimEnd('/')
+    val input = runCatching { URI(raw.trim()) }.getOrNull() ?: return null
+    val scheme = input.scheme?.lowercase() ?: return null
+    if ((scheme != "http" && scheme != "https") || input.rawQuery != null || input.rawFragment != null) return null
+    val authority = input.rawAuthority ?: return null
+    if ('@' in authority || '%' in authority) return null
+    val url = runCatching {
+        val asciiAuthority = if (authority.any { it.code > 127 }) {
+            val host = authority.substringBefore(':')
+            IDN.toASCII(host, IDN.USE_STD3_ASCII_RULES) + authority.removePrefix(host)
+        } else authority
+        URI("$scheme://$asciiAuthority${input.rawPath.orEmpty()}").parseServerAuthority().normalize()
+    }.getOrNull() ?: return null
+    val host = url.host?.lowercase() ?: return null
+    if (url.port != -1 && url.port !in 1..65535) return null
+    val defaultPort = if (scheme == "http") 80 else 443
+    val port = if (url.port == -1 || url.port == defaultPort) "" else ":${url.port}"
+    return URI("$scheme://$host$port${url.rawPath.orEmpty()}").toASCIIString().trimEnd('/')
 }
 
 internal fun approvedServerAddress(raw: String, confirmedHttp: String?, debug: Boolean = BuildConfig.DEBUG): String? {
     val address = serverAddress(raw) ?: return null
     if (address.startsWith("https://") || address == confirmedHttp) return address
-    // Previously saved local Debug bindings already used an explicit loopback destination.
-    return address.takeIf { debug && it.toHttpUrlOrNull()?.host in listOf("127.0.0.1", "10.0.2.2") }
+    return address.takeIf { debug && URI(it).host in listOf("127.0.0.1", "10.0.2.2") }
 }
 
 internal enum class ConnectionStatus(val label: String) {
@@ -64,32 +68,31 @@ internal enum class LocalCapability(val preference: String) {
     Files("files"),
 }
 
-class SettingsActivity : ComponentActivity() {
+class SettingsActivity : Activity() {
     private val preferences by lazy { devicePreferences }
     private val workspace by lazy { WorkspaceFiles(this) }
     private var webView: WebView? = null
-    private var reply: JavaScriptReplyProxy? = null
+    private var reply: WebMessagePort? = null
     private var httpDialog: AlertDialog? = null
-    private val updatesScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val updates = Executors.newSingleThreadExecutor()
     private var availableUpdate: AppUpdates.Release? = null
     private var updateStatus = JSONObject().put("type", "update").put("status", "idle")
     private val settingsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refresh() }
-    private val directoryPicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) result.data?.let(::acceptDirectory)
-    }
-
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val chromeBars = SystemBarStyle.light(0xfffafafa.toInt(), 0xfffafafa.toInt())
-        enableEdgeToEdge(statusBarStyle = chromeBars, navigationBarStyle = chromeBars)
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            setContentView(TextView(this).apply { text = "请更新 Android System WebView 后重新打开 aBridge。" })
-            return
+        window.setDecorFitsSystemWindows(false)
+        if (Build.VERSION.SDK_INT < 35) {
+            @Suppress("DEPRECATION")
+            window.statusBarColor = 0xfffafafa.toInt()
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = 0xfffafafa.toInt()
         }
-
-        val assets = WebViewAssetLoader.Builder()
-            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this)).build()
+        val barsAppearance = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, ::goBack)
+        }
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         val view = WebView(this)
         webView = view
@@ -99,44 +102,75 @@ class SettingsActivity : ComponentActivity() {
             allowContentAccess = false
         }
         view.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                request.url.toString() != PAGE
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
 
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse =
-                assets.shouldInterceptRequest(request.url)
-                    ?: WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(byteArrayOf()))
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
+                val url = request.url
+                val path = url.encodedPath.orEmpty().removePrefix("/assets/")
+                if (request.method == "GET" && url.scheme == "https" && url.encodedAuthority == ORIGIN_HOST &&
+                    url.encodedPath.orEmpty().startsWith("/assets/") && url.encodedQuery == null &&
+                    path.split('/').all { segment -> segment.isNotEmpty() && segment != "." && segment != ".." } &&
+                    path.none { it == '%' || it == '\\' } && (!request.isForMainFrame || url.toString() == PAGE)
+                ) {
+                    val mime = when (path.substringAfterLast('.')) {
+                        "html" -> "text/html"
+                        "js" -> "text/javascript"
+                        "css" -> "text/css"
+                        "svg" -> "image/svg+xml"
+                        else -> null
+                    }
+                    val input = mime?.let { runCatching { assets.open(path) }.getOrNull() }
+                    if (input != null) return WebResourceResponse(mime, "UTF-8", input)
+                }
+                return WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(byteArrayOf()))
+            }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                reply?.close()
                 reply = null
             }
-        }
-        WebViewCompat.addWebMessageListener(view, "aBridgeNative", setOf(ORIGIN)) { _, message, origin, mainFrame, sender ->
-            if (mainFrame && origin.toString() == ORIGIN) {
-                val request = runCatching { JSONObject(message.data ?: "") }.getOrNull()
-                if (request != null) {
-                    reply = sender
-                    handle(request)
-                }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                if (url != PAGE || view.url != PAGE || reply != null) return
+                val (local, remote) = view.createWebMessageChannel()
+                reply = local
+                local.setWebMessageCallback(object : WebMessagePort.WebMessageCallback() {
+                    override fun onMessage(port: WebMessagePort, message: WebMessage) {
+                        if (port !== reply || view.url != PAGE) return
+                        runCatching { JSONObject(message.data.orEmpty()) }.getOrNull()?.let(::handle)
+                    }
+                })
+                view.postWebMessage(WebMessage("aBridgeNative", arrayOf(remote)), Uri.parse(ORIGIN))
             }
         }
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (reply == null) finish() else send(JSONObject().put("type", "back"))
-            }
-        })
         preferences.registerOnSharedPreferenceChangeListener(settingsListener)
         val container = android.widget.FrameLayout(this).apply {
             setBackgroundColor(0xfffafafa.toInt())
             addView(view, android.widget.FrameLayout.LayoutParams(-1, -1))
         }
-        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(container) { target, insets ->
-            val bars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            val keyboard = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.ime())
-            target.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, keyboard.bottom))
-            androidx.core.view.WindowInsetsCompat.CONSUMED
+        container.setOnApplyWindowInsetsListener { target, insets ->
+            val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+            target.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsets.CONSUMED
         }
         setContentView(container)
+        window.insetsController?.setSystemBarsAppearance(barsAppearance, barsAppearance)
         view.loadUrl(PAGE)
+    }
+
+    // Android 13+ dispatches back through the framework callback registered above.
+    @SuppressLint("GestureBackNavigation")
+    @Deprecated("Android 12 and earlier back navigation")
+    override fun onBackPressed() = goBack()
+
+    private fun goBack() {
+        if (reply == null) finish() else send(JSONObject().put("type", "back"))
+    }
+
+    @Deprecated("Framework directory picker result")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == DIRECTORY_PICKER && resultCode == RESULT_OK && data != null) acceptDirectory(data)
     }
 
     private fun handle(request: JSONObject) {
@@ -162,7 +196,7 @@ class SettingsActivity : ComponentActivity() {
                 if (capability != null && enabled != null) setCapability(capability, enabled)
             }
             "accessibility" -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            "directory" -> directoryPicker.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE))
+            "directory" -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), DIRECTORY_PICKER)
             "revokeDirectory" -> revokeDirectory()
             "unbind" -> unbind()
             "checkUpdate" -> checkUpdate()
@@ -173,7 +207,7 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun send(message: JSONObject) {
-        reply?.postMessage(message.toString())
+        reply?.postMessage(WebMessage(message.toString()))
     }
 
     private fun sendError(message: String) {
@@ -190,16 +224,19 @@ class SettingsActivity : ComponentActivity() {
         if (updateStatus.optString("status") == "checking") return
         availableUpdate = null
         sendUpdate("checking")
-        updatesScope.launch {
-            try {
-                availableUpdate = withContext(Dispatchers.IO) { AppUpdates.find() }
-                sendUpdate(if (availableUpdate == null) "latest" else "available")
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (failure: IllegalStateException) {
-                sendUpdate("error", failure.message ?: "检查更新失败，请稍后重试")
-            } catch (_: Exception) {
-                sendUpdate("error", "检查更新失败，请检查网络后重试")
+        updates.execute {
+            val result = runCatching { AppUpdates.find() }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                result.fold(
+                    onSuccess = { release ->
+                        availableUpdate = release
+                        sendUpdate(if (release == null) "latest" else "available")
+                    },
+                    onFailure = { failure ->
+                        sendUpdate("error", (failure as? IllegalStateException)?.message ?: "检查更新失败，请检查网络后重试")
+                    },
+                )
             }
         }
     }
@@ -218,10 +255,11 @@ class SettingsActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        updatesScope.cancel()
+        updates.shutdownNow()
         httpDialog?.dismiss()
         httpDialog = null
         preferences.unregisterOnSharedPreferenceChangeListener(settingsListener)
+        reply?.close()
         reply = null
         webView?.let { view ->
             (view.parent as? android.view.ViewGroup)?.removeView(view)
@@ -325,7 +363,9 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private companion object {
-        const val ORIGIN = "https://appassets.androidplatform.net"
+        const val DIRECTORY_PICKER = 1
+        const val ORIGIN_HOST = "appassets.androidplatform.net"
+        const val ORIGIN = "https://$ORIGIN_HOST"
         const val PAGE = "$ORIGIN/assets/index.html"
         const val DIRECTORY_FLAGS = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
     }
