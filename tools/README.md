@@ -16,7 +16,7 @@
 | [check-package.ts](check-package.ts)           | 校验分发边界及候选包离线安装、CLI/HTTP/WASM     | `package:check`                           |
 | [check-release.ts](check-release.ts)           | 校验发布标签、版本及 main 历史                  | 发布 CI                                   |
 
-`check` 串联格式、架构、类型、测试和分发检查。[普通 CI](../.github/workflows/ci.yml) 在 Ubuntu 的最低支持 Node 版本运行 `check`，其余 Ubuntu Node 版本运行 `test`，两个 macOS runner 各用一版 Node 运行 `test:desktop`。普通 CI 和 Linux 客户端检查在 PR、主分支 push 及手动触发时运行。发布流程见 [发布说明](../docs/releasing.md)。
+`check` 串联格式、架构、类型、测试和分发检查。[普通 CI](../.github/workflows/ci.yml) 在 Ubuntu 的最低支持 Node 版本运行 `check`，其余 Ubuntu Node 版本运行 `test`。两个 macOS runner 默认用 `desktop:compile-check` 编译 AppKit 外壳、原生运行时和更新器的 Swift 对象文件，手动运行时可启用 `full_macos` 来构建优化后的 App 并执行 `test:desktop`。普通 CI 和 Linux 客户端检查在 PR、主分支 push 及手动触发时运行。发布流程见 [发布说明](../docs/releasing.md)。
 
 源码测试可能借用工作区的依赖和资源，因此分发检查还需验证用户实际安装的候选包。`package:check` 通过 [check-installed-package.ts](lib/check-installed-package.ts) 在工作区外、空缓存下离线安装 tarball，再核对安装后的 CLI 版本、HTTP、管理台资源及 QuickJS/WASM 初始化。安装脚本禁用，使用隔离配置与本机临时端口，结束后停止进程并清理目录。普通 CI 在 Ubuntu 的最低支持 Node 版本执行这一检查，发布 CI 在 Linux 校验最终分发包。
 

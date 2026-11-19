@@ -19,6 +19,7 @@
     "check": "npm run check:code && npm run package && npm run package:check",
     "start": "node dist/server/cli.js",
     "desktop:build": "node --import tsx tools/build-native.ts",
+    "desktop:compile-check": "node --experimental-strip-types tools/check-native-swift.ts",
     "desktop:install": "node --import tsx tools/install-desktop.ts",
     "icons": "node --import tsx tools/generate-icons.ts",
     "hooks": "git config --local core.hooksPath .github/hooks",

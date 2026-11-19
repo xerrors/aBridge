@@ -4,6 +4,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      full_macos:
+        description: Build the optimized macOS App and run all native desktop tests
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -31,14 +36,18 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm install --ignore-scripts --no-audit --no-fund
+        if: runner.os == 'Linux' || inputs.full_macos
       - name: Shared checks and minimum Node compatibility
         if: runner.os == 'Linux' && matrix.node == '22.13.0'
         run: npm run check
       - name: Test Node compatibility
         if: runner.os == 'Linux' && matrix.node != '22.13.0'
         run: npm test
+      - name: Compile Swift desktop targets
+        if: runner.os == 'macOS' && !inputs.full_macos
+        run: npm run desktop:compile-check
       - name: Build and test native desktop
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && inputs.full_macos
         run: npm run test:desktop
       - name: Retain local package candidates
         if: runner.os == 'Linux' && matrix.node == '22.13.0'
