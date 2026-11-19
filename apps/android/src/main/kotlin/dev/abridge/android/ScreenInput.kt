@@ -66,11 +66,18 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         return enter.id.takeIf { enter in node.actionList }
     }
 
-    private fun supportedKeys(root: AccessibilityNodeInfo?): List<String> {
-        val systemKeys = listOf("back", "home")
+    private enum class Navigation(val key: String, val action: Int, val exitsSurface: Boolean) {
+        Back("back", AccessibilityService.GLOBAL_ACTION_BACK, false),
+        Home("home", AccessibilityService.GLOBAL_ACTION_HOME, true),
+    }
+
+    private fun supportedKeys(root: AccessibilityNodeInfo?, protectedSurface: Boolean): List<String> {
+        if (root == null) return emptyList()
+        val systemKeys = Navigation.entries.filter { !protectedSurface || it.exitsSurface }.map { it.key }
+        if (protectedSurface) return systemKeys
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
             return systemKeys + listOf("enter", "search", "done")
-        return if (imeEnter(root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)) != null)
+        return if (imeEnter(root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)) != null)
             systemKeys + "enter" else systemKeys
     }
 
@@ -117,12 +124,18 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             val targets = mutableMapOf<String, Target>()
             if (root != null && confirmed) collect(root, query, rows, targets)
             val id = observationId()
-            val pixels = image != null && confirmed
+            val protectedSurface = confirmed && after?.packageName == service.packageName
+            val actions = when {
+                !confirmed -> emptyList()
+                protectedSurface -> listOf("key")
+                else -> listOf("click", "long_press", "click_refs", "drag", "scroll", "type", "key")
+            }
+            val pixels = image != null && confirmed && !protectedSurface
             val result = JSONObject().put("observation_id", id).put("elements", rows)
                 .put("focus_status", if (confirmed) "confirmed" else "unconfirmed")
                 .put("pixel_actions", pixels).put("platform", "android")
-                .put("supported_actions", JSONArray(listOf("click", "long_press", "click_refs", "drag", "scroll", "type", "key")))
-                .put("supported_keys", JSONArray(supportedKeys(root.takeIf { confirmed })))
+                .put("supported_actions", JSONArray(actions))
+                .put("supported_keys", JSONArray(supportedKeys(root.takeIf { confirmed }, protectedSurface)))
             if (image != null) {
                 val data = ByteArrayOutputStream()
                 if (!image.compress(Bitmap.CompressFormat.JPEG, 82, data) || data.size() > imageLimit)
@@ -245,18 +258,21 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         if (root == null || observation.focus == null) throw Refusal("focus_unavailable", "Observe an active Android window")
         if (observation.focus != focus(root) || observation.revision != revision)
             throw Refusal("focus_changed", "The active window changed. Observe again")
-        if (observation.focus.packageName == service.packageName)
-            throw Refusal("input_unavailable", "Local aBridge settings require direct user input")
         val action = args.getJSONObject("action")
         if ((action.optJSONArray("modifiers")?.length() ?: 0) != 0)
             throw Refusal("unsupported_action", "Android does not support keyboard modifiers")
+        val kind = action.getString("type")
+        val keyName = action.optString("key").lowercase()
+        val navigation = if (kind == "key") Navigation.entries.find { it.key == keyName } else null
+        if (observation.focus.packageName == service.packageName && navigation?.exitsSurface != true)
+            throw Refusal("protected_surface", "Local aBridge settings require direct user input")
         val element = (action.opt("element_ref") as? String)?.let { target(root, observation, it) }
         val result = JSONObject().put("executed", true)
         val consume: () -> Unit = {
             check()
             observations.remove(session)
         }
-        when (val kind = action.getString("type")) {
+        when (kind) {
             "click", "long_press" -> {
                 if (action.optString("button", "left") != "left")
                     throw Refusal("unsupported_action", "Android click is a primary touch")
@@ -306,7 +322,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                 if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, params))
                     throw Refusal("invalid_action", "This editor did not accept text replacement")
             }
-            "key" -> key(root, action.getString("key"), consume)
+            "key" -> key(root, keyName, navigation, consume)
             else -> throw Refusal("unsupported_action", "This action is unavailable on Android")
         }
 
@@ -365,16 +381,11 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         }
     }
 
-    private fun key(root: AccessibilityNodeInfo, key: String, consume: () -> Unit) {
-        val name = key.lowercase()
-        val global = when (name) {
-            "back" -> AccessibilityService.GLOBAL_ACTION_BACK
-            "home" -> AccessibilityService.GLOBAL_ACTION_HOME
-            else -> null
-        }
-        if (global != null) {
+    private fun key(root: AccessibilityNodeInfo, name: String, navigation: Navigation?, consume: () -> Unit) {
+        if (navigation != null) {
             consume()
-            if (!service.performGlobalAction(global)) throw Refusal("invalid_action", "Android declined the system key")
+            if (!service.performGlobalAction(navigation.action))
+                throw Refusal("invalid_action", "Android declined the system key")
             return
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {

@@ -261,7 +261,7 @@ class DeviceService : AccessibilityService() {
         if (SystemClock.elapsedRealtime() - lastAck >= lease) { scheduleReconnect(); return }
         val tool = frame.getString("tool")
         val args = frame.getJSONObject("arguments")
-        if (tool !in supportedTools) return refuse("unsupported_tool", "Tool is unavailable on Android")
+        if (tool !in contract.androidTools) return refuse("unsupported_tool", "Tool is unavailable on Android")
         if (!contract.validate(tool, args)) return refuse("invalid_arguments", "Arguments do not match the tool schema")
         val required = contract.required(tool, args)
         val sessionGrant = frame.getJSONArray("session_capabilities").values()
@@ -313,6 +313,5 @@ class DeviceService : AccessibilityService() {
         @Volatile var active = false
             private set
         private val identity = Regex("^[A-Za-z0-9_-]{1,100}$")
-        private val supportedTools = setOf("computer_observe", "computer_act", "files_list", "file_read", "file_write")
     }
 }

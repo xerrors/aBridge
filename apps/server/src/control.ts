@@ -8,6 +8,7 @@ import {
   deviceMetadataSchema,
   deviceSummaryDetailsSchema,
   requiredCapabilities,
+  supportedDeviceTools,
   operationFrameSchema,
   deviceCancelSchema,
   parseDeviceToolRequest,
@@ -147,6 +148,9 @@ export class ControlService {
     const capabilities = current
       ? deviceAccess(current, device).capabilities
       : device.capabilities.filter((cap) => deviceCapabilities(device.kind).includes(cap)).sort();
+    const available = Object.fromEntries(
+      capabilities.map((cap) => [cap, !!(online && connection?.capabilities[cap] && !connection.paused)]),
+    );
     return {
       id: device.id,
       name: device.name,
@@ -154,8 +158,9 @@ export class ControlService {
       status: device.revoked_at !== null ? "revoked" : online ? "online" : "offline",
       paused: !!connection?.paused,
       capabilities,
-      available: Object.fromEntries(
-        capabilities.map((cap) => [cap, !!(online && connection?.capabilities[cap] && !connection.paused)]),
+      available,
+      available_tools: supportedDeviceTools(device.kind, device.platform).filter((tool) =>
+        [...requiredCapabilities(tool, {})].every((cap) => available[cap]),
       ),
       platform: device.platform,
       version: device.version,
@@ -503,6 +508,15 @@ export class ControlService {
         );
       return this.operationStatus(current, id);
     }
+    if (!supportedDeviceTools(device.kind, device.platform).includes(tool))
+      throw new BridgeError(
+        "unsupported_tool",
+        "Select a tool from the device or session's available_tools",
+        422,
+        {
+          recovery: { action: "select_supported_tool" },
+        },
+      );
     if (
       tool === "browser_exec" &&
       [...this.pending.values()].some((pending) => pending.operation.session_id === sessionId)
@@ -989,7 +1003,12 @@ export class ControlService {
       const parsedError = deviceErrorSchema.safeParse(
         boundedError ? { ...(message.error as JsonObject), ...boundedError } : undefined,
       );
-      const error = parsedError.success ? parsedError.data : boundedError;
+      const error: OperationError | undefined = parsedError.success ? parsedError.data : boundedError;
+      if (error && message.status === "refused" && pending.operation.tool === "computer_act") {
+        if (["stale_observation", "focus_changed", "focus_unavailable"].includes(error.code))
+          error.recovery ??= { action: "observe_again" };
+        else if (error.code === "protected_surface") error.recovery ??= { action: "user_handoff" };
+      }
       this.finish(message.operation_id, message.status as OperationState, message.result, error);
     }
   }
