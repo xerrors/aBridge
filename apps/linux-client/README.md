@@ -4,14 +4,16 @@
 
 ## 安装与绑定
 
-下载与机器架构对应的 Linux 包，验证同版本的 `.sha256`，然后解压。在管理台创建电脑设备，取得 Device Token：
+从 GitHub Release 下载与机器架构对应的 Linux 包和同版本的 `SHA256SUMS`。在下载目录校验安装包后解压。在管理台创建电脑设备，取得 Device Token：
 
 ```sh
-sha256sum -c abridge-client-<version>-<target>.tar.gz.sha256
+sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf abridge-client-<version>-<target>.tar.gz
 ./abridge-client setup --url https://bridge.example.com
 ./abridge-client service install
 ```
+
+从 CI artifact 或旧版 Release 下载时，使用同名的 `.tar.gz.sha256` 进行校验。
 
 `setup` 隐藏输入 Device Token，先向 Server 验证设备类型，再原子保存绑定。非交互绑定可使用 `setup --stdin`，从受保护的标准输入读取 JSON：`url`、`device_key`、可选的 `capabilities`（`shell/files` 布尔开关）和 `http_confirmed_origin`。不要把 Token 放进命令行参数或日志。默认开启设备已获授权的 Shell/File 能力。
 
