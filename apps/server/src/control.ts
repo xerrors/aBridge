@@ -776,11 +776,7 @@ export class ControlService {
   }
   async revokeAgentConnection(agentConnection: AgentConnection): Promise<void> {
     this.store.revokeAgentConnection(agentConnection.id);
-    await Promise.allSettled(
-      this.store
-        .agentConnectionSessions(agentConnection.id)
-        .map((session) => this.endAgentConnectionSession(session, "Agent connection revoked")),
-    );
+    await this.stopAgentConnection(agentConnection.id);
     this.store.audit(
       agentConnection.owner_id,
       null,
@@ -788,6 +784,13 @@ export class ControlService {
       null,
       "agent_connection_revoke",
       "revoked",
+    );
+  }
+  async stopAgentConnection(id: string, reason = "Agent connection revoked"): Promise<void> {
+    await Promise.allSettled(
+      this.store
+        .agentConnectionSessions(id)
+        .map((session) => this.endAgentConnectionSession(session, reason)),
     );
   }
   async invalidateDevice(deviceId: string): Promise<void> {

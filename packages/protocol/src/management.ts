@@ -13,6 +13,20 @@ import {
 export const managementUserSchema = z.object({ id: z.string(), username: z.string() });
 export type UserView = z.infer<typeof managementUserSchema>;
 
+export const managedBrowserClaimsSchema = z.object({
+  sub: z.string().min(1).max(160),
+  sandbox_id: z.string().min(1).max(160),
+  generation: z.number().int().nonnegative(),
+  name: z.string().trim().min(1).max(100).optional(),
+  user_kind: z.enum(["human", "end_user"]).optional(),
+  iat: z.number().int().nonnegative(),
+});
+export type ManagedBrowserClaims = z.infer<typeof managedBrowserClaimsSchema>;
+export const managedBrowserRedeemSchema = z.strictObject({
+  device_id: z.string().min(1).max(160),
+  bootstrap_token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+});
+
 export const deviceViewSchema = deviceMetadataSchema.extend({
   id: z.string(),
   name: z.string(),
