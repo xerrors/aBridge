@@ -1,0 +1,199 @@
+:root {
+  background: var(--surface);
+}
+.site-header {
+  border-bottom: 1px solid var(--line);
+}
+.site-header .brand,
+main {
+  width: min(100% - 40px, 520px);
+  margin-inline: auto;
+}
+.site-header .brand {
+  min-height: 66px;
+}
+.site-header .brand-symbol {
+  width: 23px;
+  height: 23px;
+}
+.site-header .brand-wordmark {
+  width: 88px;
+  height: 24px;
+}
+main {
+  padding: clamp(26px, 5vw, 56px) 0 48px;
+}
+h1 {
+  margin: 0 0 26px;
+  font-size: clamp(23px, 4vw, 31px);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 7px;
+}
+.binding-form {
+  display: grid;
+  gap: 21px;
+}
+.binding-form label,
+.binding-form legend,
+#rename label {
+  font-size: 13px;
+  font-weight: 600;
+}
+fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+legend {
+  margin-bottom: 7px;
+  padding: 0;
+}
+.method-options {
+  display: flex;
+  gap: 8px;
+}
+.method-options label {
+  position: relative;
+  flex: 1;
+  cursor: pointer;
+}
+.method-options input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: inherit;
+}
+.method-options span {
+  display: block;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-align: center;
+}
+.method-options input:checked + span {
+  border-color: var(--accent);
+  background: var(--soft);
+  color: var(--accent);
+}
+.method-options input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.method-options label:has(input:disabled) {
+  cursor: default;
+  opacity: 0.6;
+}
+.field-heading,
+.token-options,
+.binding-actions,
+.rename-row,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.field-heading,
+.token-options {
+  justify-content: space-between;
+}
+.token-options {
+  margin-top: 8px;
+}
+.binding-actions {
+  flex-wrap: wrap;
+}
+.binding-actions p {
+  flex-basis: 100%;
+}
+.text-button {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 550;
+}
+.text-button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.http-warning,
+.inline-error {
+  margin: 9px 0 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+.inline-error {
+  border-inline-start: 3px solid var(--danger);
+  color: var(--danger);
+  font-size: 13px;
+}
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.check-label input {
+  width: auto;
+  height: auto;
+  margin: 0;
+}
+.http-warning .hint {
+  margin-top: 4px;
+}
+.management-section {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+.server-address {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+#management-offline {
+  margin-top: 7px;
+}
+.rename-row input {
+  min-width: 0;
+}
+.rename-row button {
+  flex: none;
+  margin-top: 7px;
+}
+.diagnostics summary {
+  font-size: 13px;
+}
+.binding-management .hint {
+  margin-bottom: 10px;
+}
+#retry {
+  margin-top: 12px;
+}
+dialog {
+  width: min(100% - 32px, 380px);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+dialog h2 {
+  font-size: 17px;
+}
+dialog::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+}

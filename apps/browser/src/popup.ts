@@ -1,272 +1,99 @@
-import { normalizeDeviceServer, isInsecureDeviceServer } from "@abridge/protocol";
-import { element, errorDetails, type BrowserStatus, type ControlType } from "./types.js";
-import { request, describeState, renderDiagnostics } from "./browser-ui.js";
-import { fallbackProfileName, profileDeviceName, registrationDeviceName } from "./profile-name.js";
+import { CONNECTION_PAGE, element, errorDetails, type BrowserStatus } from "./types.js";
+import { request, describeState, isBound, watchStatus } from "./browser-ui.js";
+
 const $ = (id: string) => element(id, HTMLElement);
 const button = (id: string) => element(id, HTMLButtonElement);
-const input = (id: string) => element(id, HTMLInputElement);
-
+const connectionURL = chrome.runtime.getURL(CONNECTION_PAGE);
 let state: BrowserStatus | undefined;
-let settingsOpen = false;
 let pending = false;
-let nameDirty = false;
-let registrationNameDirty = false;
-let profileName = fallbackProfileName;
-let profilePending = false;
-function renderRegistrationName() {
-  input("label").value = registrationDeviceName(
-    input("label").value,
-    registrationNameDirty,
-    state?.label,
-    profileName,
-  );
+
+function render() {
+  const bound = isBound(state);
+  const active = !!state?.connected && (state.active_sessions > 0 || state.active_operations > 0);
+  button("pause").hidden = !bound;
+  button("pause").disabled = pending;
+  button("pause").textContent = state?.paused ? "恢复访问" : "暂停访问";
+  button("stop").disabled = pending;
+  button("stop").hidden = !bound || !active;
+  button("retry").disabled = pending;
+  const open = button("open-connection");
+  open.hidden = false;
+  open.disabled = pending;
+  open.classList.toggle("primary", !!state && !bound);
+  open.classList.toggle("secondary", !state || bound);
+  open.textContent =
+    !state || bound
+      ? "管理连接"
+      : state.authorizing
+        ? "查看绑定进度"
+        : state.revoked
+          ? "重新绑定"
+          : "连接浏览器";
 }
-function showError(value: unknown) {
-  $("error").textContent = errorDetails(value).message;
+
+function showError(error: unknown) {
+  $("error").textContent = errorDetails(error).message;
   $("error").hidden = false;
 }
-function report(value: unknown) {
-  state = undefined;
-  renderControls();
-  $("connection").className = "connection-summary attention";
-  $("status-label").textContent = "无法读取状态";
-  showError(value);
-}
-function renderControls() {
-  const registered = !!state?.configured && !state.revoked;
-  button("pause").disabled = pending || !registered;
-  button("stop").disabled =
-    pending ||
-    !registered ||
-    !state?.connected ||
-    !(state.active_sessions > 0 || state.active_operations > 0);
-  button("refresh").disabled = pending;
-  button("submit").disabled = pending || !state || !!state.authorizing;
-  button("unbind").disabled = pending || !registered;
-  button("cancel-authorization").disabled = pending;
-  input("device-label").disabled = pending || !registered;
-  button("rename-save").disabled =
-    pending ||
-    !registered ||
-    !state?.connected ||
-    !input("device-label").value.trim() ||
-    input("device-label").value.trim() === state.label;
-  input("server").disabled = pending || !state || !!state.authorizing;
-  element("binding-method", HTMLSelectElement).disabled = pending || !!state?.authorizing;
-  input("device-token").disabled = pending || !!state?.authorizing;
-  input("show-token").disabled = pending || !!state?.authorizing;
-  input("label").disabled = pending || !state || !!state.authorizing;
-  button("profile-account").disabled =
-    pending || profilePending || !state || registered || !!state.authorizing || registrationNameDirty;
-}
-function renderSettings() {
-  const registered = !!state?.configured && !state.revoked;
-  const expanded = !!state && (!registered || settingsOpen);
-  $("settings-panel").hidden = !expanded;
-  button("settings").hidden = !registered;
-  button("settings").setAttribute("aria-expanded", String(expanded));
-  button("settings").setAttribute("aria-label", expanded ? "收起连接设置" : "展开连接设置");
-  $("settings-title").textContent = registered ? "连接设置" : "连接当前浏览器";
-  $("registered-info").hidden = !registered;
-  $("register").hidden = registered;
-}
+
 async function refresh() {
-  const next = await request({ type: "status" });
-  if (next.device_id !== state?.device_id) nameDirty = false;
-  state = next;
-  const status = describeState(state);
-  $("connection").className = `connection-summary ${status.kind}`;
-  $("status-label").textContent = state.authorizing ? "等待浏览器授权" : status.title;
-  $("device-name").textContent = state.label || "当前浏览器";
-  $("ready-controls").hidden = !state.configured || state.revoked;
-  $("pause-label").textContent = state.paused ? "恢复访问" : "暂停访问";
-  document
-    .getElementById("pause-icon")
-    ?.setAttribute("d", state.paused ? "M6 3.5 12 8l-6 4.5Z" : "M6 4v8M10 4v8");
-  $("error").textContent = state.authorization_error || "";
-  $("error").hidden = !state.authorization_error;
-  button("submit").textContent = state.authorizing
-    ? "正在绑定…"
-    : tokenMode()
-      ? "验证并连接"
-      : "在浏览器授权";
-  if (state.configured && !state.revoked) input("device-token").value = "";
-  button("cancel-authorization").hidden = !state.authorizing;
-  $("authorization-status").hidden = !state.authorizing;
-  if (!nameDirty) input("device-label").value = state.label || "";
-  $("saved-server").textContent = state.server || "尚未配置";
-  // Preserve an unfinished form across status notifications; restore a pending flow on reopen.
-  if (!input("server").value) input("server").value = state.server || "http://127.0.0.1:8765";
-  renderRegistrationName();
-  renderSettings();
-  renderControls();
-  renderDiagnostics($("connection-details"), state);
+  try {
+    state = await request({ type: "status" });
+    const status = describeState(state);
+    $("connection").className = `status-chip ${status.kind}`;
+    $("device-name").textContent = state.label || "当前浏览器";
+    $("status-label").textContent = state.authorizing
+      ? state.binding_method === "token"
+        ? "正在验证设备凭证"
+        : "正在绑定"
+      : status.title;
+    $("error").hidden = true;
+    $("retry").hidden = true;
+  } catch (error) {
+    state = undefined;
+    $("connection").className = "status-chip attention";
+    $("status-label").textContent = "状态读取失败";
+    $("retry").hidden = false;
+    showError(error);
+  }
+  render();
 }
-async function control(type: ControlType | "authorize_cancel") {
+
+async function action(run: () => Promise<unknown>) {
   if (pending) return;
   pending = true;
-  renderControls();
+  $("error").hidden = true;
+  render();
   try {
-    await request({ type });
-    if (type === "unbind") settingsOpen = false;
-    await refresh();
+    await run();
   } catch (error) {
     showError(error);
   } finally {
     pending = false;
-    renderControls();
+    render();
   }
 }
-button("settings").addEventListener("click", () => {
-  settingsOpen = !settingsOpen;
-  renderSettings();
-});
-button("refresh").addEventListener("click", () => {
-  void refresh().catch(report);
-});
-button("pause").addEventListener("click", () => {
-  void control(state?.paused ? "resume" : "pause");
-});
-button("stop").addEventListener("click", () => {
-  void control("stop");
-});
-button("unbind").addEventListener("click", () => {
-  void control("unbind");
-});
-button("cancel-authorization").addEventListener("click", () => {
-  void control("authorize_cancel");
-});
-input("device-label").addEventListener("input", () => {
-  nameDirty = true;
-  renderControls();
-});
-input("label").addEventListener("input", () => {
-  registrationNameDirty = true;
-  renderControls();
-});
-button("profile-account").addEventListener("click", async () => {
-  if (
-    pending ||
-    profilePending ||
-    !state ||
-    (state.configured && !state.revoked) ||
-    state.authorizing ||
-    registrationNameDirty
-  )
-    return;
-  profilePending = true;
-  renderControls();
-  try {
-    // Keep the optional permission request directly in the user gesture.
-    const allowed = await chrome.permissions.request({ permissions: ["identity.email"] });
-    if (!allowed) throw new Error("未允许读取 Profile 账户，可继续手动命名");
-    profileName = await profileDeviceName(chrome);
-    renderRegistrationName();
-    if (profileName === fallbackProfileName) throw new Error("当前 Profile 未提供账户邮箱，可继续手动命名");
-  } catch (error) {
-    showError(error);
-  } finally {
-    profilePending = false;
-    renderControls();
-  }
-});
-$("rename").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (pending || !state?.connected) return;
-  pending = true;
-  renderControls();
-  try {
-    await request({ type: "rename", name: input("device-label").value.trim() });
-    nameDirty = false;
-    await refresh();
-  } catch (error) {
-    showError(error);
-  } finally {
-    pending = false;
-    renderControls();
-  }
-});
-$("register").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (pending || !state || state.authorizing) return;
-  pending = true;
-  renderControls();
-  try {
-    const candidate = input("server").value.trim();
-    const url = new URL(candidate);
-    const server = normalizeDeviceServer(candidate, url.origin);
-    const allowed = await chrome.permissions.request({ origins: [`${url.origin}/*`] });
-    if (!allowed) throw new Error("连接所填 Server 需要允许访问这个地址");
-    let confirmed = state.http_confirmed_origin;
-    if (isInsecureDeviceServer(server) && confirmed !== url.origin) {
-      if (!(await confirmHttp(url.origin))) return;
-      confirmed = url.origin;
-    }
-    if (tokenMode()) {
-      await request({
-        type: "bind_token",
-        server,
-        device_key: input("device-token").value.trim(),
-        http_confirmed_origin: confirmed,
-      });
-      input("device-token").value = "";
-    } else {
-      await request({
-        type: "authorize",
-        server,
-        label: input("label").value.trim(),
-        http_confirmed_origin: confirmed,
-      });
-    }
-    await refresh();
-  } catch (error) {
-    showError(error);
-  } finally {
-    pending = false;
-    renderControls();
-  }
-});
 
-function tokenMode(): boolean {
-  return element("binding-method", HTMLSelectElement).value === "token";
-}
-function confirmHttp(origin: string): Promise<boolean> {
-  const dialog = element("http-warning", HTMLDialogElement);
-  $("http-address").textContent = origin;
-  return new Promise((resolve) => {
-    const finish = (accepted: boolean) => {
-      dialog.close();
-      resolve(accepted);
-    };
-    button("http-cancel").onclick = () => finish(false);
-    button("http-continue").onclick = () => finish(true);
-    dialog.oncancel = (event) => {
-      event.preventDefault();
-      finish(false);
-    };
-    dialog.showModal();
+button("pause").onclick = () =>
+  void action(async () => {
+    await request({ type: state?.paused ? "resume" : "pause" });
+    await refresh();
   });
-}
-element("binding-method", HTMLSelectElement).addEventListener("change", () => {
-  $("token-fields").hidden = !tokenMode();
-  $("browser-fields").hidden = tokenMode();
-  input("label").required = !tokenMode();
-  input("device-token").required = tokenMode();
-  input("device-token").value = "";
-  button("submit").textContent = tokenMode() ? "验证并连接" : "在浏览器授权";
-});
-input("show-token").addEventListener("change", () => {
-  input("device-token").type = input("show-token").checked ? "text" : "password";
-});
-
-chrome.runtime.onMessage.addListener((message: unknown) => {
-  if (message && typeof message === "object" && "type" in message && message.type === "status_changed")
-    void refresh().catch(report);
-});
-void refresh()
-  .then(async () => {
-    if ((state?.configured && !state.revoked) || state?.label) return;
-    profileName = await profileDeviceName(chrome);
-    renderRegistrationName();
-  })
-  .catch(report);
+button("stop").onclick = () =>
+  void action(async () => {
+    await request({ type: "stop" });
+    await refresh();
+  });
+button("retry").onclick = () => void action(refresh);
+button("open-connection").onclick = () =>
+  void action(async () => {
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    const existing = tabs.find((tab) => tab.url === connectionURL || tab.pendingUrl === connectionURL);
+    if (existing?.id !== undefined) {
+      const focused = await chrome.tabs.update(existing.id, { active: true }).catch(() => undefined);
+      if (focused) return;
+    }
+    await chrome.tabs.create({ url: connectionURL });
+  });
+watchStatus(refresh);
+void refresh();

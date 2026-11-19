@@ -163,7 +163,7 @@ npm run build
 
 在 `chrome://extensions` 开启开发者模式，加载 `dist/browser/`，不能直接加载 `apps/browser/src/`。独立分发使用构建工具生成的扩展 ZIP，解压后加载；版本由根项目版本生成。
 
-点击扩展图标，在弹窗中填写 Server 地址和设备名，点击“在浏览器授权”，登录管理台并确认绑定当前 Profile。远端 Server 推荐 HTTPS/WSS；公网 HTTP/WS 需在客户端确认风险，本机回环 HTTP/WS 无需额外确认。绑定时只需允许扩展访问所填 Server 地址。
+点击扩展图标，选择「连接浏览器」，在打开的标签页填写 Server 地址和设备名，按表单提示确认后点击「在浏览器授权」，登录管理台并确认绑定当前 Profile。远端 Server 推荐 HTTPS/WSS；公网 HTTP/WS 需在客户端确认风险，本机回环 HTTP/WS 无需额外确认。绑定时只需允许扩展访问所填 Server 地址。
 
 每个扩展安装实例注册为独立浏览器设备，仅有 `browser` 能力；在管理台加入所需 Agent 连接。任务无需在 App 中选择窗口或准备浏览器连接。更新构建文件后在扩展管理页“重新加载”，再确认连接状态；绑定与暂停保留。更多约束见 [浏览器客户端](browser-profile-design.md)。
 

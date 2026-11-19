@@ -390,33 +390,23 @@ test("standalone extension registers once, authenticates directly, isolates brow
       assert.deepEqual(authorizationRequest.capabilities, ["browser"]);
       assert.equal(authorizationRequest.name, "Work");
       assert.equal(request.redirect, "error");
-      return {
-        ok: true,
-        async json() {
-          return {
-            id: "r".repeat(43),
-            authorization_url: "https://abridge.example/?authorize=" + "r".repeat(43),
-            expires_at: Date.now() / 1000 + 300,
-          };
-        },
-      };
+      return Response.json({
+        id: "r".repeat(43),
+        authorization_url: "https://abridge.example/?authorize=" + "r".repeat(43),
+        expires_at: Date.now() / 1000 + 300,
+      });
     }
     assert.equal(url, "https://abridge.example/api/device-authorizations/token");
     const body = JSON.parse(request.body);
     assert.equal(body.redirect_uri, authorizationRequest.redirect_uri);
     assert.ok(body.code_verifier);
-    return {
-      ok: true,
-      async json() {
-        return {
-          device_id: "browser-device",
-          key: "abr_device_private-key",
-          name: "Work",
-          kind: "browser",
-          capabilities: ["browser"],
-        };
-      },
-    };
+    return Response.json({
+      device_id: "browser-device",
+      key: "abr_device_private-key",
+      name: "Work",
+      kind: "browser",
+      capabilities: ["browser"],
+    });
   };
   await h.start();
   await delay(10);
@@ -681,12 +671,18 @@ test("alarm reconnect during CLOSING completes old task cleanup before replacing
   await delay(5);
 });
 
-test("only the exact popup page controls the worker; stopping tasks preserves connection and authorization", async (t) => {
+test("only trusted extension pages can message the worker and the binding page cannot control tasks", async (t) => {
   const local = { device: { server: "https://abridge.example", key: "key", device_id: "browser-device" } },
     h = harness(t, local, {});
   await h.start();
   await delay(10);
-  for (const page of ["untrusted.html", "options.html", "popup.html?spoof=1", "popup.html#spoof"]) {
+  for (const page of [
+    "untrusted.html",
+    "options.html",
+    "popup.html?spoof=1",
+    "popup.html#spoof",
+    "connection.html",
+  ]) {
     assert.equal(
       h.chrome.runtime.onMessage.listeners[0](
         { type: "pause" },
@@ -696,6 +692,7 @@ test("only the exact popup page controls the worker; stopping tasks preserves co
       false,
     );
   }
+  assert.equal((await h.fromPage({ type: "status" }, "connection.html")).connected, true);
   assert.equal((await h.fromPage({ type: "status" }, "popup.html")).connected, true);
   h.sockets[0].receive(h.dispatch("popup-task"));
   await delay(10);
@@ -985,7 +982,12 @@ test("browser consent completes without an open popup and a reopened popup resto
   try {
     await h.start();
     assert.equal(
-      (await h.popup({ type: "authorize", server: "https://abridge.example", label: "Work" })).ok,
+      (
+        await h.fromPage(
+          { type: "authorize", server: "https://abridge.example", label: "Work" },
+          "connection.html",
+        )
+      ).ok,
       true,
     );
     const deadline = performance.now() + 2000;
@@ -1106,7 +1108,7 @@ test("browser names synchronize from Server and rename without blocking pause or
     await pending;
     return Response.json({ id: "browser-device", name: "Renamed browser" });
   };
-  const renamed = h.popup({ type: "rename", name: " Renamed browser " });
+  const renamed = h.fromPage({ type: "rename", name: " Renamed browser " }, "connection.html");
   await requested;
   assert.equal(
     (await h.popup({ type: "status" })).label,

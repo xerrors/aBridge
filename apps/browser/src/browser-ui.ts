@@ -7,12 +7,24 @@ export async function request(message: UiMessage): Promise<UiResponse | BrowserS
   return response;
 }
 
+export function isBound(state: BrowserStatus | undefined): boolean {
+  return !!state?.configured && !state.revoked;
+}
+
+export function watchStatus(refresh: () => Promise<void>) {
+  chrome.runtime.onMessage.addListener((message: unknown) => {
+    if (message && typeof message === "object" && "type" in message && message.type === "status_changed")
+      void refresh();
+  });
+}
+
 export function describeState(state: BrowserStatus) {
   if (state.revoked) return { kind: "attention", title: "授权已撤销" };
   if (!state.configured) return { kind: "unconfigured", title: "尚未绑定" };
-  if (state.paused) return { kind: "paused", title: "访问已暂停" };
+  if (state.paused)
+    return { kind: "paused", title: state.connected ? "已连接 · 访问已暂停" : "未连接 · 访问已暂停" };
   if (!state.connected) return { kind: "offline", title: "正在重新连接" };
-  if (state.active_operations > 0) return { kind: "busy", title: "任务正在执行" };
+  if (state.active_operations > 0) return { kind: "busy", title: "已连接 · 任务执行中" };
   return { kind: "connected", title: "已连接" };
 }
 

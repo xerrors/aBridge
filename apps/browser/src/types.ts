@@ -1,6 +1,7 @@
 /// <reference types="chrome" />
 import { z } from "zod";
 import { deviceRenameSchema, type OperationError, type BrowserStepFailure } from "@abridge/protocol";
+export const CONNECTION_PAGE = "connection.html";
 /** Values cross the extension's storage, UI message, and CDP boundaries. */
 export interface BridgeError extends Error {
   code?: string;
@@ -54,6 +55,7 @@ export interface BrowserStatus {
   active_sessions: number;
   connection_history: ConnectionHistory;
   authorizing?: boolean;
+  binding_method?: "browser" | "token";
   authorization_expires_at?: number;
   authorization_error?: string;
 }

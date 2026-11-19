@@ -1,5 +1,6 @@
 import { normalizeDeviceServer, deviceIdentitySchema } from "@abridge/protocol";
 import { authorizeBrowser } from "./authorization.js";
+import { requestBinding } from "./binding-request.js";
 import { BrowserBridge } from "./bridge.js";
 import { collectBrowserDetails, browserPlatform, type BrowserIdentity } from "./browser-brand.js";
 import {
@@ -24,6 +25,7 @@ import { z } from "zod";
 import {
   fail,
   errorDetails,
+  CONNECTION_PAGE,
   type BrowserProfile,
   type BridgeError,
   type ConnectionHistory,
@@ -212,7 +214,14 @@ export class BrowserDeviceClient {
   private renaming = false;
   private nameRevision = 0;
   private authorization:
-    { controller: AbortController; server: string; label: string; expiresAt?: number } | undefined;
+    | {
+        method: "browser" | "token";
+        controller: AbortController;
+        server: string;
+        label: string;
+        expiresAt?: number;
+      }
+    | undefined;
   private authorizationError: string | undefined;
   private cleanup: Promise<void> = Promise.resolve();
   private cleanupError: BridgeError | undefined;
@@ -791,7 +800,11 @@ export class BrowserDeviceClient {
     } catch {
       return false;
     }
-    if (sender.id !== this.chrome.runtime.id || source.href !== this.chrome.runtime.getURL("popup.html"))
+    const connectionPage = source.href === this.chrome.runtime.getURL(CONNECTION_PAGE);
+    if (
+      sender.id !== this.chrome.runtime.id ||
+      (!connectionPage && source.href !== this.chrome.runtime.getURL("popup.html"))
+    )
       return false;
     const parsed = uiMessageSchema.safeParse(raw);
     if (!parsed.success) {
@@ -799,6 +812,11 @@ export class BrowserDeviceClient {
       return false;
     }
     const message = parsed.data;
+    if (
+      connectionPage &&
+      !["status", "authorize", "bind_token", "authorize_cancel", "rename", "unbind"].includes(message.type)
+    )
+      return false;
     if (message.type === "rename") {
       void this.renameDevice(message.name).then(respond, (caught: unknown) => {
         const error = errorDetails(caught);
@@ -830,6 +848,7 @@ export class BrowserDeviceClient {
             active_sessions: this.bridge.sessionCount,
             connection_history: { ...this.connectionHistory },
             authorizing: !!this.authorization,
+            binding_method: this.authorization?.method,
             authorization_expires_at: this.authorization?.expiresAt,
             authorization_error: this.authorizationError,
           };
@@ -844,6 +863,7 @@ export class BrowserDeviceClient {
           if (this.authorization) throw fail("authorization_pending", "请先完成或取消当前授权");
           const server = serverURL(message.server, message.http_confirmed_origin);
           const pending = {
+            method: "token" as const,
             controller: new AbortController(),
             server,
             label: this.profile.label || "",
@@ -852,20 +872,16 @@ export class BrowserDeviceClient {
           this.authorization = pending;
           this.authorizationError = undefined;
           void (async () => {
-            const response = await this.fetch(server + "/api/device", {
-              headers: { Authorization: `Bearer ${message.device_key}` },
-              credentials: "omit",
-              redirect: "error",
-              signal: AbortSignal.any([pending.controller.signal, AbortSignal.timeout(10000)]),
-            });
-            if (!response.ok) {
-              await response.body?.cancel();
-              throw fail(
-                "invalid_token",
-                response.status === 401 ? "设备 Token 无效或已撤销" : `验证失败 (${response.status})`,
-              );
-            }
-            const device = deviceIdentitySchema.parse(await response.json());
+            const device = await requestBinding(
+              this.fetch,
+              server + "/api/device",
+              {
+                headers: { Authorization: `Bearer ${message.device_key}` },
+                signal: pending.controller.signal,
+              },
+              deviceIdentitySchema,
+              true,
+            );
             if (this.disposed || this.authorization !== pending || pending.controller.signal.aborted) return;
             if (device.kind !== "browser")
               throw fail("wrong_device_kind", "请使用浏览器设备的 Token，不能使用电脑、Agent 或管理员 Token");
@@ -921,6 +937,7 @@ export class BrowserDeviceClient {
           const label = message.label.trim();
           if (!label || label.length > 80) throw fail("invalid_name", "请填写浏览器名称");
           const pending = {
+            method: "browser" as const,
             controller: new AbortController(),
             server,
             label,

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>浏览器连接 · aBridge</title>
+    <link rel="stylesheet" href="ui.css" />
+    <link rel="stylesheet" href="connection.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand">
+        <img class="brand-symbol" src="icons/brand.svg" alt="" />
+        <img class="brand-wordmark" src="icons/wordmark.svg" alt="aBridge" />
+      </div>
+    </header>
+    <main aria-labelledby="page-title">
+      <h1 id="page-title">浏览器连接</h1>
+      <p id="page-status" class="hint" role="status">正在读取连接状态…</p>
+      <div id="page-retry" hidden>
+        <p id="page-error" class="error-message" role="alert"></p>
+        <button id="retry" type="button" class="secondary">重试读取状态</button>
+      </div>
+      <form id="register" class="binding-form" hidden>
+        <div class="address-field">
+          <label for="server">Server 地址</label>
+          <input
+            id="server"
+            type="url"
+            required
+            placeholder="https://abridge.example.com"
+            autocomplete="url"
+            aria-describedby="binding-error"
+          />
+          <p id="binding-error" class="inline-error" role="alert" hidden></p>
+          <div id="http-warning" class="http-warning" hidden>
+            <label class="check-label" for="allow-http">
+              <input id="allow-http" type="checkbox" aria-describedby="http-risk" />
+              我了解风险，仍要使用 HTTP
+            </label>
+            <p id="http-risk" class="hint">
+              此连接未经加密，网络中的其他人可能读取设备凭证、操作内容和截图。
+            </p>
+          </div>
+        </div>
+        <fieldset id="binding-methods">
+          <legend>绑定方式</legend>
+          <div class="method-options">
+            <label
+              ><input id="method-browser" name="method" type="radio" value="browser" checked /><span
+                >浏览器授权</span
+              ></label
+            >
+            <label
+              ><input id="method-token" name="method" type="radio" value="token" /><span
+                >设备凭证</span
+              ></label
+            >
+          </div>
+        </fieldset>
+        <div id="browser-fields">
+          <div class="field-heading">
+            <label for="label">浏览器名称</label>
+            <button id="profile-account" class="text-button" type="button">使用 Profile 账户</button>
+          </div>
+          <input id="label" maxlength="80" required placeholder="例如 Chrome · 工作账号" />
+          <p id="profile-error" class="error-message" role="alert" hidden></p>
+        </div>
+        <div id="token-fields" hidden>
+          <label for="device-token">Device Token</label>
+          <input
+            id="device-token"
+            type="password"
+            autocomplete="off"
+            maxlength="4096"
+            placeholder="abr_device_…"
+            aria-describedby="token-hint"
+          />
+          <div class="token-options">
+            <p id="token-hint" class="hint">在 Server 管理台的「添加设备」中生成浏览器扩展凭证。</p>
+            <label class="check-label"><input id="show-token" type="checkbox" />显示</label>
+          </div>
+        </div>
+        <div class="binding-actions">
+          <button id="submit" class="primary" type="submit">在浏览器授权</button>
+          <button id="cancel-authorization" class="secondary" type="button" hidden>取消绑定</button>
+          <p id="authorization-status" class="hint" role="status" hidden></p>
+        </div>
+      </form>
+
+      <div id="management" hidden>
+        <section class="management-section" aria-labelledby="server-title">
+          <h2 id="server-title">当前 Server</h2>
+          <p id="saved-server" class="server-address"></p>
+          <p id="management-offline" class="hint" hidden>Server 未连接。连接恢复后可保存名称或解除绑定。</p>
+        </section>
+        <form id="rename" class="management-section">
+          <label for="device-label">浏览器名称</label>
+          <div class="rename-row">
+            <input id="device-label" maxlength="120" required aria-describedby="rename-error" />
+            <button id="rename-save" class="secondary" type="submit">保存名称</button>
+          </div>
+          <p id="rename-error" class="error-message" role="alert" hidden></p>
+        </form>
+        <details class="management-section diagnostics">
+          <summary>连接诊断</summary>
+          <dl id="connection-details" class="diagnostic-list"></dl>
+          <button id="refresh-details" type="button" class="text-button">刷新诊断</button>
+        </details>
+        <section class="management-section binding-management" aria-label="解除绑定">
+          <p class="hint">更换 Server 时，先解除当前绑定。</p>
+          <button id="unbind" type="button" class="danger-button">解除绑定</button>
+          <p id="unbind-error" class="error-message" role="alert" hidden></p>
+        </section>
+      </div>
+    </main>
+    <dialog id="unbind-dialog" aria-labelledby="unbind-title">
+      <form method="dialog">
+        <h2 id="unbind-title">解除浏览器绑定？</h2>
+        <p>此浏览器将停止接收当前 Server 的任务。</p>
+        <p id="unbind-address" class="server-address"></p>
+        <div class="dialog-actions">
+          <button class="secondary" autofocus>取消</button>
+          <button class="danger-button" value="unbind">解除绑定</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="connection.js" type="module"></script>
+  </body>
+</html>
