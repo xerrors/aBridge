@@ -16,9 +16,9 @@
 | [check-package.ts](check-package.ts)           | 校验分发边界及候选包离线安装、CLI/HTTP/WASM     | `package:check`                           |
 | [check-release.ts](check-release.ts)           | 校验发布标签、版本及 main 历史                  | 发布 CI                                   |
 
-`check` 串联格式、架构、类型、测试和分发检查；发布流程见 [发布说明](../docs/releasing.md)。
+`check` 串联格式、架构、类型、测试和分发检查。[普通 CI](../.github/workflows/ci.yml) 在 Ubuntu 的最低支持 Node 版本运行 `check`，其余 Ubuntu Node 版本运行 `test`，两个 macOS runner 各用一版 Node 运行 `test:desktop`。普通 CI 和 Linux 客户端检查在 PR、主分支 push 及手动触发时运行。发布流程见 [发布说明](../docs/releasing.md)。
 
-源码测试可能借用工作区的依赖和资源，因此分发检查还需验证用户实际安装的候选包。`package:check` 通过 [check-installed-package.ts](lib/check-installed-package.ts) 在工作区外、空缓存下离线安装 tarball，再核对安装后的 CLI 版本、HTTP、管理台资源及 QuickJS/WASM 初始化。安装脚本禁用，使用隔离配置与本机临时端口，结束后停止进程并清理目录；此检查随 `check` 在现有 Linux/macOS CI 中运行。
+源码测试可能借用工作区的依赖和资源，因此分发检查还需验证用户实际安装的候选包。`package:check` 通过 [check-installed-package.ts](lib/check-installed-package.ts) 在工作区外、空缓存下离线安装 tarball，再核对安装后的 CLI 版本、HTTP、管理台资源及 QuickJS/WASM 初始化。安装脚本禁用，使用隔离配置与本机临时端口，结束后停止进程并清理目录。普通 CI 在 Ubuntu 的最低支持 Node 版本执行这一检查，发布 CI 在 Linux 校验最终分发包。
 
 [package-consumer.test.ts](tests/package-consumer.test.ts) 使用受控进程验证检查器会拒绝缺失资源及提前异常退出、保留验证与关闭的双重错误，并关闭进程；由 `test` 自动发现，无需预先打包。实际依赖和 WASM 仍由候选包检查验证。分发方式、CLI 或脚本运行时调整时，同步维护对应探针和测试，不把当前依赖布局当成永久契约。
 
@@ -70,4 +70,4 @@
 `test:browser:live` 使用自有本机 HTTP 页面，核对三条批量提交的服务端记录、数字/邮箱替换与清空、跨调用状态、条件等待、长文快照分页、表格提取、键盘、滚动和同源 iframe 输入。测试直接运行实际 BrowserBridge 与 QuickJS，通过薄 Chrome API 适配器调用真实 CDP；它不替代已安装扩展的绑定、WebSocket 重连或商店包验收。标准 `check` 保持无需真实浏览器；服务端与扩展 worker 的线缆集成由自动测试单独覆盖。
 
 `npm run test:browser:reliability:live` 使用独立真实 Chrome 和自有页面验证通用输入与恢复。`benchmark:miniwob -- --model-catalog /absolute/path/to/models.json` 固定实际模型元数据并记录其摘要，`--holdout` 单独运行额外 seed=2（非盲测）。[对照方法与边界](../docs/benchmarks/browser-reliability-v2.md)。
-原生回归：`apps/desktop/tests/native-*.test.ts` 覆盖电脑执行与真实 WebSocket/Shell 生命周期；`tools/tests/native-{contract,lifecycle,updater}.test.ts` 覆盖共享契约对齐、授权存储和原生更新器。macOS 上编译 Swift 6 fixture，其他平台跳过原生专属用例。`npm run check` 在 macOS 同时构建完整 App。
+原生回归覆盖电脑执行、WebSocket/Shell 生命周期、共享契约、授权和原生更新器。`npm run test:desktop` 在 Apple Silicon macOS 构建完整 App，运行 `apps/desktop/tests/` 下的测试以及 `tools/tests/` 下的原生和安装器测试。macOS 上的 `npm run check` 也会构建完整 App 并运行全部测试。

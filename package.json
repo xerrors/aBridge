@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "node --import tsx tools/test.ts",
+    "test:desktop": "npm run build && node --import tsx --test \"apps/desktop/tests/**/*.test.ts\" \"tools/tests/native-*.test.ts\" tools/tests/desktop-install.test.ts",
     "package": "node --import tsx tools/package-release.ts",
     "package:check": "node --import tsx tools/check-package.ts",
     "check:code": "npm run format:check && npm run architecture:check && npm run typecheck && npm test && npm run benchmark:report:check",
