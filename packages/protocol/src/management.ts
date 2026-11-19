@@ -22,6 +22,7 @@ export const deviceViewSchema = deviceMetadataSchema.extend({
   status: z.enum(["online", "offline", "revoked"]),
   paused: z.boolean(),
   available: z.record(z.string(), z.boolean()),
+  available_tools: z.array(z.string()).optional(),
   active_operations: z.array(z.string()),
   last_seen: z.number().nullable(),
   created_at: z.number(),

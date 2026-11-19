@@ -11,6 +11,7 @@ internal class DeviceContract(context: Context) {
     val protocol = data.getString("protocol")
     val version = data.getString("version")
     val limits = data.getJSONObject("limits")
+    val androidTools = data.getJSONArray("androidTools").values().filterIsInstance<String>().toSet()
     private val capabilities = data.getJSONObject("toolCapabilities")
     private val schemas = data.getJSONObject("schemas")
 

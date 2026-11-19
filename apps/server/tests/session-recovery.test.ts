@@ -10,7 +10,7 @@ import { Store } from "../src/store.js";
 import { commandOutputPage, characterLength } from "../src/command-output.js";
 import { BridgeError, type DeviceTransport, type JsonObject } from "../src/types.js";
 
-async function fixture() {
+async function fixture(platform?: string) {
   const directory = await mkdtemp(join(tmpdir(), "abridge-session-recovery-"));
   const path = join(directory, "server.db");
   let now = Date.now() / 1000;
@@ -38,7 +38,7 @@ async function fixture() {
     },
     async close() {},
   };
-  const hello = { capabilities: { screen: true, input: true, shell: true } };
+  const hello = { platform, capabilities: { screen: true, input: true, shell: true } };
   let ticket = await control.attachConnection(key, "computer", hello, transport);
   return {
     get store() {
@@ -91,6 +91,52 @@ async function fixture() {
     },
   };
 }
+
+test("Android tool discovery, dispatch and recovery agree with the device profile", async () => {
+  const f = await fixture("android");
+  try {
+    const device = f.control.authorizedDevice(f.agentConnection, f.device.id);
+    assert.deepEqual(f.control.deviceView(device, f.agentConnection).available_tools, [
+      "computer_observe",
+      "computer_act",
+    ]);
+    const session = f.control.openSession(f.agentConnection, device.id, ["screen", "input"]);
+    const before = f.frames.length;
+    await assert.rejects(f.control.execute(f.agentConnection, session.id, "computer_apps", {}), {
+      code: "unsupported_tool",
+      details: { recovery: { action: "select_supported_tool" } },
+    });
+    assert.equal(f.frames.length, before);
+
+    for (const [status, code, recovery] of [
+      ["refused", "stale_observation", "observe_again"],
+      ["refused", "protected_surface", "user_handoff"],
+      ["outcome_unknown", "stale_observation", undefined],
+    ] as const) {
+      const operation = await f.control.execute(
+        f.agentConnection,
+        session.id,
+        "computer_act",
+        { observation_id: "obs_12345678", action: { type: "key", key: "home" } },
+        undefined,
+        false,
+      );
+      await f.control.receive(f.ticket, {
+        type: "result",
+        operation_id: operation.operation_id,
+        connection_epoch: f.ticket.epoch,
+        status,
+        error: { code, message: "Synthetic device result" },
+      });
+      assert.equal(
+        f.control.operationStatus(f.agentConnection, operation.operation_id).error?.recovery?.action,
+        recovery,
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
 
 test("activity returns fresh leases for dispatch, completion, status and duplicate requests", async () => {
   const f = await fixture();

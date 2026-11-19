@@ -19,6 +19,7 @@ import {
   filesListSchema,
   fileReadSchema,
   fileWriteSchema,
+  requiredCapabilities,
   type DeviceTool,
 } from "@abridge/protocol";
 import { ControlService } from "./control.js";
@@ -165,7 +166,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   };
   register(
     "devices_list",
-    "List granted devices, available capabilities and your active sessions. Discovery does not renew sessions.",
+    "List granted devices, available capabilities, available_tools and your active sessions. Select only tools available on the chosen device. Discovery does not renew sessions.",
     z.object({}).strict(),
     () => ({
       connection: control.connectionInfo(agentConnection),
@@ -180,16 +181,22 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "session_open",
-    "Open a capability-scoped session on an explicit online device. Returns the session and device details including name, kind and platform. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
+    "Open a capability-scoped session on an explicit online device. Use available_tools for this session and obtain a new observation after opening it. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
     z.object({ device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) }).strict(),
     (a) => {
       const session = control.openSession(agentConnection, a.device_id, a.capabilities);
+      const device = control.deviceView(
+        control.authorizedDevice(agentConnection, session.device_id),
+        agentConnection,
+      );
       return {
         ...session,
         server_time: control.sessionInfo(session).server_time,
-        device: control.deviceView(
-          control.authorizedDevice(agentConnection, session.device_id),
-          agentConnection,
+        device,
+        available_tools: device.available_tools?.filter((tool) =>
+          [...requiredCapabilities(tool as DeviceTool, {})].every((cap) =>
+            session.capabilities.includes(cap),
+          ),
         ),
       };
     },
@@ -226,7 +233,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "computer_act",
-    "Act once using the current observation_id. Check available_actions on macOS or supported_actions and supported_keys on Android. Prefer a supported element_ref action. After a delay, refresh the target first: observations last at most 120 seconds and screenshot captures can expire sooner. On macOS, middle and double clicks require screenshot coordinates. Window screenshot clicks default to background and need an unchanged window image. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. A covering window can be reported in error.desktop. If the action returns unverifiable or unknown, verify the expected change before continuing. Use result.observation directly, including any new window target. Set screenshot=true for visual follow-up. wait_after_ms defaults to 2000.",
+    "Act once with an observation_id from this session. Check available_actions on macOS or supported_actions and supported_keys on Android. Prefer a supported element_ref action. On a refused action with recovery.action=observe_again, observe once, verify the intended target and retry using the new reference. On user_handoff, stop sending input and ask the user to switch away from the protected screen. If execution is unknown, verify the effect before continuing. On macOS, middle and double clicks require screenshot coordinates. Window screenshot clicks default to background and need an unchanged window image. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. A covering window can be reported in error.desktop. Use result.observation directly, including any new window target. Set screenshot=true for visual follow-up. wait_after_ms defaults to 2000.",
     computerActSchema.safeExtend(base),
     (a) => exec("computer_act", a),
   );

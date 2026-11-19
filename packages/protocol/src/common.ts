@@ -25,9 +25,13 @@ export const sessionInfoSchema = z.object({
   server_time: z.number(),
 });
 export type SessionInfo = z.infer<typeof sessionInfoSchema>;
+export const deviceRecoverySchema = z.object({
+  action: z.enum(["observe_again", "user_handoff", "select_supported_tool"]),
+});
 export interface SessionErrorDetails {
   session?: SessionInfo;
   sessions?: SessionInfo[];
+  recovery?: z.infer<typeof deviceRecoverySchema>;
 }
 export const connectionLossSchema = z.object({
   reason: z.enum([

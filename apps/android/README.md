@@ -22,6 +22,8 @@ Open the app, enter the HTTPS server address and Device Key, and enable the aBri
 
 Observations expire after 120 seconds and are invalidated after input and on window changes. Input requires a verified current foreground window. Physical pointer movement, right-click, modifier combinations, and desktop window selection return an unsupported response. Protected windows can refuse capture. Directory providers control filename and write behavior. The app retains accepted operation IDs across restarts and refuses additional work if its bounded journal is full.
 
+An observation of aBridge's own settings advertises only the system navigation that can leave that screen. Home returns to the launcher. Back, touch, scrolling, and text input in aBridge's settings require direct user input.
+
 On Android 11 and 12, the focused editor can expose its own enter action. When available, it appears as `enter` in `supported_keys` and invokes the action configured by the editor. Explicit `search` and `done` keys require Android 13 or newer. The text replacement action is available on all supported versions when the field exposes accessible editing.
 
 See the [public benchmark procedure](../../docs/benchmarks/android-world.md) for emulator setup and result interpretation.

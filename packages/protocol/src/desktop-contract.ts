@@ -22,6 +22,7 @@ export function desktopContract() {
     capabilities: p.CAPABILITIES,
     desktopCapabilities: p.DESKTOP_CAPABILITIES,
     toolCapabilities: p.TOOL_CAPABILITIES,
+    androidTools: p.ANDROID_TOOLS,
     limits: {
       messageBytes: p.MAX_MESSAGE_BYTES,
       imageBytes: p.MAX_IMAGE_BYTES,
