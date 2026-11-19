@@ -5,6 +5,7 @@ import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Base64
@@ -56,6 +57,23 @@ internal class ScreenInput(private val service: AccessibilityService, private va
     private fun focus(root: AccessibilityNodeInfo?) =
         root?.packageName?.toString()?.let { Focus(it, root.windowId, rotation()) }
 
+    private fun uniqueId(node: AccessibilityNodeInfo): String? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) node.uniqueId else null
+
+    private fun imeEnter(node: AccessibilityNodeInfo?): Int? {
+        if (node == null || !node.isEditable || !node.isEnabled || node.isPassword) return null
+        val enter = AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER
+        return enter.id.takeIf { enter in node.actionList }
+    }
+
+    private fun supportedKeys(root: AccessibilityNodeInfo?): List<String> {
+        val systemKeys = listOf("back", "home")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            return systemKeys + listOf("enter", "search", "done")
+        return if (imeEnter(root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)) != null)
+            systemKeys + "enter" else systemKeys
+    }
+
     private suspend fun screenshot(): Bitmap {
         val spacing = 360 - (SystemClock.elapsedRealtime() - lastCapture)
         if (spacing > 0) delay(spacing)
@@ -104,7 +122,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                 .put("focus_status", if (confirmed) "confirmed" else "unconfirmed")
                 .put("pixel_actions", pixels).put("platform", "android")
                 .put("supported_actions", JSONArray(listOf("click", "long_press", "click_refs", "drag", "scroll", "type", "key")))
-                .put("supported_keys", JSONArray(listOf("back", "home", "enter", "search", "done")))
+                .put("supported_keys", JSONArray(supportedKeys(root.takeIf { confirmed })))
             if (image != null) {
                 val data = ByteArrayOutputStream()
                 if (!image.compress(Bitmap.CompressFormat.JPEG, 82, data) || data.size() > imageLimit)
@@ -134,7 +152,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                 && (query.isEmpty() || label.contains(query, ignoreCase = true))) {
                 val bounds = Rect().also(node::getBoundsInScreen)
                 val ref = "e${rows.length() + 1}"
-                targets[ref] = Target(path, bounds, node.viewIdResourceName, node.className?.toString(), node.uniqueId, label)
+                targets[ref] = Target(path, bounds, node.viewIdResourceName, node.className?.toString(), uniqueId(node), label)
                 val clickable = actionableAncestor(node, long = false)
                 rows.put(JSONObject().put("element_ref", ref).put("text", label)
                     .put("role", node.className?.toString()?.substringAfterLast('.') ?: "View")
@@ -163,7 +181,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             ?: throw Refusal("stale_observation", "Observe the screen again")
         val bounds = Rect().also(node::getBoundsInScreen)
         if (bounds != stored.bounds || node.viewIdResourceName != stored.viewId || node.className?.toString() != stored.className
-            || node.uniqueId != stored.uniqueId || label(node) != stored.text || !node.isVisibleToUser || !node.isEnabled)
+            || uniqueId(node) != stored.uniqueId || label(node) != stored.text || !node.isVisibleToUser || !node.isEnabled)
             throw Refusal("stale_observation", "The element changed. Observe the screen again")
         return node
     }
@@ -288,7 +306,7 @@ internal class ScreenInput(private val service: AccessibilityService, private va
                 if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, params))
                     throw Refusal("invalid_action", "This editor did not accept text replacement")
             }
-            "key" -> key(action.getString("key"), consume)
+            "key" -> key(root, action.getString("key"), consume)
             else -> throw Refusal("unsupported_action", "This action is unavailable on Android")
         }
 
@@ -347,8 +365,9 @@ internal class ScreenInput(private val service: AccessibilityService, private va
         }
     }
 
-    private fun key(key: String, consume: () -> Unit) {
-        val global = when (key.lowercase()) {
+    private fun key(root: AccessibilityNodeInfo, key: String, consume: () -> Unit) {
+        val name = key.lowercase()
+        val global = when (name) {
             "back" -> AccessibilityService.GLOBAL_ACTION_BACK
             "home" -> AccessibilityService.GLOBAL_ACTION_HOME
             else -> null
@@ -358,7 +377,19 @@ internal class ScreenInput(private val service: AccessibilityService, private va
             if (!service.performGlobalAction(global)) throw Refusal("invalid_action", "Android declined the system key")
             return
         }
-        val action = when (key.lowercase()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            if (name == "search" || name == "done")
+                throw Refusal("unsupported_action", "Explicit Search and Done keys require Android 13 or newer")
+            if (name != "enter" && name != "return")
+                throw Refusal("unsupported_action", "This key is unavailable on Android")
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            val action = imeEnter(focused)
+                ?: throw Refusal("input_unavailable", "The focused editor does not expose its enter action")
+            consume()
+            if (!focused.performAction(action)) throw Refusal("invalid_action", "Android declined the editor action")
+            return
+        }
+        val action = when (name) {
             "search" -> EditorInfo.IME_ACTION_SEARCH
             "done" -> EditorInfo.IME_ACTION_DONE
             "enter", "return" -> EditorInfo.IME_ACTION_NONE

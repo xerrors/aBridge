@@ -12,7 +12,7 @@ android {
     compileSdk 36
     defaultConfig {
         applicationId 'dev.abridge.android'
-        minSdk 33
+        minSdk 30
         targetSdk 36
         versionCode versionParts[0] * 1000000 + versionParts[1] * 1000 + versionParts[2]
         versionName upstreamVersion
@@ -21,16 +21,29 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    buildFeatures {
+        buildConfig true
+    }
     sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/contract').get().asFile)
+    sourceSets.main.assets.srcDir('ui/dist')
 }
 
 def syncContract = tasks.register('syncDeviceContract', Copy) {
     from contractFile
     into layout.buildDirectory.dir('generated/contract')
 }
-tasks.named('preBuild') { dependsOn syncContract }
+def buildUi = tasks.register('buildAndroidUi', Exec) {
+    inputs.files(fileTree('ui') {
+        include 'src/**', 'public/**', 'index.html', 'package*.json', 'vite.config.ts', 'tsconfig.json'
+    })
+    outputs.dir('ui/dist')
+    commandLine 'npm', '--prefix', 'ui', 'run', 'build'
+}
+tasks.named('preBuild') { dependsOn syncContract, buildUi }
 
 dependencies {
+    implementation 'androidx.activity:activity:1.12.4'
+    implementation 'androidx.webkit:webkit:1.14.0'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
 }
