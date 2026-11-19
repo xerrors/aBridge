@@ -1,8 +1,10 @@
 package dev.abridge.android
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -66,6 +68,9 @@ class DeviceService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            serviceInfo = serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR }
+        }
         active = true
         prefs.registerOnSharedPreferenceChangeListener(listener)
         prefs.edit().remove("connection").apply()
