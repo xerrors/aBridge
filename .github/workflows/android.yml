@@ -1,0 +1,40 @@
+name: Android App
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: APK build and lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287 # v5.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
+      - run: npm run build
+      - run: apps/android/gradlew -p apps/android --no-daemon assembleDebug assembleRelease lintDebug
+      - name: Upload installable Debug APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: abridge-android-debug
+          path: apps/android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

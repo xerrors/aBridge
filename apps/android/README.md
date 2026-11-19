@@ -10,6 +10,8 @@ apps/android/gradlew -p apps/android assembleDebug
 
 The Android build requires JDK 17 and Android SDK Platform 36. Gradle consumes the device contract generated from the shared protocol and bundles the Tamagui UI in the APK. The app requires Android System WebView with WebMessageListener support and has been tested on Android 11 with WebView 87. The debug APK is under `apps/android/build/outputs/apk/debug/`.
 
+The [Android App workflow](../../.github/workflows/android.yml) builds Debug and Release APKs and runs Android Lint on pull requests and pushes to `main`. Download the installable Debug APK from the run's **abridge-android-debug** artifact.
+
 Open the app, enter the HTTPS server address and Device Key, and enable the aBridge accessibility service in Android Settings. Configure the capabilities in **能力设置** and use **设备详情** to choose a working directory for file access. Select **允许 Agent 操作** to accept authorized requests or **暂停 Agent 操作** to close access. The device can stay connected in either mode, and local access changes take effect before the Server receives the update. Debug builds also permit HTTP at the emulator host address (`10.0.2.2`) or at `127.0.0.1` for testing over `adb reverse`.
 
 | Capability | Supported requests                                                                                                                                                                                                                                                                                                                                 |
