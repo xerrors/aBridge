@@ -50,6 +50,26 @@ jobs:
       - name: Explain unsigned status
         if: runner.os == 'macOS' && vars.APPLE_SIGNING_ENABLED != 'true'
         run: echo 'macOS candidate is unsigned (ad hoc), not notarized. Developer ID configuration is pending.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-java@ad2b38190b15e4d6bdf0c97fb4fca8412226d287
+        if: runner.os == 'Linux' && vars.ANDROID_SIGNING_ENABLED == 'true'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+        if: runner.os == 'Linux' && vars.ANDROID_SIGNING_ENABLED == 'true'
+        with:
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
+      - name: Build and sign Android release
+        if: runner.os == 'Linux' && vars.ANDROID_SIGNING_ENABLED == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
+          apps/android/gradlew -p apps/android --no-daemon assembleRelease
+          bash tools/sign-android-release.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'
         with:
@@ -57,6 +77,7 @@ jobs:
           path: |
             dist/releases/*.tgz
             dist/releases/abridge-browser-*.zip
+            dist/releases/aBridge-*-android.apk
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

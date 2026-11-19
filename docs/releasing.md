@@ -73,6 +73,12 @@ npm run package:macos
 
 [Apple 官方公证说明](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) · [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
+## Android
+
+Set `ANDROID_SIGNING_ENABLED=true` and configure repository secrets `ANDROID_KEYSTORE_BASE64` (single-line Base64 of the release keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The tag workflow verifies the signed `aBridge-<version>-android.apk` and enforces a 500,000-byte size limit before including it in the GitHub Release.
+
+Use the same signing key for subsequent releases to allow in-place upgrades. Android checks package identity, signing identity, and version when the user opens the downloaded APK. The Debug APK uses a development signature and is intended for testing.
+
 ## Linux
 
 发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带各架构的 `abridge-client-<version>-<target>.tar.gz`、SHA-256 和体积报告。下载后按 [Linux 安装说明](https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md#安装与绑定) 核对校验和。
