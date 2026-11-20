@@ -4,7 +4,7 @@
 
 [快速开始](#快速开始) · [选择客户端](#选择客户端) · [评测与验证](#评测与验证) · [Yuxi 集成](#与-yuxi-一起使用) · [开发与文档](#开发与文档) · [下载](https://github.com/xerrors/aBridge/releases/latest)
 
-aBridge 由 Server 和按需安装的客户端组成。Server 提供统一的 MCP 入口和授权管理，客户端在对应设备或 Chrome Profile 上执行操作。你可以为每个 Agent 单独指定设备、能力和有效期。
+在自己的机器上运行 aBridge Server，再把要用的设备接进来。你可以为每个 Agent 单独指定设备、能力和有效期。
 
 ## 选择客户端
 
@@ -20,7 +20,7 @@ aBridge 由 Server 和按需安装的客户端组成。Server 提供统一的 MC
 
 ![Agent 通过 MCP 连接 aBridge Server，macOS、Windows、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)
 
-各客户端独立安装、授权并直接连接 Server。桌面和浏览器可以分别接入。一个 Chrome Profile 对应一个浏览器设备，扩展在该 Profile 内为任务创建独立标签页。
+Agent 通过 MCP 把请求交给 Server，Server 核对授权后再派发给客户端。桌面客户端和 Chrome 扩展可以各自接入。每个 Chrome Profile 都可以注册为一个浏览器设备，并为任务打开独立标签页。
 
 ## 快速开始
 
@@ -118,16 +118,14 @@ codex
 
 ## 与 Yuxi 一起使用
 
-aBridge 可以与 [Yuxi](https://github.com/xerrors/Yuxi) 一起部署，复用 Yuxi 的账户体系；通过 Yuxi 的对外入口及容器内部网络集成，无需为 aBridge 单独开放公网端口。设备仍连接到部署中为 aBridge 配置的可达地址。
-
-两种接入路径的区别：
+aBridge 可以和 Yuxi 一起部署，使用 Yuxi 的账户和对外入口。服务之间通过容器网络通信，设备仍使用部署时为 aBridge 配置的地址。[Yuxi](https://github.com/xerrors/Yuxi)
 
 | 路径          | 账户登录           | MCP 调用认证                               |
 | ------------- | ------------------ | ------------------------------------------ |
 | **独立使用**  | 管理员创建本地账户 | 管理台生成的 Agent Key                     |
 | **Yuxi 集成** | OIDC 单点登录      | 显式启用平台委托后，由平台签发短期委托令牌 |
 
-OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接作为 MCP 访问令牌。平台连接仍受用户设备授权、本机开关与系统权限限制。部署参数、回调地址及容器内认证请求配置见 [OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)。
+OIDC 用于登录管理台。通过 Yuxi 调用 MCP 时，还需要启用委托并由 Yuxi 签发短期令牌。平台连接可以使用哪些设备和能力，仍由用户授权、本机开关和系统权限决定。[OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)
 
 ## 评测与验证
 
@@ -150,9 +148,9 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 
 <!-- benchmark:miniwob:start -->
 
-真实 **gpt-6.1-sol（medium）Agent** 通过 aBridge 完成公开 MiniWoB++ 任务：**12/12（100.0%）**。任务、种子和预算在跑分前冻结，无重试，全部结果保留。
+使用 **gpt-6.1-sol（medium）** 运行 MiniWoB++ 适配任务，共完成 **12/12（100.0%）**。任务、种子和预算在运行前确定，每例运行一次。
 
-同模型目录与评测器的基线 **5/12** → 修复后 **12/12**；模型、任务 prompt、seed 0/1 和预算不变。基线已包含真实浏览器启动修复；两侧均固定同一份现有模型元数据，避免目录刷新超时。另用额外 seed=2 验证：**6/6**，单独统计。标准审核剔除 **0** 例。
+主对照使用种子 0 和 1，基线完成 **5/12**，修复后完成 **12/12**。基线已包含浏览器启动修复。两侧使用相同的模型目录、评测器、任务提示和预算。额外种子 2 单独运行，完成 **6/6**。审核排除 **0** 例。
 
 ![浏览器工具优化前后对照](docs/benchmarks/miniwob-v2-comparison.svg)
 
@@ -165,17 +163,17 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 | `click-menu-2`           | 2/2    | 2/2    | 60.1            | 8            | 321924 / 812           | 2/2      |
 | `multi-layouts`          | 1/2    | 2/2    | 66.0            | 10           | 361814 / 820           | 2/2      |
 
-每例限 180 秒 / 40 次工具调用，并发 2；仅开放观察、读取、操作、等待，支持 DOM 与截图，不开放 JS 执行、源码直接读取或判分接口。P50 包含 CLI 启动和模型调用，已启动的失败也计时。表中 token 为已知样本合计（输入含缓存），超时未返回用量视为未知，不能按 0 计费；CLI 不提供实际美元账单。
+每例限 180 秒和 40 次工具调用，并发 2。Agent 可以通过 DOM 和截图观察页面，也可以读取、操作和等待。P50 从 CLI 启动开始计时，包含模型调用及已启动的失败任务。表中的 token 是已报告样本的合计，输入包含缓存。缺少用量的样本记为未知。
 
-失败分类：无。用量覆盖 12/12；会话清理 12/12。
+失败分类：无。用量覆盖 12/12，会话清理 12/12。
 
-模型元数据通过CLI本地目录参数固定，未改全局配置、模型或任务prompt；这不消除网络和模型响应波动。失败全部保留，不能仅凭小样本宣称稳定速度或成本优势。
+两侧都通过 CLI 参数加载同一份从缓存逐字复制的模型目录，以避开目录刷新超时。实际耗时仍会随模型服务和网络变化。
 
-模型目录 SHA-256：578e4bab76fbd3999747b7d3c8c34b83a4cdbef4a3bd033f21f0399e094f1c3d；逐字复制实际缓存的元数据，不修改模型指令或能力。
+模型目录的 SHA-256 为 `578e4bab76fbd3999747b7d3c8c34b83a4cdbef4a3bd033f21f0399e094f1c3d`。
 
-测量快照：v0.4.16 / c02c42b。环境：Apple M4 / darwin arm64 / Chrome/153.0.8010.12 / Node v22.23.5 / codex-cli 0.166.0；记录时间 2026-11-18T02:07:05.629Z。
+测量版本为 v0.4.16（c02c42b）。环境为 Apple M4 / darwin arm64 / Chrome/153.0.8010.12 / Node v22.23.5 / codex-cli 0.166.0，记录于 2026-11-18T02:07:05.629Z。
 
-这是 **6 类任务、每类 2 个种子的小样本适配子集**，原始任务限时统一延长至 180 秒，不是官方榜单成绩；单次前后对照仍有模型随机性，也不能单独证明 aBridge 优于其他工具或覆盖 macOS App。固定策略的 30/30 仅作为执行链冒烟历史数据，与 Agent 分数分开。[方法与限制](docs/benchmarks/miniwob.md) · [工具修复报告](docs/benchmarks/browser-reliability-v2.md) · [全量报告](docs/benchmarks/cases-all.md) · [标准审核报告](docs/benchmarks/cases-conforming.md) · [逐次实测数据](docs/benchmarks/miniwob-v2-results.json)。
+结果对应 Chrome 扩展上的 6 类适配任务，每类 2 个种子，采用这里列出的时间预算。早期固定策略的 30/30 见执行链冒烟记录。[评测方法](docs/benchmarks/miniwob.md) · [工具修复报告](docs/benchmarks/browser-reliability-v2.md) · [全量报告](docs/benchmarks/cases-all.md) · [标准审核报告](docs/benchmarks/cases-conforming.md) · [逐次实测数据](docs/benchmarks/miniwob-v2-results.json)
 
 ```sh
 npm run benchmark:miniwob
@@ -191,10 +189,10 @@ npm run benchmark:miniwob
 
 ## 授权与安全边界
 
-- **设备与能力显式授权**：每个 Agent 连接可选择设备、能力和有效期；设备本机可以暂停或关闭能力，自动重连不会解除这些限制。
-- **凭据各司其职**：Admin Token 用于实例管理，Device Key 用于设备连接，Agent Key 用于 MCP 调用，三者不能互换。
-- **沿用用户的执行环境**：浏览器脚本具有当前站点登录用户的页面权限；Shell 与文件工具在已授权设备上执行。请按任务分配所需能力。
-- **未知操作不盲目重放**：断连或超时可能发生在副作用之后；应查询原操作状态、重新观察，再决定下一步。撤销权限不能回滚已执行的操作。
+- 在管理台为每个 Agent 选择设备、能力和有效期。设备本机可以随时暂停访问或关闭能力，这些设置会在重连后继续生效。
+- 用 Admin Token 管理实例，用 Device Key 连接设备，用 Agent Key 调用 MCP。
+- 浏览器任务沿用该 Profile 的网站登录状态，页面脚本拥有当前用户的页面权限。Shell 和文件工具使用客户端所在账户的系统权限。
+- 操作途中断连或超时时，先查询原操作状态，再检查页面或文件是否已经改变。撤销权限会阻止后续操作，已发生的修改需要另行处理。
 
 ## 开发与文档
 

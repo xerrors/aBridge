@@ -1,6 +1,6 @@
 # aBridge Linux CLI
 
-原生 Rust 客户端，提供 `shell` 和 `files`，直接连接 aBridge Server。运行时不需要 Node、npm、浏览器或图形环境。Shell 和文件访问使用运行客户端的普通用户权限；它们不是隔离沙箱。不提供 `screen`、`input` 或 `browser`。
+用 Linux CLI 将开发机或服务器接入 aBridge，供 Agent 执行 Shell 和文件任务。客户端可以在无图形环境的机器上运行。Shell 和文件操作使用启动客户端的账户权限。
 
 ## 安装与绑定
 
@@ -40,7 +40,7 @@ systemctl --user restart abridge-client.service
 
 暂停和能力开关持久化；自动重连或服务重启不会恢复被暂停的访问。`stop` 停止当前操作，`systemctl --user stop abridge-client.service` 停止后台客户端。断线后建立新会话，结果未知的操作不会自动重放。
 
-服务执行环境不等同于交互式登录 Shell，不自动加载 `.bashrc`、`.zshrc` 或激活虚拟环境。命令应明确工作目录，工具可使用绝对路径或显式传入 `env.PATH`。
+后台服务从 systemd 继承环境。需要特定工作目录、可执行文件或虚拟环境时，请用绝对路径，或在请求中显式设置 `cwd` 和 `env.PATH`。
 
 默认状态目录是 `$XDG_DATA_HOME/abridge/linux-client` 或 `~/.local/share/abridge/linux-client`，绑定文件权限为 `0600`、目录为 `0700`。`--state-dir /absolute/path` 可用于独立实例的配置与前台运行。实际路径加上 `/control.sock` 须符合本机 Unix socket 路径长度限制，绑定时会校验。用户级服务固定为一个 `abridge-client.service`，再次安装时使用指定状态目录。卸载服务：
 
@@ -48,7 +48,7 @@ systemctl --user restart abridge-client.service
 ~/.local/lib/abridge-client/abridge-client service uninstall
 ```
 
-卸载不删除绑定与操作去重记录。更新前停止当前任务，用新版二进制执行 `service install`，继续使用相同状态目录。Linux 第一版通过手动安装更新，不在后台下载或替换自身。
+卸载服务会保留绑定和操作去重记录。手动更新时先停止当前任务，再用新版二进制执行 `service install`，沿用原状态目录。
 
 ## 从源码构建
 
