@@ -6,6 +6,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { WebSocket } from "ws";
 import { createServer } from "../src/server.js";
 import { Identity, validateIdentityConfig } from "../src/identity.js";
 
@@ -16,6 +18,7 @@ async function fixture(
     foreignToken?: boolean;
     redirectToken?: boolean;
     delegationEnabled?: boolean;
+    managedBrowserEnabled?: boolean;
     allowInsecureHttp?: boolean;
     publicOrigin?: string;
     httpIssuer?: boolean;
@@ -103,6 +106,7 @@ async function fixture(
     clientName: "Yuxi",
     clientSecret: "fixture-secret",
     delegationEnabled: options.delegationEnabled ?? true,
+    managedBrowserEnabled: options.managedBrowserEnabled,
     allowInsecureHttp: options.allowInsecureHttp,
     ...(options.backchannel ? { backchannelOrigin } : {}),
   };
@@ -214,6 +218,203 @@ test("OIDC login isolates stable identities, persists mapping and defaults platf
       payload: {},
     });
     assert.equal(rotate.statusCode, 409);
+  } finally {
+    await f.close();
+  }
+});
+
+test("managed browser registration, one-time redemption and MCP use share a scoped, revocable binding", async () => {
+  const f = await fixture({ managedBrowserEnabled: true });
+  let socket: WebSocket | undefined;
+  const subject = "shadow-app-user";
+  const root = "/api/managed-browsers/";
+  const origin = "http://127.0.0.1:43219";
+  const iat = Math.floor(Date.now() / 1000) - 1;
+  function grant(path: string, action: string, generation = 1, user = subject) {
+    return f.token(user, {
+      aud: origin + path,
+      purpose: "abridge-managed-browser-" + action,
+      sandbox_id: "workspace",
+      generation,
+      iat,
+      exp: iat + 60,
+    });
+  }
+  const provision = async (generation = 1) =>
+    f.server.app.inject({
+      method: "POST",
+      url: root + "provision",
+      headers: { authorization: "Bearer " + (await grant(root + "provision", "provision", generation)) },
+    });
+  const redeem = (deviceId: string, token: string) =>
+    f.server.app.inject({
+      method: "POST",
+      url: root + "redeem",
+      payload: { device_id: deviceId, bootstrap_token: token },
+    });
+  try {
+    const wrong = await f.server.app.inject({
+      method: "POST",
+      url: root + "provision",
+      headers: { authorization: "Bearer " + (await grant("/mcp", "delegation")) },
+    });
+    assert.equal(wrong.statusCode, 401);
+    assert.equal(f.server.store.users().length, 0);
+
+    const first = await provision();
+    assert.equal(first.statusCode, 200, first.body);
+    const registration = first.json<{ device_id: string; status: string; bootstrap_token: string }>();
+    assert.equal(registration.status, "offline");
+    assert.deepEqual((await provision()).json(), registration);
+    const { device_id: deviceId, bootstrap_token: bootstrap } = registration;
+    const issued = await redeem(deviceId, bootstrap);
+    assert.equal(issued.statusCode, 200, issued.body);
+    assert.equal((await redeem(deviceId, bootstrap)).statusCode, 400);
+    assert.equal(f.calls().tokenCalls, 0, "registration requires no browser login");
+
+    const key = issued.json<{ key: string }>().key;
+    const delegation = await grant("/mcp", "delegation");
+    const connection = await f.identity.authenticate(delegation);
+    assert.ok(connection);
+    assert.equal(await f.identity.authenticate(await f.token(subject)), undefined);
+    assert.equal(
+      await f.identity.authenticate(await grant("/mcp", "delegation", 1, "other-app-user")),
+      undefined,
+    );
+    f.server.store.createDevice(connection.owner_id, "Other browser", ["browser"], "browser");
+    assert.throws(() =>
+      f.server.store.updateAgentConnection(
+        connection.id,
+        connection.name,
+        { mode: "all", capabilities: ["browser"], overrides: [] },
+        null,
+      ),
+    );
+
+    socket = new WebSocket(f.serverUrl.replace("http:", "ws:") + "/ws/browser", {
+      origin: "chrome-extension://" + "a".repeat(32),
+    });
+    await once(socket, "open");
+    const welcome = once(socket, "message");
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        protocol: "abridge/1",
+        platform: "Browser extension",
+        version: "0.4.23",
+        paused: false,
+        instance_id: "managed-test",
+        device_key: key,
+        capabilities: { browser: true },
+      }),
+    );
+    const [frame] = await welcome;
+    assert.equal(JSON.parse(frame.toString()).type, "welcome");
+    assert.deepEqual((await provision()).json(), {
+      device_id: deviceId,
+      status: "online",
+      browser_origin: origin,
+    });
+
+    const list = await f.server.app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { authorization: "Bearer " + delegation, accept: "application/json, text/event-stream" },
+      payload: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "devices_list", arguments: {} },
+      },
+    });
+    assert.equal(list.statusCode, 200, list.body);
+    const devices = JSON.parse(list.json().result.content[0].text).devices as { id: string }[];
+    assert.deepEqual(
+      devices.map((device) => device.id),
+      [deviceId],
+    );
+    const session = f.server.control.openSession(connection, deviceId, ["browser"]);
+    const invalidate = f.server.control.invalidateDevice.bind(f.server.control);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const hold = mock.method(f.server.control, "invalidateDevice", async (id: string) => {
+      entered.resolve();
+      await resume.promise;
+      await invalidate(id);
+    });
+    const replacing = provision(2);
+    await entered.promise;
+    try {
+      const overlapping = await provision(2);
+      assert.equal(overlapping.statusCode, 200, overlapping.body);
+      assert.equal(overlapping.json().status, "offline");
+      assert.ok(overlapping.json().bootstrap_token);
+    } finally {
+      resume.resolve();
+      hold.mock.restore();
+    }
+    const reconnect = await replacing;
+    assert.equal(reconnect.statusCode, 200, reconnect.body);
+    assert.equal(reconnect.json().device_id, deviceId);
+    assert.equal(f.server.store.authenticateDevice(key), undefined);
+    assert.notEqual(f.server.store.session(session.id)?.status, "active");
+    assert.equal(await f.identity.authenticate(delegation), undefined);
+    assert.equal((await provision()).statusCode, 409);
+    const stop = await f.server.app.inject({
+      method: "POST",
+      url: root + "stop",
+      headers: { authorization: "Bearer " + (await grant(root + "stop", "stop", 2)) },
+    });
+    assert.equal(stop.statusCode, 200, stop.body);
+    assert.equal(await f.identity.authenticate(await grant("/mcp", "delegation", 2)), undefined);
+    assert.equal((await redeem(deviceId, reconnect.json().bootstrap_token)).statusCode, 400);
+    f.server.store.revokeDevice(deviceId);
+    assert.equal((await provision(3)).statusCode, 403);
+  } finally {
+    socket?.terminate();
+    await f.close();
+  }
+});
+
+test("managed registration is disabled unless the issuer is explicitly trusted for it", async () => {
+  const f = await fixture();
+  try {
+    const response = await f.server.app.inject({ method: "POST", url: "/api/managed-browsers/provision" });
+    assert.equal(response.statusCode, 404);
+  } finally {
+    await f.close();
+  }
+});
+
+test("first-time human managed registration links the normal platform delegation to only that browser", async () => {
+  const f = await fixture({ managedBrowserEnabled: true });
+  try {
+    const path = "/api/managed-browsers/provision";
+    const registration = await f.server.app.inject({
+      method: "POST",
+      url: path,
+      headers: {
+        authorization:
+          "Bearer " +
+          (await f.token("managed-human", {
+            aud: "http://127.0.0.1:43219" + path,
+            purpose: "abridge-managed-browser-provision",
+            sandbox_id: "workspace",
+            generation: 1,
+            user_kind: "human",
+          })),
+      },
+    });
+    assert.equal(registration.statusCode, 200, registration.body);
+    const standard = await f.identity.authenticate(await f.token("managed-human"));
+    assert.ok(standard);
+    f.server.store.createDevice(standard.owner_id, "Other device", ["files"]);
+    assert.deepEqual(
+      f.server.control.devices(standard).map((device) => device.id),
+      [registration.json().device_id],
+    );
+    f.server.store.revokeAgentConnection(standard.id);
+    assert.equal(await f.identity.authenticate(await f.token("managed-human")), undefined);
   } finally {
     await f.close();
   }

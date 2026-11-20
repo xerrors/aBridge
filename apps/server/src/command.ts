@@ -69,6 +69,11 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
     !["true", "false"].includes(process.env.ABRIDGE_ALLOW_INSECURE_HTTP)
   )
     throw new Error("ABRIDGE_ALLOW_INSECURE_HTTP must be true or false");
+  if (
+    process.env.ABRIDGE_MANAGED_BROWSER_ENABLED &&
+    !["true", "false"].includes(process.env.ABRIDGE_MANAGED_BROWSER_ENABLED)
+  )
+    throw new Error("ABRIDGE_MANAGED_BROWSER_ENABLED must be true or false");
   const server = await createServer({
     dbPath,
     identity: {
@@ -79,6 +84,7 @@ export async function serverMain(args = process.argv.slice(2)): Promise<void> {
       clientName: process.env.ABRIDGE_OIDC_CLIENT_NAME,
       clientSecret: process.env.ABRIDGE_OIDC_CLIENT_SECRET,
       delegationEnabled: process.env.ABRIDGE_DELEGATION_ENABLED === "true",
+      managedBrowserEnabled: process.env.ABRIDGE_MANAGED_BROWSER_ENABLED === "true",
     },
     adminToken: process.env.ABRIDGE_ADMIN_TOKEN,
     resetAdminToken: values["reset-admin-token"],

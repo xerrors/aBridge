@@ -20,6 +20,7 @@ import {
   deviceAuthorizationDecisionSchema,
   deviceAuthorizationTokenRequestSchema,
   deviceAuthorizationCancelSchema,
+  managedBrowserRedeemSchema,
   adminCreateUserSchema,
   type AdminOverview,
 } from "@abridge/protocol";
@@ -497,6 +498,50 @@ export async function createServer(config: ServerConfig) {
       request.headers.origin,
     );
   });
+  app.post("/api/managed-browsers/provision", async (request, reply) => {
+    const grant = await identity.authenticateManagedBrowser(bearer(request), "provision");
+    const { device, replaced } = store.provisionManagedBrowser(grant);
+    if (replaced) await control.invalidateDevice(device.id);
+    if (!store.managedBrowserConnection(grant))
+      throw new BridgeError("stale_sandbox", "The sandbox binding changed", 409);
+    const view = control.deviceView(device);
+    if (view.status === "online" && !view.available.browser)
+      throw new BridgeError("device_paused", "The managed browser is online but unavailable", 409);
+    const online = view.status === "online";
+    reply.header("Cache-Control", "no-store");
+    return {
+      device_id: device.id,
+      status: online ? "online" : "offline",
+      browser_origin: publicOrigin!.origin,
+      ...(online ? {} : { bootstrap_token: store.issueManagedBrowserBootstrap(grant) }),
+    };
+  });
+  app.post("/api/managed-browsers/redeem", async (request, reply) => {
+    if (!identity.managedBrowserEnabled)
+      throw new BridgeError("managed_browser_disabled", "Managed browsers are not enabled", 404);
+    rateLimit(request, "managed-browser-redeem", 120);
+    const body = managedBrowserRedeemSchema.parse(request.body);
+    const existing = store.device(body.device_id);
+    if (existing && control.deviceView(existing).status === "online")
+      throw new BridgeError("invalid_grant", "Browser bootstrap credential is invalid or expired", 400);
+    const { device, key } = store.redeemManagedBrowser(body.device_id, body.bootstrap_token);
+    await control.invalidateDevice(device.id);
+    reply.header("Cache-Control", "no-store");
+    return {
+      device_id: device.id,
+      key,
+      kind: device.kind,
+      name: device.name,
+      capabilities: device.capabilities,
+    };
+  });
+  app.post("/api/managed-browsers/stop", async (request) => {
+    const grant = await identity.authenticateManagedBrowser(bearer(request), "stop");
+    const connection = store.stopManagedBrowser(grant);
+    if (connection) await control.stopAgentConnection(connection.id, "Managed browser access stopped");
+    return { ok: true };
+  });
+
   app.all("/mcp", async (request, reply) => {
     const token = bearer(request);
     const agentConnection = store.authenticateAgent(token) ?? (await identity.authenticate(token));

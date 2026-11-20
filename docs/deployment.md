@@ -215,6 +215,14 @@ ABRIDGE_ALLOW_INSECURE_HTTP=true
 
 数据库开发 schema 为 6，设备表保存最近上报的 `platform`、`version` 和可空的 `details`，操作表以内部 `key_hash` 唯一映射完整作用域去重键到短执行 ID。历史开发数据库不能直接打开；请备份并在隔离副本中明确转换或重新初始化，禁止用现有服务的数据目录试运行。更换 issuer 或 sub 会建立新身份，必须事先安排设备归属恢复，不能靠显示名自动合并。
 
+### 可选 Yuxi 托管沙盒浏览器
+
+部署方可在已配好 Yuxi OIDC 和平台委托的 aBridge Server 设置 `ABRIDGE_MANAGED_BROWSER_ENABLED=true`。Yuxi 后端使用受信任提供方签发的短期注册凭据，为当前用户及其沙盒创建独立浏览器设备和作用于该设备的连接。注册不需要管理台会话。影子用户能否接入由 Yuxi 超级管理员在 Yuxi 中控制。
+
+Yuxi 后端访问配置的 aBridge 服务地址。Cube 内的 Chromium 必须能访问 `ABRIDGE_PUBLIC_ORIGIN`，且中间代理必须转发浏览器 WebSocket。Cube 默认禁止访问私网地址，部署时应使用沙盒可达的 HTTPS 来源并在目标沙盒中验证 HTTPS 与 WSS。需要使用现有公网 HTTP 部署时，Yuxi 与 aBridge 均须显式启用 `ABRIDGE_ALLOW_INSECURE_HTTP=true`。托管镜像需要预装浏览器扩展，并只授予部署中指定的 aBridge 主机权限。
+
+托管注册返回一次性启动凭据，由沙盒启动器向同一 aBridge 来源换取 Device Key 并交给扩展。注册请求的重试复用同一设备，暂停恢复沿用已绑定的 Profile。新的沙盒代次使旧设备凭据和会话失效。用户撤销设备或其托管连接后，自动注册不恢复旧授权。原有桌面和浏览器设备继续使用各自的连接策略。
+
 ### 应用内更新
 
 在 macOS 菜单选择“检查更新…”，或在设置的“软件更新”中检查。发现正式新版后，依次点击“下载更新”和“安装并重启”。下载期间可以继续使用；安装会结束当前执行，保留设备绑定、能力开关、暂停状态和数据目录。应用必须位于可写的本机目录；从磁盘镜像或 App Translocation 启动时先移入 Applications。
