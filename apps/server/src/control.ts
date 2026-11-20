@@ -144,7 +144,10 @@ export class ControlService {
     const connection = this.deviceConnections.get(device.id),
       now = this.mono();
     const current = agentConnection ? this.currentAgentConnection(agentConnection) : undefined;
-    const online = !!connection && now - connection.heartbeatAt <= 30;
+    const online =
+      !!connection &&
+      connection.credentialVersion === device.credential_version &&
+      now - connection.heartbeatAt <= 30;
     const capabilities = current
       ? deviceAccess(current, device).capabilities
       : device.capabilities.filter((cap) => deviceCapabilities(device.kind).includes(cap)).sort();

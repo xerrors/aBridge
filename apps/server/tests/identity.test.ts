@@ -334,7 +334,26 @@ test("managed browser registration, one-time redemption and MCP use share a scop
       [deviceId],
     );
     const session = f.server.control.openSession(connection, deviceId, ["browser"]);
-    const reconnect = await provision(2);
+    const invalidate = f.server.control.invalidateDevice.bind(f.server.control);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const hold = mock.method(f.server.control, "invalidateDevice", async (id: string) => {
+      entered.resolve();
+      await resume.promise;
+      await invalidate(id);
+    });
+    const replacing = provision(2);
+    await entered.promise;
+    try {
+      const overlapping = await provision(2);
+      assert.equal(overlapping.statusCode, 200, overlapping.body);
+      assert.equal(overlapping.json().status, "offline");
+      assert.ok(overlapping.json().bootstrap_token);
+    } finally {
+      resume.resolve();
+      hold.mock.restore();
+    }
+    const reconnect = await replacing;
     assert.equal(reconnect.statusCode, 200, reconnect.body);
     assert.equal(reconnect.json().device_id, deviceId);
     assert.equal(f.server.store.authenticateDevice(key), undefined);
