@@ -137,7 +137,7 @@ dist/desktop/aBridge.app/Contents/MacOS/abridge-desktop diagnose
 
 ## Windows PC 客户端
 
-Windows 10/11 x64 预览版提供截图、前台键鼠、Shell 和 UTF-8 文件读写。通过 GitHub Actions 获取未签名便携 ZIP，或在 Windows 上从源码构建。完整解压后启动 `aBridge.exe`，填写客户端能访问的 Server 地址并完成浏览器授权。[下载、安装与绑定](windows-client.md)
+Windows 10/11 x64 预览版提供截图、前台键鼠、Shell 和 UTF-8 文件读写。下载未签名便携 ZIP，完整解压后启动 `aBridge.exe`，填写客户端能访问的 Server 地址并完成浏览器授权。[下载、安装与绑定](windows-client.md)
 
 桌面操作需要已解锁的交互式桌面。客户端通过「本机能力」控制开放的能力，通过设置窗或托盘暂停、停止任务和退出。更新前退出旧客户端，解压新包并沿用原状态目录，默认位于 `%LOCALAPPDATA%\aBridge`。[更新、退出和卸载](windows-client.md#更新、退出和卸载)
 
@@ -183,7 +183,7 @@ npm run build
 
 ## 发布与便携 App
 
-tag 驱动的正式分发和 Windows 预览版的 CI 打包流程见[发布说明](releasing.md)。`npm run package:macos` 生成无需 Node 的便携原生 App ZIP；未配置 Developer ID 时文件名标注 unsigned。
+各客户端的 tag 分发流程见[发布说明](releasing.md)。`npm run package:macos` 生成无需 Node 的便携原生 App ZIP；未配置 Developer ID 时文件名标注 unsigned。
 
 ## 可选 OIDC 登录与平台 MCP 委托
 
@@ -265,7 +265,7 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 
 ## 两种设备绑定方式
 
-macOS、Windows 和浏览器扩展支持浏览器授权和 Device Token。浏览器授权通过登录与确认自动领取设备凭证。Windows 预览版可直接从客户端启动浏览器授权，也可填写已有的电脑设备 Device Token。其他客户端手动绑定时，在管理台「添加设备」选择对应平台，在「绑定设备」中生成仅显示一次的设备凭证。macOS 和扩展将凭证填在 Device Token 栏，点击「验证并连接」；Linux CLI 在 `setup` 提示时粘贴 Device Token；Android 在 App 中填写 Device Key 和 Server 地址后绑定。已有设备可在详情设置中重新生成凭证，旧凭证和当前设备连接会立即失效。
+macOS、Windows 和浏览器扩展支持浏览器授权和 Device Token。浏览器授权通过登录与确认自动领取设备凭证。手动绑定时，在管理台「添加设备」选择对应平台，在「绑定设备」中生成仅显示一次的设备凭证。macOS 和扩展将凭证填在 Device Token 栏，点击「验证并连接」。Windows 在「使用 Device Token」中填写凭证，点击「连接并授权」。Linux CLI 在 `setup` 提示时粘贴 Device Token。Android 在 App 中填写 Device Key 和 Server 地址后绑定。已有设备可在详情设置中重新生成凭证，旧凭证和当前设备连接会立即失效。
 
 设备凭证只用于设备绑定。macOS、Windows、浏览器扩展和 Linux CLI 先调用 `GET /api/device` 验证设备凭证及类型，再提交本地绑定。无效、撤销或类型不匹配的凭证不替换旧绑定。凭证通过私有输入管道或扩展消息传递，不放入命令行、URL 或日志，绑定后保存在原设备凭据存储中，暂停状态保留。
 

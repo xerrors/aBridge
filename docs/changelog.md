@@ -2,9 +2,11 @@
 
 此文件记录产品行为变更；部署日志、私人任务结果与模型验收流水不作为版本记录。
 
-## 未发布
+## 0.5.0 — 待发布
 
-- 新增 Windows 10/11 x64 原生客户端预览，支持截图、前台键鼠、Shell 和 UTF-8 文件读写。可通过浏览器授权或已有电脑设备的 Device Token 接入现有 Server。[下载与安装](windows-client.md)
+- 新增 Windows 10/11 x64 原生客户端预览，支持截图、前台键鼠、Shell 和 UTF-8 文件读写。GitHub Release 随附未签名便携 ZIP 和 SHA-256 校验文件。[下载与安装](windows-client.md)
+- 管理台「添加设备」支持接入 Windows 客户端，可用浏览器授权或生成 Device Token。已使用预览包的用户可先从托盘退出旧客户端，再解压新包并沿用原状态目录。[更新、退出和卸载](windows-client.md#更新、退出和卸载)
+- Linux amd64 和 arm64 下载包共用一份 `SHA256SUMS`。Server 数据库仍使用 schema 6，从 0.4.23 升级可复用现有数据目录或 Docker 卷。
 
 ## 0.4.23 — 正式发布（2026-11-19）
 

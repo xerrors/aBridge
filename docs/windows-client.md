@@ -4,20 +4,20 @@ Windows 客户端预览版提供截图、前台键鼠输入、Shell 和 UTF-8 �
 
 ## 下载与安装
 
-预览版以**未签名便携 ZIP** 分发，解压后即可运行，无需管理员权限、Node.js 或 .NET。GitHub Actions 的下载需要登录 GitHub，产物保留 30 天。也可以在 Windows 上[从源码构建](#源码构建)。
+预览版以**未签名便携 ZIP** 分发，解压后即可运行，无需管理员权限、Node.js 或 .NET。从发布页面的 **Assets** 下载 `aBridge-<版本>-windows-x64-unsigned.zip` 和同名 `.sha256` 文件。[GitHub Releases](https://github.com/xerrors/aBridge/releases/latest)
 
-1. 打开主分支的 CI 运行列表，选择 **Windows client** 检查成功且有 **windows-client-unsigned** 产物的运行。[GitHub Actions](https://github.com/xerrors/aBridge/actions/workflows/ci.yml?query=branch%3Amain)
-2. 下载并解开产物的外层 ZIP，得到 `aBridge-<版本>-windows-x64-unsigned.zip` 和同名 `.sha256` 文件。
-3. 在 PowerShell 中运行 `Get-FileHash .\aBridge-<版本>-windows-x64-unsigned.zip -Algorithm SHA256`（将文件名换成实际下载的名称），与 `.sha256` 中的哈希值核对。
-4. 将客户端 ZIP **完整解压**到自己的固定目录，例如 `%LOCALAPPDATA%\Programs\aBridge-preview-<提交号>`，然后打开解压后 `aBridge` 文件夹中的 **aBridge.exe**。未签名包可能受 Windows 或组织策略限制。
+1. 在 PowerShell 中运行 `Get-FileHash .\aBridge-<版本>-windows-x64-unsigned.zip -Algorithm SHA256`（将文件名换成实际下载的名称），与 `.sha256` 中的哈希值核对。
+2. 将客户端 ZIP **完整解压**到自己的固定目录，例如 `%LOCALAPPDATA%\Programs\aBridge-preview-<版本>`，然后打开解压后 `aBridge` 文件夹中的 **aBridge.exe**。未签名包可能受 Windows 或组织策略限制。
+
+如果 Release 尚无所需版本，可以登录 GitHub，选择 **Windows client** 检查成功的 CI 运行。下载 **windows-client-unsigned** 产物并解开外层 ZIP，即可取得客户端 ZIP 和校验文件。CI 产物保留 30 天。也可以在 Windows 上[从源码构建](#源码构建)。[GitHub Actions](https://github.com/xerrors/aBridge/actions/workflows/ci.yml?query=branch%3Amain)
 
 ## 绑定设备
 
-1. 在客户端的「连接」中填写 Server 地址，点击「连接并授权」。在打开的浏览器中以普通账户登录管理台并确认。已有这台电脑的 **Device Token** 时，也可以在「使用 Device Token」中填写。
+1. 在客户端的「连接」中填写 Server 地址，点击「连接并授权」。在打开的浏览器中以普通账户登录管理台并确认。使用设备凭证时，可在管理台「添加设备 → Windows → 设备凭证」中生成 **Device Token**，再填入客户端的「使用 Device Token」。
 2. 在「本机能力」里打开所需的屏幕、输入、Shell 或文件能力，再到管理台「设备」页确认 Windows 设备已上线。
 3. 在管理台的「Agent 连接」中选择这台设备，授予任务所需的能力与有效期。在 Agent 端运行 `devices_list` 检查设备列表。[连接 Agent](https://xerrors.github.io/aBridge/guide/start.html#连接-agent)
 
-跨机器连接建议使用 HTTPS。使用非本机 HTTP 地址时，客户端会先要求确认完整地址。Device Token 仅用于设备绑定。需要使用 Chrome Profile 的登录态时，请单独安装并授权扩展。[浏览器客户端](https://xerrors.github.io/aBridge/browser-profile-design.html)
+跨机器连接建议使用 HTTPS。使用 HTTP 地址时，Windows 客户端会先要求确认完整地址。Device Token 仅用于设备绑定。需要使用 Chrome Profile 的登录态时，请单独安装并授权扩展。[浏览器客户端](https://xerrors.github.io/aBridge/browser-profile-design.html)
 
 ## 更新、退出和卸载
 
