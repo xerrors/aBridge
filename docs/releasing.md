@@ -1,6 +1,6 @@
 # 发布
 
-软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后验证源码，在 Linux 打包并验证最终 Server 和浏览器 ZIP，在 macOS 构建并验证 Apple Silicon App，并运行 Linux CLI 发布检查。
+软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后验证源码，构建 Server、浏览器扩展、macOS App、Linux CLI 和 Windows 预览包，并在启用 Android 签名时构建 APK。
 
 创建 tag 前，将本次版本号、日期、发布状态及变更摘要写入[变更记录](changelog.md)顶部，与版本号一起提交。对照上一发布 tag 核对实际交付内容；涉及协议、数据库或安装方式变化时，写明受影响的用户和升级步骤。
 
@@ -75,9 +75,9 @@ npm run package:macos -- --reuse-build
 
 ## Windows
 
-Windows x64 预览包由 `ci.yml` 的 **Windows client** 任务构建。在 Windows runner 上运行 `npm run windows:shell:check`、`npm run package:windows` 和 `npm run package:windows:check` 后，CI 将未签名 ZIP 及其 SHA-256 校验文件上传到 **windows-client-unsigned**，保留 30 天。完整解压后的程序目录须小于 10,000,000 字节。
+CI 和 tag 发布复用 `windows-client.yml`。Windows runner 执行 `npm run check`、`npm run windows:shell:check`、`npm run package:windows` 和 `npm run package:windows:check`。完整解压后的程序目录须小于 10,000,000 字节。
 
-当前 `release.yml` 的 tag 分发范围为 Server、Chrome 扩展、macOS、Linux 及启用签名时的 Android APK。Windows 用户可通过 CI 或源码构建取得预览包。[Windows 安装与验证](windows-client.md)
+CI 上传 **windows-client-unsigned**，保留 30 天。tag 发布另将 `aBridge-<version>-windows-x64-unsigned.zip` 和同名 `.sha256` 附在 GitHub Release 中。创建 Release 前会再次核对 ZIP 的 SHA-256。Windows 仍以未签名便携预览包分发。[Windows 安装与验证](windows-client.md)
 
 ## Android
 

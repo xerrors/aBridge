@@ -1,0 +1,39 @@
+name: Windows client
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        type: string
+        default: windows-client-unsigned
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build and verify ZIP
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+      - run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - run: rustup default stable
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task check
+      - name: Diagnose Windows command startup on failure
+        if: failure()
+        run: powershell -NoProfile -File tools/ci-windows.ps1 -Task diagnose
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task windows:shell:check
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task package:windows
+      - run: powershell -NoProfile -File tools/ci-windows.ps1 -Task package:windows:check
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: |
+            dist/releases/*windows-x64-unsigned.zip
+            dist/releases/*windows-x64-unsigned.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
