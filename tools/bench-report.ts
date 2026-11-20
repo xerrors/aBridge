@@ -169,7 +169,9 @@ const reports = [false, true].map((filtered) => {
   const lines = [
     `# ${filtered ? "按任务标准审核后的报告" : "全量案例报告"}`,
     "",
-    `政策版本：${casePolicy.version}。${filtered ? `本轮剔除 ${casePolicy.exclusions.length} 例。` : "包含全部最终尝试，失败、超时和采集异常不隐去。"}`,
+    filtered
+      ? `审核按 ${casePolicy.version} 执行，本轮排除 ${casePolicy.exclusions.length} 例。`
+      : `本表列出每次最终尝试，包括失败、超时和采集异常。审核规则版本为 ${casePolicy.version}。`,
     "",
     "| 集合 | 严格成功 / 分母 |",
     "| --- | --- |",
@@ -178,9 +180,7 @@ const reports = [false, true].map((filtered) => {
       return `| ${group === "paired" ? "主对照 seed 0/1" : "额外 seed 2"} | ${es.filter((e) => e.success).length}/${es.length} |`;
     }),
     "",
-    "两侧使用相同模型目录与评测器；网络、模型响应及工具等待均可能影响端到端预算。超时全部保留，不属于任务不合规，不能据此剔除。",
-    "",
-    "任务未初始化仅指Agent动作前已由独立证据确认的错误。操作后的异常、任务失败、预算耗尽、模型或工具能力不足都不是排除理由。判分采集异常与任务合规性分别记录；已超时即严格失败，不因奖励未知而剔除。",
+    "两侧使用相同的模型目录和评测器。网络、模型响应和工具等待都计入端到端时间。超时按失败计入分母，即使原始奖励未知。判定任务未初始化时，以 Agent 动作前取得的独立证据为准。判分采集异常另行记录。",
     "",
     "| 集合 | 任务 | seed | 严格成功 | 原始奖励 | 失败记录 | 标准审核 |",
     "| --- | --- | --- | --- | --- | --- | --- |",
@@ -191,7 +191,7 @@ const reports = [false, true].map((filtered) => {
       return `| ${e.group} | ${e.task} | ${e.seed} | ${e.success ? "是" : "否"} | ${e.rawReward ?? "未知"} | ${e.failure ?? "—"}${e.timedOut ? "（已超时）" : ""} | ${ex ? ex.reason : "符合，保留"} |`;
     }),
     "",
-    "## 版本历史（不混入最终分母）",
+    "## 历史运行",
     "",
     "| 版本 | 全量严格成功 | 原始数据 |",
     "| --- | --- | --- |",
@@ -202,23 +202,23 @@ const reports = [false, true].map((filtered) => {
     ),
     `| 当前版本 | ${total.succeeded}/${snapshot.episodes.length} | [逐次结果](miniwob-v2-results.json) |`,
     "",
-    "历史数据保留，不用不同版本的最好成绩拼接最终结果。配置不同的历史分数不能用来单独归因本轮优化。stage1原始8/12因CLI诊断误判越权，全量重解析后9/12，见[修正记录](miniwob-v2-stage1-adjudication.json)，没有删除任何样本。额外种子另列，不将重复尝试混入主对照。",
+    "历史运行和额外种子各自统计。第一阶段原始得分为 8/12，其中一例的 CLI 诊断消息被误判为越权。重新解析完整日志后，得分为 9/12，分母仍为 12。[修正记录](miniwob-v2-stage1-adjudication.json)",
     "",
     "## 剔除清单",
     "",
     ...(casePolicy.exclusions.length
       ? casePolicy.exclusions.map((x) => `- ${x.group}/${x.task}/${x.seed}：${x.reason}；证据：${x.evidence}`)
-      : ["无。当前没有证据证明这些任务违反约定，不能为提高分数而强行剔除。"]),
+      : ["本轮所有任务均保留。"]),
     "",
     "## 审核标准",
     "",
     ...casePolicy.exclusionReasons.map((r) => `- ${r.id}：${r.definition}`),
     "",
-    "固定上游任务在本地运行；日期范围和界面变化属于原始任务内容，不因难度或缺少语义标注而排除。工具不足应作为产品问题修复。",
+    "在本机运行固定版本的上游任务，保留原有日期范围与界面。任务难度、语义标注缺失和工具能力不足均记录在试验结果中。",
     "",
     "[原始逐次结果](miniwob-v2-results.json) · [额外种子结果](miniwob-v2-extra.json) · [通用修复报告](browser-reliability-v2.md)",
     "",
-    "这是小样本、单模型的探索性结果，不是官方榜单或大样本泛化结论。",
+    "本次测量覆盖一个模型和这组适配任务。评测范围和复现方式见 [MiniWoB++ 方法](miniwob.md)。",
   ];
   return { name: filtered ? "cases-conforming.md" : "cases-all.md", text: lines.join("\n") };
 });
@@ -227,9 +227,9 @@ const fmt = (n: number | null) => (n === null ? "—" : (n / 1000).toFixed(1));
 const content = [
   "<!-- benchmark:miniwob:start -->",
   "",
-  `真实 **${suite.requestedModel}（${suite.reasoningEffort}）Agent** 通过 aBridge 完成公开 MiniWoB++ 任务：**${total.succeeded}/${total.episodes}（${((100 * total.succeeded) / total.episodes).toFixed(1)}%）**。任务、种子和预算在跑分前冻结，无重试，全部结果保留。`,
+  `使用 **${suite.requestedModel}（${suite.reasoningEffort}）** 运行 MiniWoB++ 适配任务，共完成 **${total.succeeded}/${total.episodes}（${((100 * total.succeeded) / total.episodes).toFixed(1)}%）**。任务、种子和预算在运行前确定，每例运行一次。`,
   "",
-  `同模型目录与评测器的基线 **${previousSuccess}/${baseline.episodes.length}** → 修复后 **${total.succeeded}/${total.episodes}**；模型、任务 prompt、seed 0/1 和预算不变。基线已包含真实浏览器启动修复；两侧均固定同一份现有模型元数据，避免目录刷新超时。另用额外 seed=2 验证：**${heldSuccess}/${holdout.episodes.length}**，单独统计。标准审核剔除 **${casePolicy.exclusions.length}** 例。`,
+  `主对照使用种子 0 和 1，基线完成 **${previousSuccess}/${baseline.episodes.length}**，修复后完成 **${total.succeeded}/${total.episodes}**。基线已包含浏览器启动修复。两侧使用相同的模型目录、评测器、任务提示和预算。额外种子 2 单独运行，完成 **${heldSuccess}/${holdout.episodes.length}**。审核排除 **${casePolicy.exclusions.length}** 例。`,
   "",
   "![浏览器工具优化前后对照](docs/benchmarks/miniwob-v2-comparison.svg)",
   "",
@@ -240,21 +240,21 @@ const content = [
       `| \`${r.task}\` | ${baselineRows.find((b) => b.task === r.task)!.succeeded}/${r.episodes} | ${r.succeeded}/${r.episodes} | ${fmt(r.agentP50Ms)} | ${r.toolCalls} | ${r.knownInputTokens} / ${r.knownOutputTokens} | ${r.usageEpisodes}/${r.episodes} |`,
   ),
   "",
-  `每例限 ${suite.episodeLimitMs / 1000} 秒 / ${suite.maxToolCalls} 次工具调用，并发 ${suite.concurrency}；仅开放观察、读取、操作、等待，支持 DOM 与截图，不开放 JS 执行、源码直接读取或判分接口。P50 包含 CLI 启动和模型调用，已启动的失败也计时。表中 token 为已知样本合计（输入含缓存），超时未返回用量视为未知，不能按 0 计费；CLI 不提供实际美元账单。`,
+  `每例限 ${suite.episodeLimitMs / 1000} 秒和 ${suite.maxToolCalls} 次工具调用，并发 ${suite.concurrency}。Agent 可以通过 DOM 和截图观察页面，也可以读取、操作和等待。P50 从 CLI 启动开始计时，包含模型调用及已启动的失败任务。表中的 token 是已报告样本的合计，输入包含缓存。缺少用量的样本记为未知。`,
   "",
   `失败分类：${
     Object.entries(total.failures)
       .map(([k, v]) => k + " × " + v)
       .join("；") || "无"
-  }。用量覆盖 ${total.usageEpisodes}/${total.episodes}；会话清理 ${total.cleaned}/${total.episodes}。`,
+  }。用量覆盖 ${total.usageEpisodes}/${total.episodes}，会话清理 ${total.cleaned}/${total.episodes}。`,
   "",
-  "模型元数据通过CLI本地目录参数固定，未改全局配置、模型或任务prompt；这不消除网络和模型响应波动。失败全部保留，不能仅凭小样本宣称稳定速度或成本优势。",
+  "两侧都通过 CLI 参数加载同一份从缓存逐字复制的模型目录，以避开目录刷新超时。实际耗时仍会随模型服务和网络变化。",
   "",
-  `模型目录 SHA-256：${snapshot.modelCatalogSha256}；逐字复制实际缓存的元数据，不修改模型指令或能力。`,
+  `模型目录的 SHA-256 为 \`${snapshot.modelCatalogSha256}\`。`,
   "",
-  `测量快照：v${snapshot.productVersion} / ${snapshot.productCommit.slice(0, 7)}。环境：${env.cpu} / ${env.platform} ${env.arch} / ${env.chrome} / Node ${env.node} / ${env.codex}；记录时间 ${snapshot.recordedAt}。`,
+  `测量版本为 v${snapshot.productVersion}（${snapshot.productCommit.slice(0, 7)}）。环境为 ${env.cpu} / ${env.platform} ${env.arch} / ${env.chrome} / Node ${env.node} / ${env.codex}，记录于 ${snapshot.recordedAt}。`,
   "",
-  "这是 **6 类任务、每类 2 个种子的小样本适配子集**，原始任务限时统一延长至 180 秒，不是官方榜单成绩；单次前后对照仍有模型随机性，也不能单独证明 aBridge 优于其他工具或覆盖 macOS App。固定策略的 30/30 仅作为执行链冒烟历史数据，与 Agent 分数分开。[方法与限制](docs/benchmarks/miniwob.md) · [工具修复报告](docs/benchmarks/browser-reliability-v2.md) · [全量报告](docs/benchmarks/cases-all.md) · [标准审核报告](docs/benchmarks/cases-conforming.md) · [逐次实测数据](docs/benchmarks/miniwob-v2-results.json)。",
+  "结果对应 Chrome 扩展上的 6 类适配任务，每类 2 个种子，采用这里列出的时间预算。早期固定策略的 30/30 见执行链冒烟记录。[评测方法](docs/benchmarks/miniwob.md) · [工具修复报告](docs/benchmarks/browser-reliability-v2.md) · [全量报告](docs/benchmarks/cases-all.md) · [标准审核报告](docs/benchmarks/cases-conforming.md) · [逐次实测数据](docs/benchmarks/miniwob-v2-results.json)",
   "",
   "```sh",
   "npm run benchmark:miniwob",

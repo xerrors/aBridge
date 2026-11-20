@@ -291,6 +291,8 @@ test("Shell captures unicode output directly, strips unrequested env and bounds 
   const executor = new LocalExecutor(new Native());
   process.env.ABRIDGE_PRIVATE_FIXTURE = "must-not-inherit";
   const result = await executor.commandExecute("shell", {
+    // Cold PowerShell compilation on hosted Windows runners can consume the default deadline.
+    timeout: 75,
     command:
       process.platform === "win32"
         ? "[Console]::Write('😀 中文'); [Console]::Error.Write('error'); if (-not $env:ABRIDGE_PRIVATE_FIXTURE) { [Console]::Write('unset') }"

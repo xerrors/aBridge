@@ -1,10 +1,10 @@
 # 快速开始
 
-启动 aBridge Server，绑定一台设备，再将它授权给支持 Streamable HTTP 的 MCP 客户端。可以先接入 Chrome 扩展或 Windows 客户端。
+这个例子把 Server、客户端和 Agent 跑在同一台电脑上。启动 Server 后，接入 Chrome 扩展或 Windows 客户端，最后让 Agent 列出刚绑定的设备。
 
 ## 启动 Server
 
-准备 npm 和 Node.js 22.13+（22.x）、23.4+（23.x）或 24 及以上版本。在终端运行：
+准备 npm 和 Node.js 22.13+（22.x）、23.4+（23.x）或 24 及以上版本。macOS 和 Linux 终端用下面的命令启动 Server。
 
 ```sh
 npm exec --yes \
@@ -12,19 +12,19 @@ npm exec --yes \
   -- abridge --web
 ```
 
-在 Windows PowerShell 中运行：
+如果使用 Windows PowerShell，运行下面这条命令。
 
 ```powershell
 npm.cmd exec --yes --package=https://github.com/xerrors/aBridge/releases/download/v0.4.23/xerrors-abridge-0.4.23.tgz -- abridge --web
 ```
 
-浏览器会打开本机的「实例管理」。在这里创建普通账户，然后用普通账户登录 [本机管理台](http://127.0.0.1:8765)。实例管理员链接包含凭据，请妥善保管。
+浏览器会打开「实例管理」。创建一个普通账户，再用它登录本机管理台。请妥善保管含有凭据的实例管理员链接。[打开管理台](http://127.0.0.1:8765)
 
 如果 Server 运行在另一台机器，请先配置设备和 Agent 都能访问的地址。详见[反向代理与网络](../deployment.md#反向代理与网络)。
 
 ## 绑定设备
 
-按需要选择一个客户端。Server 和客户端在同一台电脑时，服务端网址可填 `http://127.0.0.1:8765`。跨机器连接时，填写客户端能访问的 Server 地址。
+下面两种客户端选一个即可。同一台电脑上使用 `http://127.0.0.1:8765`。跨机器连接时，填客户端能访问的 Server 地址。
 
 ### Chrome 扩展 {#绑定浏览器}
 
@@ -42,17 +42,17 @@ npm.cmd exec --yes --package=https://github.com/xerrors/aBridge/releases/downloa
 
 在「Agent 连接」中创建连接，选中刚绑定的设备，设置能力和有效期。保存生成的 **Agent Key**，通过「复制接入参数」获取 MCP 端点和请求头。
 
-以本机 Codex CLI 为例，先通过环境变量 `ABRIDGE_AGENT_KEY` 向 Codex 提供密钥，再执行：
+Agent 需要支持 Streamable HTTP。以本机 Codex CLI 为例，把密钥放进环境变量 `ABRIDGE_AGENT_KEY`，然后添加 MCP Server 并启动新会话。
 
 ```sh
 codex mcp add abridge --url http://127.0.0.1:8765/mcp --bearer-token-env-var ABRIDGE_AGENT_KEY
 codex
 ```
 
-在新会话中输入：
+在新会话里请 Agent 查一次设备列表。
 
 > 请调用 aBridge 的 `devices_list`，列出我已授权的设备和可用能力。
 
-返回列表中出现刚绑定的设备，即表示 Agent 已连接。如果列表为空，请在管理台核对该设备所属账户和 Agent 的授权范围。
+看到刚绑定的设备，就可以用这个连接开始任务了。列表为空时，在管理台核对设备所属账户和 Agent 的授权范围。
 
 验证 Windows 屏幕能力时，可请 Agent 截取当前桌面，并在 Agent 界面确认结果中显示了截图。

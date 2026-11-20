@@ -1,14 +1,14 @@
 # aBridge Server
 
-MCP 与设备连接网关，包含预构建的管理台。需要 Node.js 22.13.0+ 与 npm；运行时不需要编译 TypeScript 或启动前端开发服务器。
+Server 提供 MCP 入口和设备连接，管理台随包提供。直接运行需要 npm 和 Node.js 22.13.0+（22.x）、23.4.0+（23.x）或 24 及以上版本。
 
-公开 npm 包名为 `@xerrors/abridge`。发布完成后可使用 `npx @xerrors/abridge --web`；本地分发候选使用实际生成的 tarball 路径运行：
+从 GitHub Releases 下载 Server tarball，再将实际路径传给 npm。[下载发布包](https://github.com/xerrors/aBridge/releases/latest)
 
 ```sh
 npm exec --package /absolute/path/to/server.tgz -- abridge --web
 ```
 
-安装到自己的 npm 环境后，入口命令为 `abridge`。下文以该入口展示；通过本地 tarball 运行时，沿用开头的 `npm exec --package … --` 前缀。此包只包含 Server，不含桌面运行时或 Cua SDK，不提供 `client` 子命令。App 和浏览器扩展独立安装。
+安装到 npm 环境后，直接使用 `abridge`。从本地 tarball 运行下面的命令时，在命令前加 `npm exec --package … --`。电脑客户端和浏览器扩展各自在设备上安装。
 
 ## 首次配置
 
@@ -20,7 +20,7 @@ Token 保存在数据库旁的 `<数据库文件>.admin-token`（权限 `600`）
 
 ## 管理员 API
 
-外部程序使用 `Authorization: Bearer <ADMIN_TOKEN>`，管理台使用独立的管理员 Cookie。普通账户、Device Key 和 Agent Key 均不能调用这些接口。管理员身份只授予全局统计与创建用户权限，不代替普通账户或设备授权。
+管理员 API 用于创建普通账户和查看全局统计。外部程序使用 `Authorization: Bearer <ADMIN_TOKEN>`，管理台使用管理员 Cookie。绑定设备和分配 Agent 权限在普通账户下完成。
 
 | 方法     | 路径                  | 作用                                                 |
 | -------- | --------------------- | ---------------------------------------------------- |
@@ -87,7 +87,7 @@ Origin 必须是纯 `scheme://host[:port]`，没有路径、查询、fragment �
 }
 ```
 
-Device Key 用于设备连接，Agent Key 用于 MCP 调用，两者不能互换。电脑与浏览器是独立设备，扩展只提供 `browser`；桌面 App 提供屏幕、键鼠、Shell 与文件。任务按设备 ID 建立会话，完成后关闭会话；暂停只能由本机操作者恢复。
+设备使用 Device Key 连接，Agent 使用 Agent Key 调用 MCP。电脑和浏览器分别注册，工具随客户端和授权范围而定。按设备 ID 开启任务会话，完成后关闭。访问已暂停时，请在设备本机恢复。
 
 ## 设备信息
 

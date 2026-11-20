@@ -4,9 +4,9 @@
 
 执行 `npm run build && npm run package && npm run package:check`，上传 `dist/releases/abridge-browser-<version>.zip`。ZIP 根目录包含生成版本的 manifest 与已构建 JavaScript；不要上传源码目录、Server tarball 或 App。
 
-商店 ZIP 的 manifest 故意不带 `key`；源码和 `dist/browser/` 中的加载开发版仍保留开发公钥及其身份，不能直接把该目录压缩上传商店。打包检查同时核对商店 manifest 无 `key` 且版本与根 `package.json` 相同。
+上传商店时使用打包工具生成的 ZIP。打包工具会移除 manifest 的 `key` 并核对版本。用 `dist/browser/` 本地调试时，manifest 保留开发公钥，以便继续使用同一扩展 ID。
 
-首次上传可先保存草稿。商店分配的 Item ID 与开发版当前 ID 不应假定相同；需要统一开发 ID 时，在草稿的 Package 页面查看商店公钥，再按 [Chrome 官方 key 流程](https://developer.chrome.com/docs/extensions/reference/manifest/key)回填开发 manifest。扩展公钥不是秘密；商店 ID 变化不保证保留另一扩展 ID 的本地绑定。
+首次上传可先保存草稿，在 Package 页查看商店分配的 ID 和公钥。想让开发版使用同一个 ID，可以把公钥填回开发 manifest。若切换到另一个扩展 ID，请检查本地绑定并按需重新连接。[Chrome 的 key 配置说明](https://developer.chrome.com/docs/extensions/reference/manifest/key)
 
 ## 商店介绍草稿
 
@@ -26,18 +26,18 @@ You must run or have access to an aBridge Server and configure an MCP client wit
 
 ## Privacy practices 填写依据
 
-商店字段与 [隐私政策](privacy.md) 必须一致。扩展会将授权任务页的数据交给用户配置的 Server 和 Agent，不能仅因没有开发者运营的收集端就声明“不处理用户数据”。Chrome 要求准确披露收集、使用及共享方，并在指定字段提供可访问的政策链接。[官方隐私政策要求](https://developer.chrome.com/docs/webstore/program-policies/privacy)
+填写表单时，按实际处理的数据逐项说明用途和接收方。扩展会把授权任务页的数据交给用户配置的 Server 和 Agent。将政策链接填入表单对应字段，确保内容与实际版本一致。[aBridge 隐私政策](privacy.md) · [商店隐私政策要求](https://developer.chrome.com/docs/webstore/program-policies/privacy)
 
 建议根据提交时的实际版本逐项核对数据类别：
 
-| 类别                               | 当前处理情况                                                                                                                      |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Website content                    | 页面可见正文、表单观察、控件及按需截图，可能含个人或敏感内容                                                                      |
-| User activity                      | 用户授权的导航、点击、填充及执行结果；不是后台收集全部浏览记录                                                                    |
-| Authentication information         | 设备 Key 的本地保存和认证传输；绑定时通过指定 Server 的浏览器授权页确认，扩展不读取管理账户密码。Agent 提供的填充内容也可能敏感   |
-| Web history / personal identifiers | 任务 URL、标题、账户名或页面内容可能落入这些类别；按实际处理定义选择，不能把“不读取全局历史数据库”等同“不涉及任何 URL 或身份数据” |
+| 类别                               | 当前处理情况                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Website content                    | 页面可见正文、表单观察、控件及按需截图，可能含个人或敏感内容                                                                    |
+| User activity                      | 已授权任务的导航、点击、填充及执行结果                                                                                          |
+| Authentication information         | 设备 Key 的本地保存和认证传输；绑定时通过指定 Server 的浏览器授权页确认，扩展不读取管理账户密码。Agent 提供的填充内容也可能敏感 |
+| Web history / personal identifiers | 按类别定义核对所处理的任务 URL、标题、账户名和页面内容                                                                          |
 
-最后的认证声明应由发布者按事实核对；上表不是对审核结论的保证。
+提交前由发布者按当前版本核对认证声明。
 
 权限理由草稿：
 
@@ -57,7 +57,7 @@ You must run or have access to an aBridge Server and configure an MCP client wit
 
 当前扩展将观察、输入、读取、等待和任务页执行通道打包在本地 JavaScript 内。Server 提交已定义工具及参数；代码模式在 Server 的 QuickJS 引擎组织流程，并可通过 `page.evaluate` 在自有任务页执行 JavaScript。原始 CDP 不对 Agent 开放，也没有专用 Cookie 导出工具；页面脚本可读取站点向页面开放的数据，不能把固定观察的敏感字段过滤视为脚本限制。浏览器执行通过 `chrome.debugger` 完成，生命周期和权限以[浏览器客户端](browser-profile-design.md)为准。
 
-MV3 对远程执行有严格要求，Debugger API 有特定例外；例外不豁免隐私、用途或可审查性要求。提交时应准确解释固定实现和有限参数，不能据此宣称“一定通过审核”。[官方 MV3 要求](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements)
+提交时说明扩展内置了哪些操作、Server 传入哪些参数，以及页面脚本在哪里执行。对照 MV3 的 Debugger API 条款及隐私、用途和可审查性要求。[官方 MV3 要求](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements)
 
 ## 素材
 
@@ -76,7 +76,7 @@ MV3 对远程执行有严格要求，Debugger API 有特定例外；例外不豁
 5. 按 `tools/fixtures/README.md` 启动自有表单目标，用浏览器会话打开 `/seed`，再在另一个任务会话中观察登录态、填入文字并提交。关闭会话，检查任务页清理。
 6. 在工具栏暂停访问，确认 Agent 无法继续；恢复访问后使用新会话。测试后撤销临时 Agent Key 并删除本次临时状态。
 
-本机步骤要求审核环境能够运行 Node 和自有 Server，并不保证审核人员一定采用此方式。若商店要求在线测试，需另行提供受限的 HTTPS 演示 Server、独立可撤销测试身份及完整说明；没有准备演示服务时，不得填写一个实际不可访问的 localhost 地址当作在线测试账号。
+以上流程在审核人员自己的机器上启动 Server。如果商店要求在线测试，提供审核人员可访问的 HTTPS 演示 Server、独立的可撤销测试账户和操作说明。
 
 ## 更新
 

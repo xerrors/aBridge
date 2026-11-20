@@ -1,6 +1,14 @@
 # aBridge for Android
 
-Development preview for Android 11 and newer. Use a Server built from this branch or a later build that includes the Android device time handshake. The app registers as an independent computer device and connects directly to the server. Use a computer Device Key whose grant includes the capabilities you intend to enable.
+The Android app supports Android 11 and later. Install the signed APK from GitHub Releases and use a Server version that supports Android devices. [GitHub Releases](https://github.com/xerrors/aBridge/releases/latest)
+
+In the management console, create an Android device and copy its Device Key. Open the app, enter the Server address and key, then enable the aBridge accessibility service in Android Settings. Choose the capabilities and working directory in **设置**, then tap **允许 Agent 操作**. Use **暂停 Agent 操作** to pause access while keeping the device connected.
+
+Use HTTPS for remote connections. If you enter an HTTP address, the app asks you to confirm it because the key and device traffic will travel without encryption. The confirmation applies to the saved address, and a device bound over HTTPS keeps using HTTPS.
+
+To update the signed app, go to **设置 → 检查更新**. Open the downloaded APK and follow the Android installer. [Android release process](../../docs/releasing.md#android)
+
+## Build for development
 
 ```sh
 npm run build
@@ -12,11 +20,9 @@ The Android build requires JDK 17 and Android SDK Platform 36. Gradle consumes t
 
 The [Android App workflow](../../.github/workflows/android.yml) builds Debug and Release APKs and runs Android Lint on pull requests and pushes to `main`. Download the installable Debug APK from the run's **abridge-android-debug** artifact.
 
-For normal use, install the signed Android APK from a GitHub Release when available. **设置 → 检查更新** checks the current version against the latest stable release and opens the official APK download. Open the downloaded APK to confirm the update in Android's installer. See the [Android release process](../../docs/releasing.md#android).
-
 Debug and Release APKs use R8 to remove unused code and compress the remaining DEX bytecode. Release packaging recompresses the APK before signing and checks the complete signed file against a 200,000-byte budget. Android extracts the bytecode during installation, so the APK size and installed storage usage differ.
 
-Open the app, enter the server address and Device Key, and enable the aBridge accessibility service in Android Settings. HTTPS is recommended. Binding over HTTP requires explicit confirmation because the key and subsequent device traffic are unencrypted. This confirmation is tied to the saved address, and an HTTPS connection never falls back to HTTP. Configure capabilities and choose a working directory in **设置**. Select **允许 Agent 操作** to accept authorized requests or **暂停 Agent 操作** to close access. The device can stay connected in either mode, and local access changes take effect before the Server receives the update.
+## Tools
 
 | Capability | Supported requests                                                                                                                                                                                                                                                                                                                                 |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

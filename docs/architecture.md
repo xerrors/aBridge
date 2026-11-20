@@ -53,11 +53,15 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 
 源码中的领域名统一为 `AgentConnection`（Agent 的持久授权连接）、`DeviceConnection`（设备当前传输连接）、`ControlSession`（控制会话）和 `Operation`（一次操作）。管理接口使用 `/api/agent-connections`，列表字段为 `connections`，操作及会话通过 `agent_connection_id` 引用授权连接；设备派发中的 `device_credential_version` 表示 Device Key 版本，不表示 Agent 连接策略版本。`operation_status` 与 `operation_cancel` 面向所有操作，包括 Shell 和浏览器代码。
 
-工具参数由协议包的 `toolArgumentSchemas` 定义，`DeviceToolRequest` 关联工具名与参数类型。MCP 使用同一字段定义，Server 和执行端在各自输入边界解析；默认值、范围及跨字段约束保持单源。执行时仍独立核对授权、取消、连接代次、观察引用和当前目标。管理 API 的公共视图及输入契约位于 `packages/protocol/src/management.ts`，Server 构造与 Web 解析共用类型；数据库实体及本地界面状态不是公共视图。
+协议包中的 `toolArgumentSchemas` 定义工具参数，`DeviceToolRequest` 把工具名和参数类型对应起来。MCP、Server 和执行端各自在入口按同一契约解析，执行时再核对授权、取消、连接代次、观察引用和目标。
 
-共享线协议版本为 `abridge/1`。进程边界使用运行时 schema 校验，TypeScript 包使用严格类型与未使用声明检查，原生运行时使用 Swift 6 严格并发检查；类型声明不替代不可信消息的解析。软件版本只从根 `package.json` 读取，扩展 manifest 和分发版本在构建时生成。原生客户端使用协议包生成的 `desktop-contract.json` 校验消息、参数与默认值；跨字段约束由共享可移植规则表达，回归测试对照 Zod 和 Swift 的接受结果与规范化值。
+管理 API 与管理台共用 `packages/protocol/src/management.ts` 中的输入与响应类型，数据库实体和界面状态由各自模块维护。
 
-Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状态按请求隔离，设备操作会话由 `ControlService` 管理，二者不是同一个生命周期。管理台是预构建 Preact 11 静态产物，正常运行不启动前端开发服务器。
+设备通信使用 `abridge/1`。进程边界通过运行时 schema 校验消息。TypeScript 使用严格类型检查，Swift 6 使用严格并发检查。原生客户端读取协议包生成的 `desktop-contract.json`，按共享规则处理消息、参数、默认值和跨字段约束。回归测试对照 Zod 和 Swift 的接受结果与规范化值。
+
+根 `package.json` 提供软件版本，扩展 manifest 和分发包在构建时读取它。
+
+Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 按请求维护状态，设备操作会话由 `ControlService` 持续管理。管理台是随 Server 提供的预构建 Preact 11 静态页面。
 
 管理台源码按职责收拢在 `apps/web/src/`：`app/` 负责入口、导航、工作区布局与跨功能弹窗编排，`components/` 提供公共控件，`features/` 按 auth、overview、devices、connections、activity、admin 放置页面及相关逻辑，`lib/` 放置请求、公共类型与展示标签。页面不作为其他模块的公共类型出口；连接权限计算集中在 connections 的 policy 模块。表单与弹窗共享提交状态，保留在同一组件文件中。
 
@@ -67,13 +71,15 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 状
 
 ## Linux CLI 客户端
 
-`apps/linux-client/` 使用 Rust 实现独立的 `abridge-client`，仅提供 `shell` 和 `files`，以 `computer` / `linux` 身份直接连接 `/ws/device`。它不依赖 Node、图形环境或桌面 SDK。CLI 和后台服务使用同一个二进制，后台生命周期由用户级 systemd 管理；非 systemd 环境可以使用前台 `run`。
+`apps/linux-client/` 提供 Rust 可执行文件 `abridge-client`。它在无图形环境中也能运行，以 `computer` / `linux` 身份连接 `/ws/device`，提供 `shell` 和 `files`。同一个二进制可以在用户级 systemd 中运行，也可以用 `run` 在前台运行。
 
 `main.rs` 负责命令解析和 Device Token 绑定，`runtime.rs` 是连接代次、操作调度及本机策略的唯一所有者，`executor.rs` 执行 Shell/文件，`storage.rs` 维护私有绑定与操作日志，`service.rs` 管理用户服务。运行时先取得独占锁再读取绑定，配置与凭据作为同一份 0600 文件原子提交；本机控制通过同用户私有 Socket 进行。新绑定须先验证 Server 的设备身份，并要求停止原运行时。
 
 Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量、JSON Schema 和 portable 约束；版本也由该契约从根 `package.json` 生成。Rust 解释器应用共享默认值、字段范围、未知字段策略和跨字段约束，对不支持的新规则拒绝启动并使契约检查失败。跨语言测试对照 Zod 的解析结果，避免独立维护第二套参数规则。
 
-执行前同步保存并刷盘操作 ID、请求哈希和执行意图，完成后保存终态；不记录命令、文件正文、输出或凭据。重启时执行中的记录转为结果未知，日志压缩保留所有操作身份而不自动过期。终态落盘失败仍报告已确认的执行回执，并阻止新操作直到修复存储并重启。暂停、能力关闭和撤销先停止接收相关操作并发出取消，再等待进程清理；连接代次隔离迟到输出，重连不恢复旧会话或解除暂停。Shell 采用独立进程组，结束、超时和取消时清理组内进程；文件权限及 UTF-8 行为与现有协议一致。该客户端不提供隔离沙箱。
+设备在执行前把操作 ID、请求哈希和执行意图同步写入日志，完成后保存终态。日志只记录这些操作元信息，压缩时仍保留历史操作身份。重启时，执行中的记录变为结果未知。若终态落盘失败，设备会保留已确认的执行回执，并停止接收新操作，直到修复存储并重启。
+
+暂停、关闭能力或撤销时，客户端先停止接收相关操作，取消在途任务，再等待进程退出。重连沿用暂停状态并开启新的连接代次。Shell 在独立进程组中执行，结束、超时或取消时清理组内进程。Shell 和 UTF-8 文件操作使用客户端所在账户的权限。
 
 `npm run linux:check` 执行 Rust 格式、测试、Clippy 及真实 Server 联调，Linux CI 另验收用户 systemd 安装/停止/重启/卸载。`npm run package:linux` 仅打包 Linux ELF，生成校验和、第三方许可及体积记录；可执行文件和压缩包预算分别为 15 MiB、5 MiB。安装、能力控制和后台运行见[部署说明](deployment.md#linux-cli)。
 
@@ -100,19 +106,21 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 ## Windows 客户端
 
-Windows PC 客户端位于 `apps/windows/windows-native-shell/`，Rust 原生运行时直接连接 Server，Win32 实现设置、托盘与活动边框。同一个 `aBridge.exe` 通过 `--native-host` 启动独立运行时，私有 stdio 保留窗口命令和事件契约。`runtime/` 管理授权、会话、SQLite 去重、操作调度、Shell 和文件；嵌入的 PowerShell/UIA 驱动检查本机权限、焦点、遮挡和人工输入。`apps/windows/src/` 保留此前 TypeScript 行为参考及驱动源，不作为运行依赖分发。
+Windows 客户端位于 `apps/windows/windows-native-shell/`。Win32 外壳负责窗口和本机控制，从同一个 `aBridge.exe` 启动 `--native-host` 运行时，通过私有 stdio 传递命令及事件。运行时直接连接 Server，处理授权、会话、SQLite 去重、操作调度、Shell 和文件。内嵌 PowerShell/UIA 驱动在输入前核对本机权限、焦点、遮挡和人工输入。旧 TypeScript 实现及驱动源保存在 `apps/windows/src/`，供对照测试。
 
 Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](windows-client.md)。
 
-外壳仅负责设置窗口、托盘、暂停快捷键、桌面活动边框和子进程生命周期；运行时保留原状态文件、SQLite 表及私有控制管道格式，使用协议包生成的契约校验外部输入。暂停、撤销和能力关闭优先于网络重连与执行，未知写操作不重放。活动边框属于外壳进程，保持分屏物理坐标、鼠标穿透、不激活和工具窗口样式，供驱动识别与排除。便携包不依赖 Node、WinUI 或外置下载运行时；构建和仓库外验包将完整程序目录严格限制在 10,000,000 字节以内。
+外壳显示设置、托盘和活动边框，也处理暂停快捷键与子进程退出。边框使用物理屏幕坐标，允许鼠标穿透并保持当前窗口焦点，驱动会将它从操作目标中排除。运行时沿用原状态文件、SQLite 表和私有控制管道，并用生成的契约校验输入。暂停、撤销和能力开关在重连后继续生效。遇到结果未知的写操作时，先核对原操作及设备状态。
+
+便携包包含原生程序及其资源，使用 Windows 自带的运行组件。构建和仓库外验包均要求完整程序目录小于 10,000,000 字节。
 
 ## 身份与授权
 
-实例管理员通过独立的 Admin Token 或管理员 Cookie 创建普通用户、查看全局用户及设备统计；本地账户统一由 `/api/admin/users` 创建；可选 OIDC 外部身份在首次验证登录时建立独立账户。管理员不自动拥有普通账户身份，也不能用管理员凭据调用设备或 MCP 接口。Token 默认在数据库旁私有保存，支持 `ABRIDGE_ADMIN_TOKEN` 覆盖；浏览器用 Token 兑换 30 天签名 Cookie，会话与普通用户登录相互独立、跨重启保留，Token 重置使全部旧管理员会话失效。
+管理员通过 Admin Token 或管理员 Cookie 进入「实例管理」。可以用 `/api/admin/users` 创建本地普通账户，并查看全局用户和设备统计。设备和 MCP 操作使用各自的凭据。Admin Token 默认保存在数据库旁，可用 `ABRIDGE_ADMIN_TOKEN` 覆盖。浏览器用它换取有效期 30 天的签名 Cookie，管理员与普通用户各有自己的会话，Server 重启后仍有效。重置 Token 会使此前的管理员会话失效。
 
 设备名称可在管理台、Mac App 和浏览器扩展中修改，服务端在连接欢迎消息及心跳确认中同步最新名称。管理台的设备设置只允许改名，设备本机能力由客户端管理并只读展示；首次绑定时确认的能力范围和 Agent 连接策略继续限制访问。新设备 ID 使用 12 位随机 Base64URL 字符，生成时检查重复；已有设备 ID 保持不变，ID 不作为认证凭据。
 
-普通管理账户负责维护自己的设备与 Agent 连接。Device Key 标识设备，Agent Key 标识调用 MCP 的连接，二者不可互换。可选 OIDC 外部登录按 issuer + sub 映射本地普通账户，不保存外部用户密码；启用平台委托后，首次登录建立默认覆盖全部设备（含新设备）的平台连接，能力仍受设备授权、本机开关与就绪状态限制。显式开启委托后，Server 通过提供方公钥验证用途、受众、客户端和最长 60 秒有效期的访问令牌，映射同一个持久平台连接。平台连接没有 Agent Key，撤销不因重新登录恢复；原有本地账户、Agent Key 和设备绑定保持独立。部署和失效约束见[可选 OIDC 登录](deployment.md#可选-oidc-登录与平台-mcp-委托)。
+普通账户管理自己的设备与 Agent 连接。设备用 Device Key 认证，MCP 请求用 Agent Key 认证。开启 OIDC 后，首次登录按 `(issuer, sub)` 建立独立普通账户。平台委托使用提供方签发的短期令牌，Server 验证签名、用途、受众、客户端和最长 60 秒的有效期，再找到对应平台连接。初始平台连接覆盖本账户全部设备（含新设备），实际能力取决于设备授权、本机开关和就绪状态。撤销后需要显式重新授权。[配置 OIDC 与平台委托](deployment.md#可选-oidc-登录与平台-mcp-委托)
 
 连接具有稳定 ID、名称、设备策略和可选的到期时间；修改策略不更换 Key，轮换 Key 不改变策略。设备类型限制能力上限：`computer` 为 `screen`、`input`、`shell`、`files`，`browser` 仅为 `browser`。
 
@@ -125,7 +133,7 @@ Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-s
 - `selected`：显式列出每台设备及其能力；新增设备不会自动加入。
 - `all`：覆盖当前及以后加入的同账户设备，默认能力与设备类型、设备授权取交集；逐设备覆盖可缩小或调整能力，空覆盖表示排除该设备。
 
-管理台提供连接视角的设备预览，展示同账户设备的授权范围、在线状态与可用能力。MCP 的 `devices_list` 只返回该连接获准访问且具有有效能力的设备，并附带非秘密的连接 ID 与名称；它不公开未授权设备或账户设备总数。设备在线不等于每个连接都获准访问。
+在管理台的连接预览里，可以看到该连接有权使用哪些设备以及设备当前的状态和能力。MCP 的 `devices_list` 返回当前连接获准且具有有效能力的设备，以及连接 ID 和名称。
 
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `devices_list` 一致的设备摘要，包含名称、类型、平台、连接状态和可用的系统与浏览器版本信息。管理台及已授权 Agent 的 `device_get` 可读取完整详情，包括主机名、型号、运行用户和归属账户。
 
@@ -158,7 +166,7 @@ Agent 高频使用的公开引用保持短：`observation_id` 为 `obs_` 加 8 �
 
 `computer_windows` 按应用 PID 列出窗口，包含屏幕外窗口。`computer_observe` 在 macOS 上只传 `pid` 刷新同一应用时复用当前会话已选窗口。如果已选窗口消失，需显式选择新窗口。首次选择该应用时，唯一窗口直接观察；多个窗口返回 `window_selection_required`，提示先调用 `computer_windows(pid=...)` 再传 `pid` 与 `window_id` 选择；没有窗口返回 `window_unavailable`。显式传入 `window_id` 时须同时提供 `pid`，且 ID 必须是有效的正安全整数；缺少 PID 或 ID 非法时返回 `invalid_arguments`，错误信息说明缺失字段或提示从 `computer_windows` 取得有效 ID。省略目标时复用会话已选窗口，无目标返回 `target_required`；失败不会替换已选窗口。空窗口列表不能单独证明权限或 Space 问题。
 
-只有显式 `desktop=true` 才选择整屏，并且不能与窗口目标同时指定。整屏观察不以焦点确认为截图前提：观察前后均确认恰好一个前台普通应用，且其唯一可判定的屏幕内普通前窗保持一致时，返回 `focus_status=confirmed`；焦点无法确认、查询失败或期间切换时，仍返回观察及请求的截图，标记 `focus_status=unconfirmed`、`pixel_actions=false`。截图自身的错误、取消与会话关闭仍正常返回失败。
+每次观察选择一个目标。整屏观察传 `desktop=true`，窗口观察传窗口目标。整屏截图前后都能确认同一个前台应用的唯一普通前窗时，结果标记 `focus_status=confirmed`。焦点查询有歧义、失败或期间切换时，仍返回可取得的观察和请求的截图，并标记 `focus_status=unconfirmed`、`pixel_actions=false`。截图错误、取消和会话关闭照常报告失败。
 
 macOS 观察优先返回 `observation_id`、`available_actions` 和适用的恢复提示，其后是目标窗口、截图几何与有界控件列表。桌面引用最长有效 120 秒，截图坐标的底层凭据可能更早过期。一次刷新从选窗开始就使旧引用失效。枚举或读取失败后仍可重试原目标，取得新引用再继续。动作投递也会消耗当前引用。元素点击使用观察中的元素引用；坐标点击必须使用同一观察的可操作截图和截图像素坐标。macOS 的中键点击和双击均使用截图坐标。窗口坐标点击默认 `action.delivery_mode=background`，由驱动按指定窗口投递。macOS 后台坐标点击重新校验目标窗口的可见性、几何及点击点的同应用覆盖。观察期间被同应用窗口覆盖的点在覆盖消失后仍须重新观察。窗口坐标点击投递前，客户端用相同方式重新截取该窗口并比对整窗像素。图像改变或无法核实时返回 `stale_observation`；动态窗口优先使用新观察中的可用元素引用。可识别的普通文档窗口使用 SDK 原图；需要系统单窗裁取的叠层在像素几何无法确认时仅提供可取得的辅助功能观察。
 
@@ -174,13 +182,17 @@ macOS 窗口观察的 `keyboard_focus` 分别报告已确认的窗口和接收�
 
 每个扩展安装实例注册为独立设备；Profile 由会话的 `device_id` 确定。`browser_open(url=...)` 仅导航自有任务标签，并固定附带新页面观察，不公开关闭观察的选项。`browser_act` 支持 `click`、`fill`、`press`、`select`、`scroll`、`hover`，默认在动作完成后等待 `2000` 毫秒，再附带新观察；外层参数 `wait_after_ms` 可设为 `0–10000` 的整数毫秒，`observe_after=false` 时不等待。`browser_observe` 用于刷新、聚焦查询或检查仍在加载的同一任务页。
 
-导航加载超时保留任务页，返回 `navigation_state=loading`。导航等待与后观察（含 debugger 初始化）共享 15 秒内部预算；后观察遇导航竞态，最多只读重试两次，额外预算不超过 2 秒。不重新打开标签，也不重放点击或填充。该内部预算不等于标签创建、导航提交或 DOM 动作的总执行期限。
+导航加载超时会保留任务页并返回 `navigation_state=loading`。导航等待与后观察（含 debugger 初始化）共享 15 秒内部预算。后观察遇到导航竞态时，最多再做两次只读重试，额外预算不超过 2 秒。接下来可继续观察同一任务页，原点击或填充回执保持有效。
 
-动作后的等待计入已有操作与后观察时间预算，不延长超时上限。等待期间暂停、取消或关闭会话仍优先；已执行的动作不会因等待或观察失败而重放。固定等待不保证所有异步任务已完成，页面仍在加载时继续观察同一目标。
+动作后的等待计入现有预算，暂停、取消或关闭会话可以打断等待。动作已经投递时，结果会保留执行状态。后观察显示页面仍在加载时，继续观察同一目标。
 
-浏览器观察文本 JSON 总预算约 7000 字符，不含独立图片；正文优先且上限 4000 字符，再分配交互元素和链接。`query` 接受非空字符串或1–20个非空字符串：单串按整段不区分大小写做子串匹配，数组任一项匹配即可，正文和控件使用同一规则；每项最多200字符、数组总长最多2000字符。匹配结果去重并保持原观察预算。零结果只表示本次扫描的已加载正文与控件未匹配，截断不表示内容不存在，未显示字段也不能用于推断站点全部能力。链接附带声明的 `target` 属性，它不证明已经打开新标签。
+浏览器观察的 JSON 文本预算约为 7,000 字符，图片有独立预算。正文优先，最多 4,000 字符，剩余空间留给控件和链接。`query` 对正文和控件做忽略大小写的子串匹配，接受一个非空字符串或 1–20 个非空字符串，数组中任一项命中即可。每项最多 200 字符，总长最多 2,000 字符。匹配会去重，截断信息说明本次扫描的范围。链接中的 `target` 是站点声明，实际打开的子标签见 `opened_tabs`。
 
-浏览器引用最长有效 60 秒，按会话、文档版本和目标绑定，动作与导航后失效。所有工具及代码中的 `page` 固定指向当前任务页；点击成功不表示导航成功，新标签不会自动接管。访问已观察链接可把其 URL 交给 `browser_open` 或 `page.goto`。点击、键盘与悬停自动滚动并检查目标，在元素准备后通过 CDP Input 执行；滚动修改最近可滚动容器或页面的 DOM 偏移并返回实际 delta，不发送 wheel 事件；已知只读、错误目标类型与当前覆盖层在无副作用预检中拒绝并保留任务页，嵌套滚动容器裁剪则允许显露后再次命中检查；填充使用浏览器文本输入，原生下拉选择触发 DOM 语义事件。站点仍可能拒绝操作。`browser_exec` 在 Server 的隔离 QuickJS 引擎中组织浏览器代码，通过受会话约束的内部工具执行；`page.evaluate` 可执行任务页 JavaScript，原始 CDP 不对 Agent 开放。页面脚本具有该站点登录用户的页面权限，因此固定观察的密码过滤不约束脚本读取。`browser_read` 保存有界文本或表格快照并支持缓存分页；`browser_wait` 支持有期限的条件等待。代码运行与普通动作共用授权、去重和取消，单会话代码执行期间拒绝其他操作；每个浏览器步骤独立检查授权并持有派生操作 ID。脚本失败保留 `steps_completed` 和有界的 `failed_step`（步骤操作 ID、方法、状态及原始错误）；首次执行前的明确拒绝为 `refused`，已有步骤完成后的明确失败为 `failed`，在途超时、断连或无确认回执保持 `outcome_unknown`。纯脚本错误为 `failed`，明确取消与结果未知分别报告，不能用步骤数为零推断没有副作用；输入准备的滚动和 focus 也会触发页面事件。动作成功后观察失败仍为 `executed` 并附 `observation_error`。代码默认最多20秒，可设至120秒，MCP等待默认15秒后可通过 `operation_status` 查询或 `operation_cancel` 取消。同一任务页的重复清理等待同一次清理结果，新任务页不能越过清理；清理失败保留原始原因、`cleanup_error` 与必要的恢复信息，无客户端确认时不宣称任务页已清理。控制会话仍有效而任务页缺失返回 `task_tab_missing`，用 `browser_open` 创建任务页；真实停止或过期仍需新建控制会话。详细生命周期及代码接口见 [浏览器客户端](browser-profile-design.md)。
+浏览器引用绑定到会话、文档版本和目标，最长有效 60 秒，动作或导航后刷新。工具和脚本里的 `page` 都指向当前任务页。需要访问已观察到的链接时，可以把 URL 交给 `browser_open` 或 `page.goto`。
+
+`browser_exec` 在 Server 的 QuickJS 引擎运行。每个浏览器步骤独立核对授权，使用派生操作 ID，并遵循普通动作的去重和取消规则。脚本保留会话独占，回执记录 `steps_completed` 和 `failed_step`。页面动作完成后如果观察失败，回执仍为 `executed`，并附 `observation_error`。默认脚本时限为 20 秒，可设至 120 秒。MCP 默认等待 15 秒，之后可用 `operation_status` 查询或 `operation_cancel` 取消。
+
+`page.evaluate` 在任务页中用网站当前用户的页面权限执行，能读取页面向 JavaScript 开放的数据。它和固定观察的字段过滤有各自的访问范围。关于观察、浏览器输入、快照分页、异常回执和清理，见浏览器客户端文档。[浏览器客户端](browser-profile-design.md)
 
 ## Shell、文件与结果
 
@@ -188,17 +200,17 @@ macOS 窗口观察的 `keyboard_focus` 分别报告已确认的窗口和接收�
 
 Shell 完整 JSON 默认返回预算 `output_limit_chars=6000`，可设为 1024–12000。`output_truncated` 表示还有保留文本，使用原操作 ID 与 `next_output_offsets` 继续读取；偏移按解码字符计算。`capture_truncated` 表示执行捕获时已丢失内容，分页无法恢复。运行中的滚动窗口可报告 `output_unavailable_before`，最终结果可能仍保留相应前缀。分页只读缓存。
 
-文件工具仅处理 UTF-8 文本与目录列表，遵循当前用户的系统文件权限。读写正文上限为 1 MiB；写入已存在文件需要显式 `overwrite=true`。Shell 与文件能力不提供隔离沙箱。
+文件工具提供 UTF-8 文本读写和目录列表，正文上限为 1 MiB。覆盖现有文件时，显式使用 `overwrite=true`。Shell 和文件工具使用客户端所在账户的系统权限，可以访问该账户有权限使用的资源。
 
 新操作通常省略 `operation_id`。显式提供时，它是当前 Agent 连接与会话内的请求去重键；Server 将其映射为短规范执行 ID，数据库、设备日志和响应使用该 ID。完整作用域键的 SHA-256 仅保存在数据库内部 `key_hash`，先按完整键查找已有操作；短 ID 碰撞时另选候选，不把不同请求键合并为一次操作。自动分配的短 ID 同样检查数据库重复。`op_` 加恰好 8 位 Base64URL 是 Server 返回 ID 的保留格式，调用方不要用它自建请求键；未知的该格式 ID 会被拒绝。重试同一会话中的同一请求可复用原键或返回 ID，同 ID 改参数会被拒绝；不同会话可独立使用同一原键，已返回的执行 ID 不能用于另一会话。查询和取消只使用响应的 `operation_id`。设备保存执行意图和终态，恢复后不自动重放。Server 仅短期缓存返回内容；SQLite 不保存命令、输入、文件正文或截图。服务重启后未完成操作标为结果未知。
 
-图片通过原生 MCP `ImageContent` 返回，不在 JSON 中重复嵌入 base64。原始图片上限为 4 MiB，设备 WebSocket 消息上限为 8 MiB。`executed` 仅表示执行回执，业务结果还需检查退出码、文件内容或后续观察。取消和关闭不能回滚已发生的副作用。
+图片通过 MCP `ImageContent` 单独返回，原始图片上限 4 MiB，设备 WebSocket 消息上限 8 MiB。收到 `executed` 后，可通过退出码、文件内容或新观察核对业务结果。取消和关闭只影响后续执行，已经发生的修改需要另行处理。
 
 ## 运行环境与打包
 
 Server 的运行环境按根 `package.json` 的 `engines` 约定：Node.js 22.x 最低 22.13.0，23.x 最低 23.4.0，支持 24 及以上主版本。macOS App 目标为 Apple Silicon/macOS 14+，无需 Node、npm 或 Python。`NativeDriver.swift` 直接使用 Cua Driver 0.47.8 的版本化 C ABI（1.1），按需创建同进程实例并验证 embedded 模式与空 socket 路径。原生会话维持 standard 权限上限，不开启 unrestricted 或浏览器 profile 授权。Server 分发不携带该 SDK。
 
-App 包内包含 AppKit 主程序、Swift 设备客户端、独立 Swift 更新器、共享契约资源及裁剪到 arm64 的 Cua dylib；不分发 Node、JavaScript 桌面程序或 npm 依赖树。Foundation 负责 WebSocket/HTTP，系统 SQLite 保存操作去重日志，POSIX 进程组实现 Shell 取消，文件操作使用系统 API。凭据、暂停与本机状态保留在 App Bundle 外的私有目录。原生代码或签名变化可能影响系统权限，构建和协议测试不能证明实际已安装 App 的截图或输入可用。
+macOS App 包含 AppKit 主程序、Swift 设备客户端、更新器、共享契约和 arm64 Cua dylib。Foundation 处理 WebSocket 和 HTTP，系统 SQLite 保存去重日志，Shell 通过 POSIX 进程组取消，文件读写使用系统 API。凭据、暂停和本机状态位于 App Bundle 外的私有目录。更换原生代码或签名后，请在实际安装的 App 中检查截图和输入权限。
 
 桌面接管保护只覆盖在途输入，读取和普通鼠标移动不触发暂停。手动暂停持久保存，远程请求不能解除。依赖及许可见 [第三方说明](third-party-notices.md)。
 
