@@ -1,23 +1,27 @@
 # Windows PC 客户端
 
-Windows x64 客户端提供截图、前台键鼠输入、Shell 和文件能力，直接连接现有 aBridge Server。`apps/windows/windows-native-shell/` 包含 Rust 原生运行时和 Win32 界面；`src/` 保留此前 TypeScript 实现及驱动参考，供行为对照测试使用，不随包分发。无需修改或重新部署 Server。
+Windows 客户端预览版提供截图、前台键鼠输入、Shell 和 UTF-8 文件读写，可直接连接现有 aBridge Server。使用 Windows 10 或 11 x64，并保留系统自带的 Windows PowerShell 5.1。截图和键鼠操作需要解锁的交互式桌面。ARM64 尚未验证。
 
-## 普通用户：下载、解压、启动
+## 下载与安装
 
-当前提供**未签名便携 ZIP**，不是 MSI/Setup 安装器，也没有自动更新。需要 Windows 10/11 x64、系统自带的 Windows PowerShell 5.1、可交互且未锁定的桌面；ARM64 尚未验证。界面和运行时均为 Rust 原生程序，不分发或下载 Node、.NET、WinUI 3 或 Windows App SDK。用户不必安装开发工具，也不需要管理员权限。完整解压程序目录须小于 **10,000,000 字节**；构建和验包都强制检查此上限，许可与文档也计入其中。用户状态、操作日志及用户创建的文件单独存放，不属于静态程序包。
+预览版以**未签名便携 ZIP** 分发，解压后即可运行，无需管理员权限、Node.js 或 .NET。GitHub Actions 的下载需要登录 GitHub，产物保留 30 天。也可以在 Windows 上[从源码构建](#源码构建)。
 
-1. 在提供该代码分支的 GitHub 仓库进入 **Actions → CI**，选择与你要安装的提交号一致、**Windows client** 检查成功的运行。
-2. 下载页面底部的 **windows-client-unsigned** artifact（需要登录 GitHub）。先解开 artifact 外层 ZIP，得到 `aBridge-<版本>-windows-x64-unsigned.zip` 和同名 `.sha256` 文件。Actions 产物会过期；这不是官方 Release 已发布的承诺。
-3. 可用 PowerShell 的 `Get-FileHash .\aBridge-<版本>-windows-x64-unsigned.zip -Algorithm SHA256` 与 `.sha256` 核对。校验和用于核对内容一致性，不替代发布者身份或代码签名。
-4. 将客户端 ZIP **完整解压**到自己的固定目录，例如 `%LOCALAPPDATA%\Programs\aBridge-preview-<提交号>`。不要直接在 ZIP 内启动，也不要只复制 EXE。
-5. 双击解压后 `aBridge` 文件夹中的 **aBridge.exe**。可以右键为它创建桌面快捷方式。未签名包可能受到 Windows 或组织策略拦截；不要关闭系统防护或绕过组织策略。
-6. 在客户端填写 Server 地址，选择浏览器授权并在页面确认；也可输入管理台为这台电脑生成的 **Device Token**。按需开启截图、输入、Shell、文件能力。浏览器扩展需要另外安装和授权。
+1. 打开主分支的 CI 运行列表，选择 **Windows client** 检查成功且有 **windows-client-unsigned** 产物的运行。[GitHub Actions](https://github.com/xerrors/aBridge/actions/workflows/ci.yml?query=branch%3Amain)
+2. 下载并解开产物的外层 ZIP，得到 `aBridge-<版本>-windows-x64-unsigned.zip` 和同名 `.sha256` 文件。
+3. 在 PowerShell 中运行 `Get-FileHash .\aBridge-<版本>-windows-x64-unsigned.zip -Algorithm SHA256`（将文件名换成实际下载的名称），与 `.sha256` 中的哈希值核对。
+4. 将客户端 ZIP **完整解压**到自己的固定目录，例如 `%LOCALAPPDATA%\Programs\aBridge-preview-<提交号>`，然后打开解压后 `aBridge` 文件夹中的 **aBridge.exe**。未签名包可能受 Windows 或组织策略限制。
 
-非本机 HTTP 连接会要求确认完整地址；推荐 HTTPS。Device Token 不等于 Agent Key 或管理员 Token，不要把凭据粘贴进聊天、命令行或日志。
+## 绑定设备
+
+1. 在客户端的「连接」中填写 Server 地址，点击「连接并授权」。在打开的浏览器中以普通账户登录管理台并确认。已有这台电脑的 **Device Token** 时，也可以在「使用 Device Token」中填写。
+2. 在「本机能力」里打开所需的屏幕、输入、Shell 或文件能力，再到管理台「设备」页确认 Windows 设备已上线。
+3. 在管理台的「Agent 连接」中选择这台设备，授予任务所需的能力与有效期。在 Agent 端运行 `devices_list` 检查设备列表。[连接 Agent](https://xerrors.github.io/aBridge/guide/start.html#连接-agent)
+
+跨机器连接建议使用 HTTPS。使用非本机 HTTP 地址时，客户端会先要求确认完整地址。Device Token 仅用于设备绑定。需要使用 Chrome Profile 的登录态时，请单独安装并授权扩展。[浏览器客户端](https://xerrors.github.io/aBridge/browser-profile-design.html)
 
 ## 更新、退出和卸载
 
-- **更新前先从托盘退出旧客户端**。完整解压新 ZIP 到新的程序目录，启动新目录的 EXE；不要让两个程序同时使用同一份状态。保留旧目录即可回退程序文件。
+- 预览版使用手动更新。**先从托盘退出旧客户端**，再完整解压新 ZIP 到新的程序目录，启动新目录的 EXE。保留旧目录即可回退程序文件。
 - 默认凭据、绑定、暂停状态和操作日志位于 `%LOCALAPPDATA%\aBridge`，与程序目录分开。更新程序不要删除或覆盖这个状态目录；使用过 `--state-dir` 或私有 `deployment.json` 的用户应继续指定原状态目录，不要将这些私有文件上传到 GitHub。
 - 如需自定义状态目录，可运行 `aBridge.exe --state-dir "D:\自己的私有状态目录"`。首次使用新的空状态目录需要重新授权。
 - 状态目录优先级为 `--state-dir`、程序旁的 `deployment.json` 中的 `state_dir`、`%LOCALAPPDATA%\aBridge`。Rust 外壳与旧 WPF 外壳使用相同的目录规范化、互斥锁和激活事件名称；同一目录重复启动只唤起已有窗口。外观仍保存在该目录的 `windows-ui/native-preferences.json`，无需转换设备配置。
@@ -36,7 +40,7 @@ npm run package:windows:check
 npm run desktop:windows
 ```
 
-打包器从 PATH（或 `CARGO` 环境变量）查找 Cargo，生成协议包定义的契约，再使用锁定的 crate 依赖构建原生 EXE。首次构建需要访问 npm 和 crates.io；Node 只用于开发构建和验证。SQLite 编译进程序，TLS 使用 Windows 系统实现，桌面驱动使用内嵌脚本调用系统 PowerShell。输出位于 `dist/releases/`，版本单源为根 `package.json`。构建产物不提交到 Git；CI artifact 或本地构建包才包含可运行二进制。包内附带本文、运行时清单及第三方许可，不包含私有部署配置或凭据。
+打包器从 PATH（或 `CARGO` 环境变量）查找 Cargo，生成协议包定义的契约，再使用锁定的 crate 依赖构建原生 EXE。首次构建需要访问 npm 和 crates.io。输出位于 `dist/releases/`，版本来自根 `package.json`。构建和验包都要求完整解压的程序目录小于 **10,000,000 字节**，包括运行时清单、使用说明和第三方许可。[Windows 运行时与协议](https://xerrors.github.io/aBridge/architecture.html#windows-客户端)
 
 ## 能力边界和排障
 

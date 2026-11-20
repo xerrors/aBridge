@@ -284,6 +284,7 @@ const coverage = [
   `| **Chrome 扩展** | MiniWoB++ **${total.succeeded}/${total.episodes}** | 实际 Chrome 扩展，${suite.tasks.length} 类网页任务 | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json) |`,
   `| **Android 预览** | AndroidWorld 回归 **${androidScore(androidRegression)}**；挑战 **${androidScore(androidChallenge)}** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务 | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |`,
   "| **macOS App** | 暂无公开任务分数 | 原生 App 构建、设备连接与执行回归 | [原生验证](tools/README.md) |",
+  "| **Windows 客户端预览** | 暂无公开任务分数 | Windows x64 CI 验包，覆盖设备绑定、权限控制、Shell 和文件操作 | [Windows 验证](docs/windows-client.md#验证) |",
   "| **Linux CLI** | 暂无公开任务分数 | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具 | [Linux 验证](apps/linux-client/README.md) |",
   "",
   "<!-- benchmark:coverage:end -->",

@@ -63,7 +63,7 @@ Origin 必须是纯 `scheme://host[:port]`，不带路径、凭据、查询、fr
 ssh -N -L 127.0.0.1:8765:127.0.0.1:8765 bridge-host
 ```
 
-客户端必须能访问配置中的 Server URL。Mac 上的回环地址不等于服务器或容器内的回环地址。
+客户端必须能访问配置中的 Server URL。`127.0.0.1` 始终指向发起连接的机器或容器。
 
 ## 本地 Server 分发包
 
@@ -135,6 +135,12 @@ dist/desktop/aBridge.app/Contents/MacOS/abridge-desktop diagnose
 
 自定义状态目录使用 `--state-dir`，日志相应位于 `<state-dir>/logs/client.log`。终端诊断的权限责任链不等于 App 的责任链；实际窗口截图和输入需在 App 环境中用自有目标核对。
 
+## Windows PC 客户端
+
+Windows 10/11 x64 预览版提供截图、前台键鼠、Shell 和 UTF-8 文件读写。通过 GitHub Actions 获取未签名便携 ZIP，或在 Windows 上从源码构建。完整解压后启动 `aBridge.exe`，填写客户端能访问的 Server 地址并完成浏览器授权。[下载、安装与绑定](windows-client.md)
+
+桌面操作需要已解锁的交互式桌面。客户端通过「本机能力」控制开放的能力，通过设置窗或托盘暂停、停止任务和退出。更新前退出旧客户端，解压新包并沿用原状态目录，默认位于 `%LOCALAPPDATA%\aBridge`。[更新、退出和卸载](windows-client.md#更新、退出和卸载)
+
 ## Linux CLI
 
 Linux 客户端是独立 Rust 可执行文件，只提供 `shell/files`，使用现有设备协议直接连接 Server。安装后不需要 Node、浏览器或图形环境；需要系统 `/bin/sh` 和可信 CA 证书。设备以 `computer` 类型和 `linux` 平台显示，能力仍受设备授权、Agent 策略和本机开关共同限制。
@@ -177,7 +183,7 @@ npm run build
 
 ## 发布与便携 App
 
-tag 驱动的 npm、Chrome ZIP 和 macOS 分发流程见[发布说明](releasing.md)。`npm run package:macos` 生成无需 Node 的便携原生 App ZIP；未配置 Developer ID 时文件名明确标注 unsigned，不能将其视为已公证版本。
+tag 驱动的正式分发和 Windows 预览版的 CI 打包流程见[发布说明](releasing.md)。`npm run package:macos` 生成无需 Node 的便携原生 App ZIP；未配置 Developer ID 时文件名标注 unsigned。
 
 ## 可选 OIDC 登录与平台 MCP 委托
 
@@ -227,20 +233,20 @@ Bundle ID、安装路径和用户状态保持稳定，更新器不重置系统�
 
 ## Docker 镜像
 
-正式 Server 镜像为 `ghcr.io/xerrors/abridge`，提供 `linux/amd64` 和 `linux/arm64`。此处示例使用已发布的 `0.4.17` 标签。查看 [GHCR 镜像列表](https://github.com/xerrors/aBridge/pkgs/container/abridge) 确认可用标签；`latest` 指向最近由镜像工作流发布的正式版本。仅包含 Server 和管理台，不包含桌面 SDK。
+正式 Server 镜像为 `ghcr.io/xerrors/abridge`，提供 `linux/amd64` 和 `linux/arm64`。此处示例使用已发布的 `0.4.23` 标签。查看 [GHCR 镜像列表](https://github.com/xerrors/aBridge/pkgs/container/abridge) 确认可用标签；`latest` 指向最近由镜像工作流发布的正式版本。仅包含 Server 和管理台，不包含桌面 SDK。
 
 ```sh
 docker run -d --name abridge --restart unless-stopped \
   -p 127.0.0.1:8765:8765 \
   -v abridge-data:/data \
   -e ABRIDGE_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
-  ghcr.io/xerrors/abridge:0.4.17
+  ghcr.io/xerrors/abridge:0.4.23
 ```
 
 将 `ABRIDGE_PUBLIC_ORIGIN` 换成实际访问地址；使用 HTTPS 反向代理时填外部 HTTPS Origin。远程连接推荐 HTTPS/WSS；公网 HTTP 需要客户端明确确认。命名卷保存数据库和管理员凭据，更新镜像时复用同一数据卷；不要同时启动两个容器使用同一个卷。
 
 ```sh
-curl -f http://127.0.0.1:11111/health
+curl -f http://127.0.0.1:8765/health
 docker stats --no-stream abridge
 docker logs --tail 30 abridge
 ```
@@ -259,12 +265,8 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 
 ## 两种设备绑定方式
 
-macOS 设置和浏览器扩展均可选择“浏览器授权”或“Device Token”。浏览器授权通过登录与确认自动领取设备凭证。手动绑定时，在管理台「添加设备」选择对应平台，在「绑定设备」中生成仅显示一次的设备凭证。macOS 和扩展将凭证填在 Device Token 栏，点击「验证并连接」；Linux CLI 在 `setup` 提示时粘贴 Device Token；Android 在 App 中填写 Device Key 和 HTTPS 服务地址后绑定。已有设备可在详情设置中重新生成凭证，旧凭证和当前设备连接会立即失效。
+macOS、Windows 和浏览器扩展支持浏览器授权和 Device Token。浏览器授权通过登录与确认自动领取设备凭证。Windows 预览版可直接从客户端启动浏览器授权，也可填写已有的电脑设备 Device Token。其他客户端手动绑定时，在管理台「添加设备」选择对应平台，在「绑定设备」中生成仅显示一次的设备凭证。macOS 和扩展将凭证填在 Device Token 栏，点击「验证并连接」；Linux CLI 在 `setup` 提示时粘贴 Device Token；Android 在 App 中填写 Device Key 和 Server 地址后绑定。已有设备可在详情设置中重新生成凭证，旧凭证和当前设备连接会立即失效。
 
-设备凭证只用于设备绑定。macOS、浏览器扩展和 Linux CLI 先调用 `GET /api/device` 验证设备凭证及类型，再提交本地绑定。无效、撤销或类型不匹配的凭证不替换旧绑定。凭证通过私有输入管道或扩展消息传递，不放入命令行、URL 或日志，绑定后保存在原设备凭据存储中，暂停状态保留。
+设备凭证只用于设备绑定。macOS、Windows、浏览器扩展和 Linux CLI 先调用 `GET /api/device` 验证设备凭证及类型，再提交本地绑定。无效、撤销或类型不匹配的凭证不替换旧绑定。凭证通过私有输入管道或扩展消息传递，不放入命令行、URL 或日志，绑定后保存在原设备凭据存储中，暂停状态保留。
 
 HTTPS 无需额外确认。选择非本机 HTTP 地址时，两种绑定方式都会先显示完整 Origin 并提醒设备凭据、操作内容和截图未经加密；默认取消，确认后只对该 Origin 生效，换地址需重新确认。确认随成功绑定保存，重启/重连不会自动扩大允许范围。扩展仍需单独授予所填 Server 的站点访问权限。此设备连接确认不改变 Server 的 Host/Origin 防护；启用 OIDC 的 Server 使用公网 HTTP 时，管理员还需显式打开 `ABRIDGE_ALLOW_INSECURE_HTTP=true`。旧 Server 需升级后才能使用手动 Token 验证接口。
-
-## Windows PC 客户端
-
-独立 Windows x64 客户端的源码构建、便携包安装、现有设备绑定与验证范围见 [Windows 客户端](windows-client.md)。更新只替换本机程序目录并保留私有状态目录，不需要更新 Server。

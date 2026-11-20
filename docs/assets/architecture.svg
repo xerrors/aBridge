@@ -1,49 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="398" viewBox="0 0 1120 398" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="486" viewBox="0 0 1120 486" role="img" aria-labelledby="title desc">
   <title id="title">aBridge 设备连接方式</title>
-  <desc id="desc">Agent 通过 MCP 连接 aBridge Server。macOS、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server，各自拥有独立的设备授权。</desc>
+  <desc id="desc">Agent 通过 MCP 连接 aBridge Server。macOS、Windows、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server，各自拥有独立的设备授权。</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#0066DD"/></marker>
   </defs>
-  <rect width="1120" height="398" rx="20" fill="#F7F9FC"/>
+  <rect width="1120" height="486" rx="20" fill="#F7F9FC"/>
   <g stroke="#0066DD" stroke-width="2.5" fill="none">
-    <path d="M247 199H374" marker-end="url(#arrow)"/>
-    <path d="M652 199H750M750 67V331"/>
+    <path d="M247 243H374" marker-end="url(#arrow)"/>
+    <path d="M652 243H750M750 67V419"/>
     <g marker-end="url(#arrow)">
       <path d="M750 67H799"/>
       <path d="M750 155H799"/>
       <path d="M750 243H799"/>
       <path d="M750 331H799"/>
+      <path d="M750 419H799"/>
     </g>
   </g>
   <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
-    <rect x="36" y="144" width="211" height="110" rx="12" fill="#FFF" stroke="#D8E0EB"/>
-    <text x="58" y="186" font-size="21" font-weight="700" fill="#18283F">你的 Agent</text>
-    <text x="58" y="217" font-size="14" fill="#5A6B82">Streamable HTTP 客户端</text>
-    <text x="311" y="181" text-anchor="middle" font-size="14" font-weight="600" fill="#0066DD">MCP</text>
+    <rect x="36" y="188" width="211" height="110" rx="12" fill="#FFF" stroke="#D8E0EB"/>
+    <text x="58" y="230" font-size="21" font-weight="700" fill="#18283F">你的 Agent</text>
+    <text x="58" y="261" font-size="14" fill="#5A6B82">Streamable HTTP 客户端</text>
+    <text x="311" y="225" text-anchor="middle" font-size="14" font-weight="600" fill="#0066DD">MCP</text>
 
-    <rect x="387" y="132" width="265" height="134" rx="12" fill="#EDF4FF" stroke="#0066DD" stroke-width="1.5"/>
-    <text x="410" y="180" font-size="22" font-weight="700" fill="#0066DD">aBridge Server</text>
-    <text x="410" y="211" font-size="14" fill="#344B69">账户 · 设备授权 · 会话</text>
-    <text x="410" y="237" font-size="13" fill="#5A6B82">管理台随 Server 提供</text>
-    <text x="701" y="181" text-anchor="middle" font-size="12" font-weight="600" fill="#0066DD">WebSocket</text>
+    <rect x="387" y="176" width="265" height="134" rx="12" fill="#EDF4FF" stroke="#0066DD" stroke-width="1.5"/>
+    <text x="410" y="224" font-size="22" font-weight="700" fill="#0066DD">aBridge Server</text>
+    <text x="410" y="255" font-size="14" fill="#344B69">账户 · 设备授权 · 会话</text>
+    <text x="410" y="281" font-size="13" fill="#5A6B82">管理台随 Server 提供</text>
+    <text x="701" y="225" text-anchor="middle" font-size="12" font-weight="600" fill="#0066DD">WebSocket</text>
 
     <g fill="#FFF" stroke="#D8E0EB">
       <rect x="813" y="32" width="271" height="70" rx="12"/>
       <rect x="813" y="120" width="271" height="70" rx="12"/>
       <rect x="813" y="208" width="271" height="70" rx="12"/>
       <rect x="813" y="296" width="271" height="70" rx="12"/>
+      <rect x="813" y="384" width="271" height="70" rx="12"/>
     </g>
     <g font-size="18" font-weight="700" fill="#18283F">
       <text x="835" y="60">macOS App</text>
-      <text x="835" y="148">Linux CLI</text>
-      <text x="835" y="236">Android 预览</text>
-      <text x="835" y="324">浏览器扩展</text>
+      <text x="835" y="148">Windows 客户端预览</text>
+      <text x="835" y="236">Linux CLI</text>
+      <text x="835" y="324">Android App</text>
+      <text x="835" y="412">浏览器扩展</text>
     </g>
     <g font-size="14" fill="#5A6B82">
       <text x="835" y="84">屏幕 · 键鼠 · Shell · 文件</text>
-      <text x="835" y="172">Shell · 文件</text>
-      <text x="835" y="260">屏幕 · 触摸 · 授权目录</text>
-      <text x="835" y="348">网页操作 · Profile 登录态</text>
+      <text x="835" y="172">截图 · 前台键鼠 · Shell · 文件</text>
+      <text x="835" y="260">Shell · 文件</text>
+      <text x="835" y="348">屏幕 · 触摸 · 授权目录</text>
+      <text x="835" y="436">网页操作 · Profile 登录态</text>
     </g>
   </g>
 </svg>
