@@ -1,6 +1,6 @@
 # 发布
 
-软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后执行完整检查，生成 Server、浏览器 ZIP、macOS Apple Silicon 包和 Linux CLI 包。
+软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后验证源码，在 Linux 打包并验证最终 Server 和浏览器 ZIP，在 macOS 构建并验证 Apple Silicon App，并运行 Linux CLI 发布检查。
 
 创建 tag 前，将本次版本号、日期、发布状态及变更摘要写入[变更记录](changelog.md)顶部，与版本号一起提交。对照上一发布 tag 核对实际交付内容；涉及协议、数据库或安装方式变化时，写明受影响的用户和升级步骤。
 
@@ -53,7 +53,7 @@ Server 最低支持 Node 22.13.0，CI 覆盖最低补丁版本及 Node 22、24�
 
 ```sh
 npm run build
-npm run package:macos
+npm run package:macos -- --reuse-build
 ```
 
 面向其他用户稳定分发需要 Apple Developer Program、Developer ID Application 证书与私钥，以及 Apple 公证凭据。准备好后添加 GitHub Secrets：
@@ -81,7 +81,7 @@ Use the same signing key for subsequent releases to allow in-place upgrades. And
 
 ## Linux
 
-发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带各架构的 `abridge-client-<version>-<target>.tar.gz`、SHA-256 和体积报告。下载后按 [Linux 安装说明](https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md#安装与绑定) 核对校验和。
+发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带两个架构各自的 `abridge-client-<version>-<target>.tar.gz` 和一份 `SHA256SUMS`。各架构的体积报告和单独的校验文件留在 CI artifact 中。下载后按 [Linux 安装说明](https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md#安装与绑定) 核对校验和。
 
 ## Chrome 应用商店
 

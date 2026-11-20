@@ -28,15 +28,17 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - name: Validate release identity
         run: node --import tsx tools/check-release.ts
-      - run: npm run check
+      - run: npm run check:code
       - name: Build public Server distribution
+        if: runner.os == 'Linux'
         env:
           NPM_PACKAGE_NAME: ${{ vars.NPM_PACKAGE_NAME || '@xerrors/abridge' }}
         run: node --import tsx tools/package-release.ts --public
       - run: npm run package:check
+        if: runner.os == 'Linux'
       - name: Build portable unsigned macOS candidate
         if: runner.os == 'macOS'
-        run: npm run package:macos
+        run: npm run package:macos -- --reuse-build
       - name: Sign and notarize macOS release
         if: runner.os == 'macOS' && vars.APPLE_SIGNING_ENABLED == 'true'
         env:
@@ -149,8 +151,24 @@ jobs:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           pattern: linux-client-*
-          path: release
+          path: ${{ runner.temp }}/linux-client
           merge-multiple: true
+      - name: Prepare Linux release assets
+        working-directory: ${{ runner.temp }}/linux-client
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          archives=()
+          checksums=()
+          for target in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
+            archive="abridge-client-$version-$target.tar.gz"
+            archives+=("$archive")
+            checksums+=("$archive.sha256")
+          done
+          sha256sum --check --strict -- "${checksums[@]}"
+          cp -- "${archives[@]}" "$GITHUB_WORKSPACE/release/"
+          sha256sum -- "${archives[@]}" > "$GITHUB_WORKSPACE/release/SHA256SUMS"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

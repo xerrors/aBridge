@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { desktopSwiftTargets, desktopTarget } from "./lib/desktop-swift.js";
 import { run } from "./lib/process.js";
 import { resolvePackageDirectory } from "./lib/native-sdk.js";
 export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -99,10 +100,9 @@ export async function nativeBuildInputs(
     NSAccessibilityUsageDescription: "aBridge 仅在你启用桌面输入后执行已授权 Agent 的鼠标和键盘操作。",
   };
   const runtime: Record<string, string> = {
-      runtime_mode: "native",
-      ...(options.stateDir ? { state_dir: resolve(options.stateDir) } : {}),
-    },
-    target = "arm64-apple-macosx14.0";
+    runtime_mode: "native",
+    ...(options.stateDir ? { state_dir: resolve(options.stateDir) } : {}),
+  };
   const nativeSources = (await readdir(join(root, "apps/desktop/native/runtime")))
     .filter((name) => !name.startsWith(".") && /\.(swift|h)$/.test(name))
     .sort();
@@ -113,6 +113,7 @@ export async function nativeBuildInputs(
     "docs/third-party-notices.md",
     "LICENSE",
     "tools/build-native.ts",
+    "tools/lib/desktop-swift.ts",
     "tools/lib/process.ts",
     "tools/lib/native-sdk.ts",
     ...ICONS.map((name) => "apps/desktop/native/assets/" + name),
@@ -127,14 +128,14 @@ export async function nativeBuildInputs(
         sdk: sha256(await readFile(await nativeLibrary(root))),
         info,
         runtime,
-        target,
+        target: desktopTarget,
         signing_identity: options.signingIdentity,
         optimization: "-O",
       }),
     ),
     info,
     runtime,
-    target,
+    target: desktopTarget,
   };
 }
 /** npm supplies only the pinned build-time SDK artifact; no JS runtime enters the App. */
@@ -196,42 +197,20 @@ export async function buildNative(
   try {
     const macos = join(staging, "Contents/MacOS"),
       resources = join(staging, "Contents/Resources");
+    const swift = await desktopSwiftTargets(root);
     await mkdir(macos, { recursive: true });
     await mkdir(resources, { recursive: true });
-    await run(
-      "/usr/bin/swiftc",
-      [
-        "-O",
-        "-target",
-        inputs.target,
-        join(root, "apps/desktop/native/aBridge.swift"),
-        "-o",
-        join(macos, "aBridge"),
-        "-framework",
-        "AppKit",
-        "-framework",
-        "ApplicationServices",
-      ],
-      { env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: "14.0" } },
-    );
-    const native = join(root, "apps/desktop/native/runtime"),
-      frameworks = join(staging, "Contents/Frameworks");
+    await run("/usr/bin/swiftc", ["-O", ...swift.aBridge, "-o", join(macos, "aBridge")], {
+      env: { ...process.env, MACOSX_DEPLOYMENT_TARGET: "14.0" },
+    });
+    const frameworks = join(staging, "Contents/Frameworks");
     await mkdir(frameworks, { recursive: true });
     const library = join(frameworks, "libcua_driver_sdk.dylib");
     await run("/usr/bin/lipo", [await nativeLibrary(root), "-thin", "arm64", "-output", library]);
     await run("/usr/bin/install_name_tool", ["-id", "@rpath/libcua_driver_sdk.dylib", library]);
-    const sources = (await readdir(native))
-      .filter((name) => !name.startsWith(".") && name.endsWith(".swift") && !name.startsWith("Updater"))
-      .sort();
     await run("/usr/bin/swiftc", [
-      "-swift-version",
-      "6",
       "-O",
-      "-target",
-      inputs.target,
-      "-import-objc-header",
-      join(native, "cua_driver_abi.h"),
-      ...sources.map((name) => join(native, name)),
+      ...swift["abridge-desktop"],
       "-L",
       frameworks,
       "-lcua_driver_sdk",
@@ -241,20 +220,8 @@ export async function buildNative(
       "@executable_path/../Frameworks",
       "-o",
       join(macos, "abridge-desktop"),
-      "-framework",
-      "ApplicationServices",
     ]);
-    await run("/usr/bin/swiftc", [
-      "-swift-version",
-      "6",
-      "-O",
-      "-target",
-      inputs.target,
-      join(native, "Updater.swift"),
-      join(native, "UpdaterMain.swift"),
-      "-o",
-      join(macos, "abridge-updater"),
-    ]);
+    await run("/usr/bin/swiftc", ["-O", ...swift["abridge-updater"], "-o", join(macos, "abridge-updater")]);
     await clearBuildMetadata(staging);
     for (const binary of [library, join(macos, "abridge-desktop"), join(macos, "abridge-updater")]) {
       await chmod(binary, 0o755);

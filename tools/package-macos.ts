@@ -7,11 +7,16 @@ import { smokeDesktopRuntime } from "./install-desktop.js";
 import { buildNative, PROJECT_ROOT } from "./build-native.js";
 import { run } from "./lib/process.js";
 const { values } = parseArgs({
-  options: { "signing-identity": { type: "string" }, notarize: { type: "boolean" } },
+  options: {
+    "reuse-build": { type: "boolean" },
+    "signing-identity": { type: "string" },
+    notarize: { type: "boolean" },
+  },
 });
 const identity = values["signing-identity"] ?? "-",
   notarize = values.notarize ?? false;
 if (notarize && identity === "-") throw Error("Notarization requires a Developer ID signing identity");
+if (values["reuse-build"] && identity !== "-") throw Error("--reuse-build requires ad hoc signing");
 const { version } = JSON.parse(await readFile(join(PROJECT_ROOT, "package.json"), "utf8")) as {
   version: string;
 };
@@ -20,8 +25,11 @@ const work = await mkdtemp(join(tmpdir(), "abridge-macos-package-")),
 await mkdir(out, { recursive: true });
 let pendingArchive: string | undefined;
 try {
-  const app = join(work, "portable/aBridge.app");
-  await buildNative({ output: app, signingIdentity: identity, force: true });
+  const app = values["reuse-build"]
+    ? join(PROJECT_ROOT, "dist/desktop/aBridge.app")
+    : join(work, "aBridge.app");
+  const { reused } = await buildNative({ output: app, signingIdentity: identity });
+  if (reused) console.log("Reused verified macOS build");
   const metadata = JSON.parse(await readFile(join(app, "Contents/Resources/runtime.json"), "utf8"));
   if (JSON.stringify(metadata) !== JSON.stringify({ runtime_mode: "native" }))
     throw Error("Portable metadata contains machine-specific paths");
