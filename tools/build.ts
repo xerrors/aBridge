@@ -29,7 +29,7 @@ const workspaceSources: Plugin = {
 };
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
-for (const app of ["server"] as const) {
+for (const app of ["server", "windows"] as const) {
   const result = await build({
     entryPoints: [join(root, "apps", app, "src/cli.ts")],
     outfile: join(out, app, "cli.js"),
@@ -96,3 +96,19 @@ await writeFile(
 if (process.platform === "darwin" && process.arch === "arm64") {
   await buildNative({ output: join(out, "desktop/aBridge.app"), signingIdentity: "-" });
 }
+
+const windowsHost = await build({
+  entryPoints: [join(root, "apps/windows/src/windows-host.ts")],
+  outfile: join(out, "windows/windows-host.mjs"),
+  bundle: true,
+  plugins: [workspaceSources],
+  platform: "node",
+  format: "esm",
+  target: "node22.13",
+  packages: "external",
+  metafile: true,
+});
+await writeFile(
+  join(out, "windows/windows-host.meta.json"),
+  JSON.stringify(windowsHost.metafile, null, 2) + "\n",
+);

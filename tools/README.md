@@ -45,6 +45,12 @@
 
 [Linux 工作流](../.github/workflows/linux-client.yml) 在 amd64/arm64 原生 Ubuntu runner 上验证 Rust、Server 协议集成、包内可执行文件和真实用户级 systemd 安装、暂停持久化、重启与卸载。实际服务验收只使用虚构 Token、自有回环 fixture 和临时状态目录。工具链与安装说明见 [Linux 客户端](../apps/linux-client/README.md)。
 
+## Windows 原生客户端
+
+[windows-native.ts](windows-native.ts) 提供 `windows:shell:check`，从共享协议生成契约后执行 Rust 格式、测试和 Clippy。[package-windows.ts](package-windows.ts) 构建 Rust/Win32 EXE、便携 ZIP 和 SHA-256，限制完整解压目录小于 10,000,000 字节，不附带 Node、.NET 或 Windows App SDK。
+
+[check-windows-package.ts](check-windows-package.ts) 从解压后的 EXE 检查系统 DLL 依赖、命令行、浏览器授权、手动 Token、暂停、能力关闭、撤销、操作去重、文件和 PowerShell 执行。测试使用虚构身份、自有回环 Server 和临时状态目录。`check-windows-shell.ts` 另验单实例、隐藏、托盘命令、暂停快捷键和状态继承；真实截图、输入及多屏显示仍需在自有窗口验收。内嵌 PowerShell 驱动由 [windows-native-contract.ts](lib/windows-native-contract.ts) 核对与 TypeScript 参考实现一致，防止两份行为源漂移。
+
 ## 按需品牌资源生成
 
 | 文件                                         | 用途                                 | 入口                         |

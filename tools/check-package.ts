@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { list, extract } from "tar";
 import { unzipSync } from "fflate";
 import { serverPackageLock, type PackageLock } from "./lib/server-lock.js";
 import { checkInstalledPackage } from "./lib/check-installed-package.js";
@@ -13,9 +13,15 @@ const files = await readdir(dist),
   tarballs = files.filter((n) => !n.startsWith("._") && n.endsWith(".tgz"));
 if (tarballs.length !== 1) throw new Error("Expected exactly one Server tarball");
 const tarball = join(dist, tarballs[0]!);
-const listing = spawnSync("tar", ["-tzf", tarball], { encoding: "utf8" });
-if (listing.status !== 0) throw new Error("Cannot inspect Server tarball");
-const entries = listing.stdout.trim().split("\n");
+// Use the same portable tar implementation as npm. Some Windows inbox tar
+// versions reject npm's valid PAX headers before the package can be inspected.
+const entries: string[] = [];
+await list({
+  file: tarball,
+  onReadEntry: (entry) => {
+    entries.push(entry.path);
+  },
+});
 for (const name of entries) {
   if (
     name.split("/").includes("..") ||
@@ -35,8 +41,7 @@ const sourceLock = JSON.parse(await readFile(join(root, "package-lock.json"), "u
 const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version: string };
 const extracted = await mkdtemp(join(tmpdir(), "abridge-package-"));
 try {
-  const unpacked = spawnSync("tar", ["-xzf", tarball, "-C", extracted], { encoding: "utf8" });
-  if (unpacked.status !== 0) throw new Error("Cannot extract Server tarball");
+  await extract({ file: tarball, cwd: extracted });
   const pkg = JSON.parse(await readFile(join(extracted, "package/package.json"), "utf8")) as {
     name: string;
     version: string;

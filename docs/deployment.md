@@ -264,3 +264,7 @@ macOS 设置和浏览器扩展均可选择“浏览器授权”或“Device Toke
 设备凭证只用于设备绑定。macOS、浏览器扩展和 Linux CLI 先调用 `GET /api/device` 验证设备凭证及类型，再提交本地绑定。无效、撤销或类型不匹配的凭证不替换旧绑定。凭证通过私有输入管道或扩展消息传递，不放入命令行、URL 或日志，绑定后保存在原设备凭据存储中，暂停状态保留。
 
 HTTPS 无需额外确认。选择非本机 HTTP 地址时，两种绑定方式都会先显示完整 Origin 并提醒设备凭据、操作内容和截图未经加密；默认取消，确认后只对该 Origin 生效，换地址需重新确认。确认随成功绑定保存，重启/重连不会自动扩大允许范围。扩展仍需单独授予所填 Server 的站点访问权限。此设备连接确认不改变 Server 的 Host/Origin 防护；启用 OIDC 的 Server 使用公网 HTTP 时，管理员还需显式打开 `ABRIDGE_ALLOW_INSECURE_HTTP=true`。旧 Server 需升级后才能使用手动 Token 验证接口。
+
+## Windows PC 客户端
+
+独立 Windows x64 客户端的源码构建、便携包安装、现有设备绑定与验证范围见 [Windows 客户端](windows-client.md)。更新只替换本机程序目录并保留私有状态目录，不需要更新 Server。

@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
+import {
+  spawnVerificationProcess,
+  stopVerificationProcess,
+} from "../../../tools/lib/verification-process.js";
 import { once } from "node:events";
 import product from "../../../package.json" with { type: "json" };
 const serverCli = resolve("dist/server/cli.js");
@@ -12,9 +16,8 @@ function launch(
   cwd: string,
   env: NodeJS.ProcessEnv = {},
 ): { child: ChildProcess; ready: Promise<{ url: string; adminUrl: string }> } {
-  const child = spawn(process.execPath, [serverCli, ...args], {
+  const child = spawnVerificationProcess([serverCli, ...args], {
     cwd,
-    stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ABRIDGE_ADMIN_TOKEN: undefined, ...env },
   });
   let stdout = "",
@@ -51,7 +54,7 @@ function launch(
 async function stop(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const ended = once(child, "exit");
-  child.kill("SIGTERM");
+  await stopVerificationProcess(child);
   const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
   const [code] = await ended;
   clearTimeout(timer);

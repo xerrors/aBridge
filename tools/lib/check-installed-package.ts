@@ -1,9 +1,11 @@
 /** Exercise the candidate through npm, outside the workspace and without a populated cache. */
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm, writeFile, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { npmInvocation } from "./npm.js";
+import { spawnVerificationProcess, stopVerificationProcess } from "./verification-process.js";
 
 export async function checkInstalledPackage(tarball: string, name: string, version: string): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "abridge-consumer-"));
@@ -16,34 +18,45 @@ export async function checkInstalledPackage(tarball: string, name: string, versi
     await writeFile(join(directory, "package.json"), '{"private":true}\n');
     await writeFile(join(directory, "user.npmrc"), "");
     await writeFile(join(directory, "global.npmrc"), "");
-    const install = spawnSync(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      [
-        "install",
-        tarball,
-        "--prefix",
-        directory,
-        "--cache",
-        join(directory, "cache"),
-        "--userconfig",
-        join(directory, "user.npmrc"),
-        "--globalconfig",
-        join(directory, "global.npmrc"),
-        "--offline",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--no-save",
-      ],
-      { cwd: directory, env, encoding: "utf8", timeout: 60000 },
-    );
+    const invocation = npmInvocation([
+      "install",
+      tarball,
+      "--prefix",
+      directory,
+      "--cache",
+      join(directory, "cache"),
+      "--userconfig",
+      join(directory, "user.npmrc"),
+      "--globalconfig",
+      join(directory, "global.npmrc"),
+      "--offline",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--no-update-notifier",
+      "--no-save",
+    ]);
+    const installStarted = performance.now();
+    const install = spawnSync(invocation.command, invocation.args, {
+      cwd: directory,
+      env,
+      encoding: "utf8",
+      // Bound cold Windows extraction of the bundled tree independently of
+      // the product's command deadlines; offline/content assertions still apply.
+      timeout: process.platform === "win32" ? 300000 : 120000,
+      windowsHide: true,
+    });
     assert.equal(
       install.status,
       0,
-      `Candidate offline installation failed: ${install.error ?? install.stderr}`,
+      `Candidate offline installation failed: ${install.error?.message ?? ""}\n${install.stderr}`,
+    );
+    console.log(
+      `Candidate offline installation completed in ${((performance.now() - installStarted) / 1000).toFixed(1)}s`,
     );
     const cli = join(directory, "node_modules", name, "cli.js");
-    const executable = join(directory, "node_modules/.bin/abridge");
+    await access(join(directory, "node_modules/.bin/abridge" + (process.platform === "win32" ? ".cmd" : "")));
+    const executable = process.platform === "win32" ? cli : join(directory, "node_modules/.bin/abridge");
     const installedVersion = spawnSync(process.execPath, [executable, "--version"], {
       cwd: directory,
       env,
@@ -105,19 +118,17 @@ export async function checkInstalledServer(
 ): Promise<void> {
   const failures: unknown[] = [];
   try {
-    const child = spawn(
-      process.execPath,
+    const child = spawnVerificationProcess(
       [executable, "--host", "127.0.0.1", "--port", "0", "--data-dir", join(directory, "state")],
       {
         cwd: directory,
         env,
-        stdio: ["ignore", "pipe", "pipe"],
       },
     );
     const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
     let stdout = "",
       stderr = "";
-    child.stderr.on("data", (chunk) => {
+    child.stderr!.on("data", (chunk) => {
       stderr = (stderr + String(chunk)).slice(-20000);
     });
     try {
@@ -133,7 +144,7 @@ export async function checkInstalledServer(
         };
         child.once("error", (error) => finish(error));
         child.once("exit", (code) => finish(new Error(`Installed CLI exited ${code}: ${stderr}`)));
-        child.stdout.on("data", (chunk) => {
+        child.stdout!.on("data", (chunk) => {
           stdout = (stdout + String(chunk)).slice(-20000);
           const match = stdout.match(/aBridge [^:]+: (http:\/\/127\.0\.0\.1:\d+)/);
           if (match) finish(undefined, match[1]);
@@ -152,9 +163,9 @@ export async function checkInstalledServer(
       failures.push(error);
     } finally {
       if (child.pid) {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
         const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
         try {
+          await stopVerificationProcess(child);
           assert.equal(await exited, 0, `Installed CLI shutdown failed: ${stderr}`);
         } finally {
           clearTimeout(timer);

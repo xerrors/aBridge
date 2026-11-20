@@ -759,3 +759,8 @@ export const deviceWelcomeSchema = z
   .passthrough();
 
 export * from "./management.js";
+
+export { windowsShellRequestSchema, type WindowsShellRequest } from "./windows-shell.js";
+export type DesktopAccessibilityLimit = "time_budget";
+
+export { windowsComputerActionSchema, type WindowsComputerAction } from "./windows-computer.js";

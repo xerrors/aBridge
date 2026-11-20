@@ -29,3 +29,6 @@ coverage/
 apps/linux-client/target/
 docs/.vitepress/cache/
 /package-lock.json
+
+apps/windows/windows-native-shell/bin/
+apps/windows/windows-native-shell/obj/

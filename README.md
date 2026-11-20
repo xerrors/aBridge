@@ -15,6 +15,8 @@ aBridge 由 Server 和按需安装的客户端组成。Server 提供统一的 MC
 | 在开发机或服务器上执行 Shell、读写文件 | **Linux CLI** · Shell、UTF-8 文件，支持 systemd 后台运行         | Linux amd64 / arm64      |
 | 操作 Android 应用、读写授权目录        | **Android 预览** · 屏幕、点按、滑动、文本输入和目录读写          | Android 11+，从源码构建  |
 
+Windows PC 客户端提供屏幕、键鼠、Shell 和文件能力，当前从源码构建未签名便携包：[下载、安装与连接](docs/windows-client.md)。
+
 ## 工作方式
 
 ![Agent 通过 MCP 连接 aBridge Server，macOS、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)

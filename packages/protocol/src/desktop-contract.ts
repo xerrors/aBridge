@@ -38,3 +38,26 @@ export function desktopContract() {
     ),
   };
 }
+
+/** Windows host-only schemas must not enlarge other native clients' packaged contract. */
+export function windowsDesktopContract() {
+  const common = desktopContract();
+  const windowsSchemas = {
+    windowsShellRequest: p.windowsShellRequestSchema,
+    deviceAuthorizationRequest: p.deviceAuthorizationRequestSchema,
+    deviceAuthorizationTokenRequest: p.deviceAuthorizationTokenRequestSchema,
+  };
+  return {
+    ...common,
+    limits: { ...common.limits, desktopObservationSeconds: p.DESKTOP_OBSERVATION_SECONDS },
+    schemas: {
+      ...common.schemas,
+      ...Object.fromEntries(
+        Object.entries(windowsSchemas).map(([name, schema]) => [
+          name,
+          z.toJSONSchema(schema, { io: "input" }),
+        ]),
+      ),
+    },
+  };
+}

@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { createServer } from "../src/server.js";
 import { commandOutputPage, characterLength } from "../src/command-output.js";
@@ -482,6 +483,9 @@ test("session_open returns the same device summary as devices_list across platfo
         const closed = once(socket, "close");
         socket.close();
         await closed;
+        // The client's close event can precede the server's close callback.
+        const deadline = Date.now() + 5000;
+        while (f.control.deviceView(device).status !== "offline" && Date.now() < deadline) await delay(10);
         const offline = await rpc(f.url, agentConnection.key, "device_get", { device_id: device.id });
         assert.equal(offline.value.status, "offline");
         assert.equal(offline.value.platform, platform);

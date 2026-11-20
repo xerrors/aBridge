@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { zipSync } from "fflate";
 import { serverPackageLock, type PackageLock } from "./lib/server-lock.js";
+import { npmInvocation } from "./lib/npm.js";
 const { values } = parseArgs({ options: { public: { type: "boolean" } } });
 const publish = values.public ?? false;
 const root = resolve(import.meta.dirname, ".."),
@@ -67,12 +68,16 @@ await writeFile(
     2,
   ) + "\n",
 );
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 for (const args of [
   ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retry-mintimeout=1000"],
   ["pack", "--ignore-scripts", "--pack-destination", dist],
 ]) {
-  const result = spawnSync(npm, args, { cwd: stage, stdio: "inherit" });
+  const invocation = npmInvocation(args);
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd: stage,
+    stdio: "inherit",
+    windowsHide: true,
+  });
   if (result.status !== 0) throw new Error(`npm ${args[0]} failed`);
 }
 const archive: Record<string, Uint8Array> = {};

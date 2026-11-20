@@ -38,7 +38,12 @@
     "package:linux": "node --import tsx tools/linux-client.ts package",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "package:windows": "node --import tsx tools/package-windows.ts",
+    "package:windows:check": "node --import tsx tools/check-windows-package.ts",
+    "desktop:windows": ".local\\release\\windows\\aBridge\\aBridge.exe",
+    "windows:shell:check": "node --import tsx tools/windows-native.ts check",
+    "test:windows:shell:live": "node --import tsx tools/check-windows-shell.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
@@ -50,6 +55,7 @@
     "esbuild": "0.28.2",
     "fflate": "0.8.3",
     "prettier": "3.10.1",
+    "tar": "7.5.23",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vitepress": "^1.6.4",

@@ -30,6 +30,7 @@ export default defineConfig({
         items: [
           { text: "快速开始", link: "/guide/start" },
           { text: "安装与维护", link: "/deployment" },
+          { text: "Windows 客户端", link: "/windows-client" },
           { text: "浏览器客户端", link: "/browser-profile-design" },
           { text: "变更记录", link: "/changelog" },
         ],

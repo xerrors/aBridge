@@ -94,6 +94,14 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 引用动作先验证观察引用，locator 动作先解析唯一 DOM 目标；二者共享输入执行函数，均核对任务页、文档版本和目标可用性。locator 不创建临时观察，也不通过替换观察状态来获得输入权限。输入准备可能滚动或聚焦，因此准备开始后的失败仍需按未知副作用处理。
 
+## Windows 客户端
+
+Windows PC 客户端位于 `apps/windows/windows-native-shell/`，Rust 原生运行时直接连接 Server，Win32 实现设置、托盘与活动边框。同一个 `aBridge.exe` 通过 `--native-host` 启动独立运行时，私有 stdio 保留窗口命令和事件契约。`runtime/` 管理授权、会话、SQLite 去重、操作调度、Shell 和文件；嵌入的 PowerShell/UIA 驱动检查本机权限、焦点、遮挡和人工输入。`apps/windows/src/` 保留此前 TypeScript 行为参考及驱动源，不作为运行依赖分发。
+
+Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-shell.ts`、`windows-computer.ts`；平台动作仅接受 foreground 模式，保留现有服务端的公共工具 schema。[Windows 安装与验证](windows-client.md)。
+
+外壳仅负责设置窗口、托盘、暂停快捷键、桌面活动边框和子进程生命周期；运行时保留原状态文件、SQLite 表及私有控制管道格式，使用协议包生成的契约校验外部输入。暂停、撤销和能力关闭优先于网络重连与执行，未知写操作不重放。活动边框属于外壳进程，保持分屏物理坐标、鼠标穿透、不激活和工具窗口样式，供驱动识别与排除。便携包不依赖 Node、WinUI 或外置下载运行时；构建和仓库外验包将完整程序目录严格限制在 10,000,000 字节以内。
+
 ## 身份与授权
 
 实例管理员通过独立的 Admin Token 或管理员 Cookie 创建普通用户、查看全局用户及设备统计；本地账户统一由 `/api/admin/users` 创建；可选 OIDC 外部身份在首次验证登录时建立独立账户。管理员不自动拥有普通账户身份，也不能用管理员凭据调用设备或 MCP 接口。Token 默认在数据库旁私有保存，支持 `ABRIDGE_ADMIN_TOKEN` 覆盖；浏览器用 Token 兑换 30 天签名 Cookie，会话与普通用户登录相互独立、跨重启保留，Token 重置使全部旧管理员会话失效。
