@@ -1,12 +1,12 @@
 # 变更记录
 
-## 0.5.0 — 待发布
+## 0.5.0 — 正式发布（2026-11-20）
 
 ### Windows 客户端
 
 Windows 10/11 x64 现在可以接入 aBridge。客户端支持截图、前台键鼠、Shell 和 UTF-8 文件读写。你可以从客户端发起浏览器授权，也可以在管理台的「添加设备 → Windows」生成 Device Token，再填入客户端。
 
-这个版本会在 GitHub Release 提供未签名的便携 ZIP 和 SHA-256 校验文件。[Windows 安装指南](windows-client.md)
+GitHub Release 提供未签名的便携 ZIP 和 SHA-256 校验文件。[Windows 安装指南](windows-client.md)
 
 ### 升级
 
