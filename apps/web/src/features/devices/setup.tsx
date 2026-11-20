@@ -15,7 +15,7 @@ const platforms = ["macos", "windows", "linux", "android", "browser"] as const;
 type Platform = (typeof platforms)[number];
 const release = "https://github.com/xerrors/aBridge/releases/latest";
 const clients: Record<
-  Exclude<Platform, "windows">,
+  Platform,
   {
     kind: DeviceKind;
     requirements: string;
@@ -34,6 +34,19 @@ const clients: Record<
     browserAuthorization: "在 macOS 客户端设置中填写服务地址，点击「在浏览器授权」，并用当前账户确认。",
     tokenInstructions:
       "在 macOS 客户端设置的「绑定方式」中选择 Device Token，填入服务地址和凭证，再点击「验证并连接」。",
+  },
+  windows: {
+    kind: "computer",
+    requirements: "Windows 10/11 x64，未签名便携 ZIP",
+    download: {
+      href: "https://xerrors.github.io/aBridge/windows-client.html#下载与安装",
+      label: "查看 Windows 下载与安装",
+    },
+    capabilities: ["screen", "input", "shell", "files"],
+    browserAuthorization:
+      "完整解压后启动 aBridge.exe，在「连接」中填写服务端网址，点击「连接并授权」，并在浏览器中确认。",
+    tokenInstructions:
+      "在 Windows 客户端填写服务端网址，展开「使用 Device Token」并粘贴凭证，再点击「连接并授权」。",
   },
   linux: {
     kind: "computer",
@@ -88,8 +101,8 @@ export function DeviceSetupPage({
   initialPlatform?: string;
 }) {
   const platform = platforms.find((value) => value === initialPlatform) ?? "macos";
-  const client = platform === "windows" ? undefined : clients[platform];
-  const [method, setMethod] = useState(client?.browserAuthorization ? "browser" : "token");
+  const client = clients[platform];
+  const [method, setMethod] = useState(client.browserAuthorization ? "browser" : "token");
   const [saved, setSaved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [credential, setCredential] = useState<{ id: string; key: string }>();
@@ -145,187 +158,175 @@ export function DeviceSetupPage({
           </button>
         ))}
       </div>
-      {client ? (
-        <ol class="setup-journey" aria-label="设备连接步骤">
-          <li>
-            <div class="setup-step">
-              <div class="setup-install">
-                <div>
-                  <h2>安装客户端</h2>
-                  <p class="small muted">{client.requirements}</p>
-                  {client.installGuide && (
-                    <a class="small" href={client.installGuide} target="_blank" rel="noreferrer">
-                      安装与校验说明
-                    </a>
-                  )}
-                </div>
-                <a class="button" href={client.download.href} target="_blank" rel="noreferrer">
-                  {client.download.label}
-                  <ArrowUpRight aria-hidden="true" />
-                </a>
-              </div>
-            </div>
-          </li>
-          <li>
-            <div class="setup-step setup-binding">
-              <h2>绑定设备</h2>
-              {client.browserAuthorization && (
-                <div class="setup-methods" role="group" aria-label="绑定方式">
-                  <button
-                    type="button"
-                    aria-pressed={method === "browser"}
-                    disabled={submitting || unsaved}
-                    onClick={() => setMethod("browser")}
-                  >
-                    <ExternalLink aria-hidden="true" />
-                    浏览器授权
-                  </button>
-                  <button type="button" aria-pressed={method === "token"} onClick={() => setMethod("token")}>
-                    <KeyRound aria-hidden="true" />
-                    设备凭证
-                  </button>
-                </div>
-              )}
-              <div class="setup-address">
-                {androidNeedsAddress ? (
-                  <>
-                    <span>服务地址</span>
-                    <p class="small muted">Android 真机请填写设备能访问的 HTTPS 服务地址。</p>
-                  </>
-                ) : (
-                  <>
-                    <label for="setup-server-address">服务地址</label>
-                    <div class="copy-field">
-                      <input id="setup-server-address" readOnly value={location.origin} />
-                      <CopyButton value={location.origin} run={run} className="secondary">
-                        复制地址
-                      </CopyButton>
-                    </div>
-                  </>
+      <ol class="setup-journey" aria-label="设备连接步骤">
+        <li>
+          <div class="setup-step">
+            <div class="setup-install">
+              <div>
+                <h2>安装客户端</h2>
+                <p class="small muted">{client.requirements}</p>
+                {client.installGuide && (
+                  <a class="small" href={client.installGuide} target="_blank" rel="noreferrer">
+                    安装与校验说明
+                  </a>
                 )}
               </div>
-              {method === "browser" ? (
-                <div class="setup-authorization">
-                  <p>{client.browserAuthorization}</p>
-                  <a href="#devices">
-                    授权后到设备列表确认上线 <ArrowRight aria-hidden="true" />
-                  </a>
-                </div>
+              <a class="button" href={client.download.href} target="_blank" rel="noreferrer">
+                {client.download.label}
+                <ArrowUpRight aria-hidden="true" />
+              </a>
+            </div>
+          </div>
+        </li>
+        <li>
+          <div class="setup-step setup-binding">
+            <h2>绑定设备</h2>
+            {client.browserAuthorization && (
+              <div class="setup-methods" role="group" aria-label="绑定方式">
+                <button
+                  type="button"
+                  aria-pressed={method === "browser"}
+                  disabled={submitting || unsaved}
+                  onClick={() => setMethod("browser")}
+                >
+                  <ExternalLink aria-hidden="true" />
+                  浏览器授权
+                </button>
+                <button type="button" aria-pressed={method === "token"} onClick={() => setMethod("token")}>
+                  <KeyRound aria-hidden="true" />
+                  设备凭证
+                </button>
+              </div>
+            )}
+            <div class="setup-address">
+              {androidNeedsAddress ? (
+                <>
+                  <span>服务地址</span>
+                  <p class="small muted">Android 真机请填写设备能访问的 HTTPS 服务地址。</p>
+                </>
               ) : (
-                <section class="setup-token" aria-labelledby="setup-token-title">
-                  <h3 id="setup-token-title">设备凭证</h3>
-                  <p class="setup-token-instructions">{client.tokenInstructions}</p>
-                  {credential ? (
-                    <>
-                      {!revoked && (
-                        <>
-                          <p class="small muted">凭证仅在这里显示一次。请复制到客户端。</p>
-                          <div class="copy-field">
-                            <input aria-label="设备凭证" ref={tokenField} readOnly value={credential.key} />
-                            <CopyButton value={credential.key} run={run}>
-                              复制设备凭证
-                            </CopyButton>
-                          </div>
-                          <label class="inline-check">
-                            <input
-                              type="checkbox"
-                              checked={saved}
-                              onChange={(event) => setSaved(event.currentTarget.checked)}
-                            />
-                            我已保存设备凭证
-                          </label>
-                        </>
-                      )}
-                      <div class="setup-device-state">
-                        <p class="waiting-status" role="status">
-                          <span
-                            class={`dot ${device?.paused ? "paused" : (device?.status ?? "")}`}
-                            aria-hidden="true"
-                          />
-                          {connectionStatus[device?.status ?? "unknown"]}
-                        </p>
-                        {device?.status === "online" ? (
-                          <div class="actions">
-                            <a class="button" href={`#devices/${encodeURIComponent(device.id)}`}>
-                              查看设备
-                            </a>
-                            <a class="button primary" href="#connections/new">
-                              连接 Agent
-                            </a>
-                          </div>
-                        ) : revoked ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCredential(undefined);
-                              setSaved(false);
-                            }}
-                          >
-                            重新添加设备
-                          </button>
-                        ) : (
-                          <ActionButton
-                            action={refresh}
-                            icon={<RefreshCw aria-hidden="true" />}
-                            run={run}
-                            className="text-button"
-                            busyLabel="检查中…"
-                            successLabel="已检查"
-                          >
-                            检查连接
-                          </ActionButton>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <Form
-                      label="生成设备凭证"
-                      onSubmit={async (form) => {
-                        setSubmitting(true);
-                        try {
-                          const result = await api(
-                            "/api/devices",
-                            z.object({ id: z.string(), key: z.string() }),
-                            {
-                              name: form.get("name"),
-                              kind: client.kind,
-                              capabilities: client.capabilities,
-                            },
-                          );
-                          setCredential(result);
-                        } finally {
-                          setSubmitting(false);
-                        }
-                        void refresh().catch(() => notify("设备凭证已生成，暂时无法刷新连接状态。"));
-                      }}
-                    >
-                      <Field name="name" label="设备名称" />
-                      <p class="small muted">
-                        设备能力：
-                        {client.capabilities
-                          .map((value) =>
-                            platform === "android" && value === "input"
-                              ? "触摸输入"
-                              : capabilityLabels[value],
-                          )
-                          .join("、")}
-                      </p>
-                    </Form>
-                  )}
-                </section>
+                <>
+                  <label for="setup-server-address">服务地址</label>
+                  <div class="copy-field">
+                    <input id="setup-server-address" readOnly value={location.origin} />
+                    <CopyButton value={location.origin} run={run} className="secondary">
+                      复制地址
+                    </CopyButton>
+                  </div>
+                </>
               )}
             </div>
-          </li>
-        </ol>
-      ) : (
-        <section class="setup-unavailable" aria-labelledby="windows-setup-title">
-          <h2 id="windows-setup-title">Windows 原生客户端尚未发布</h2>
-          <p class="small muted">你可以通过 Chrome 扩展接入 Windows 上的浏览器。</p>
-          <a class="button" href="#devices/new/browser">
-            添加浏览器扩展 <ArrowRight aria-hidden="true" />
-          </a>
-        </section>
-      )}
+            {method === "browser" ? (
+              <div class="setup-authorization">
+                <p>{client.browserAuthorization}</p>
+                <a href="#devices">
+                  授权后到设备列表确认上线 <ArrowRight aria-hidden="true" />
+                </a>
+              </div>
+            ) : (
+              <section class="setup-token" aria-labelledby="setup-token-title">
+                <h3 id="setup-token-title">设备凭证</h3>
+                <p class="setup-token-instructions">{client.tokenInstructions}</p>
+                {credential ? (
+                  <>
+                    {!revoked && (
+                      <>
+                        <p class="small muted">凭证仅在这里显示一次。请复制到客户端。</p>
+                        <div class="copy-field">
+                          <input aria-label="设备凭证" ref={tokenField} readOnly value={credential.key} />
+                          <CopyButton value={credential.key} run={run}>
+                            复制设备凭证
+                          </CopyButton>
+                        </div>
+                        <label class="inline-check">
+                          <input
+                            type="checkbox"
+                            checked={saved}
+                            onChange={(event) => setSaved(event.currentTarget.checked)}
+                          />
+                          我已保存设备凭证
+                        </label>
+                      </>
+                    )}
+                    <div class="setup-device-state">
+                      <p class="waiting-status" role="status">
+                        <span
+                          class={`dot ${device?.paused ? "paused" : (device?.status ?? "")}`}
+                          aria-hidden="true"
+                        />
+                        {connectionStatus[device?.status ?? "unknown"]}
+                      </p>
+                      {device?.status === "online" ? (
+                        <div class="actions">
+                          <a class="button" href={`#devices/${encodeURIComponent(device.id)}`}>
+                            查看设备
+                          </a>
+                          <a class="button primary" href="#connections/new">
+                            连接 Agent
+                          </a>
+                        </div>
+                      ) : revoked ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCredential(undefined);
+                            setSaved(false);
+                          }}
+                        >
+                          重新添加设备
+                        </button>
+                      ) : (
+                        <ActionButton
+                          action={refresh}
+                          icon={<RefreshCw aria-hidden="true" />}
+                          run={run}
+                          className="text-button"
+                          busyLabel="检查中…"
+                          successLabel="已检查"
+                        >
+                          检查连接
+                        </ActionButton>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <Form
+                    label="生成设备凭证"
+                    onSubmit={async (form) => {
+                      setSubmitting(true);
+                      try {
+                        const result = await api(
+                          "/api/devices",
+                          z.object({ id: z.string(), key: z.string() }),
+                          {
+                            name: form.get("name"),
+                            kind: client.kind,
+                            capabilities: client.capabilities,
+                          },
+                        );
+                        setCredential(result);
+                      } finally {
+                        setSubmitting(false);
+                      }
+                      void refresh().catch(() => notify("设备凭证已生成，暂时无法刷新连接状态。"));
+                    }}
+                  >
+                    <Field name="name" label="设备名称" />
+                    <p class="small muted">
+                      设备能力：
+                      {client.capabilities
+                        .map((value) =>
+                          platform === "android" && value === "input" ? "触摸输入" : capabilityLabels[value],
+                        )
+                        .join("、")}
+                    </p>
+                  </Form>
+                )}
+              </section>
+            )}
+          </div>
+        </li>
+      </ol>
     </div>
   );
 }
