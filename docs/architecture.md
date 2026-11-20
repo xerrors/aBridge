@@ -2,7 +2,7 @@
 
 ## 组成与职责
 
-Server、浏览器扩展和管理台使用 strict TypeScript；macOS 客户端使用 Swift 原生实现，AppKit UI 与 Swift 6 运行时通过私有 Unix socket 通信；Linux CLI 使用 Rust，Android App 使用 Kotlin。Server 与各客户端分别部署：Mac 提供桌面、Shell 和文件，Linux CLI 提供 Shell 和文件，Android App 提供屏幕、输入和授权目录读写，扩展提供浏览器。
+Server、浏览器扩展和管理台使用 strict TypeScript。macOS 客户端使用 AppKit UI 和 Swift 6 运行时，通过私有 Unix socket 通信。Windows 客户端使用 Rust 和 Win32，Linux CLI 使用 Rust，Android App 使用 Kotlin。各客户端独立部署并直接连接 Server。
 
 ```text
 MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
@@ -12,6 +12,9 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
                                        │                ├ 官方 Cua SDK：screen / input
                                        │                ├ Shell
                                        │                └ UTF-8 文件
+                                       ├─ /ws/device ─ Rust Windows 客户端
+                                       │                ├ 截图与前台键鼠
+                                       │                └ Shell / UTF-8 文件
                                        ├─ /ws/device ─ Rust Linux CLI：Shell / UTF-8 文件
                                        ├─ /ws/device ─ Kotlin Android 客户端
                                        │                ├ 无障碍观察与触摸输入
@@ -39,6 +42,7 @@ MCP 客户端 ─ Agent Key ─ /mcp ──────────┐
 | `apps/desktop/native/runtime/NativeDriver.swift` | 官方 SDK 按需同进程适配               |
 | `apps/desktop/native/runtime/Executor.swift`     | 桌面、Shell 和文件执行                |
 | `apps/desktop/native/`                           | AppKit UI、权限入口与原生运行时       |
+| `apps/windows/windows-native-shell/`             | Rust 运行时、Win32 设置与系统托盘     |
 | `apps/browser/src/worker.ts`                     | 扩展入口，创建并启动设备客户端        |
 | `apps/browser/src/client.ts`                     | 设备绑定、连接、操作日志与本机控制    |
 | `apps/browser/src/task-tabs.ts`                  | 自有任务标签、调试器与资源清理        |

@@ -8,18 +8,17 @@ aBridge 由 Server 和按需安装的客户端组成。Server 提供统一的 MC
 
 ## 选择客户端
 
-| 想完成的任务                           | 客户端                                                           | 环境                     |
-| -------------------------------------- | ---------------------------------------------------------------- | ------------------------ |
-| 在已登录的业务系统里查资料、填表       | **浏览器扩展** · 观察、导航和操作网页，复用所选 Profile 的登录态 | Chrome 116+              |
-| 查看桌面窗口、操作原生应用或处理文件   | **macOS App** · 屏幕、键鼠、Shell、UTF-8 文件                    | Apple Silicon，macOS 14+ |
-| 在开发机或服务器上执行 Shell、读写文件 | **Linux CLI** · Shell、UTF-8 文件，支持 systemd 后台运行         | Linux amd64 / arm64      |
-| 操作 Android 应用、读写授权目录        | **Android 预览** · 屏幕、点按、滑动、文本输入和目录读写          | Android 11+，从源码构建  |
-
-Windows PC 客户端提供屏幕、键鼠、Shell 和文件能力，当前从源码构建未签名便携包：[下载、安装与连接](docs/windows-client.md)。
+| 想完成的任务                              | 客户端                                                                               | 环境                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------- |
+| 在已登录的业务系统里查资料、填表          | **浏览器扩展** · 观察、导航和操作网页，复用所选 Profile 的登录态                     | Chrome 116+                       |
+| 查看 Mac 窗口、操作原生应用或处理文件     | **macOS App** · 屏幕、键鼠、Shell、UTF-8 文件                                        | Apple Silicon，macOS 14+          |
+| 查看 Windows 桌面、操作前台应用或处理文件 | **[Windows 客户端预览](docs/windows-client.md)** · 截图、前台键鼠、Shell、UTF-8 文件 | Windows 10/11 x64，未签名便携 ZIP |
+| 在开发机或服务器上执行 Shell、读写文件    | **Linux CLI** · Shell、UTF-8 文件，支持 systemd 后台运行                             | Linux amd64 / arm64               |
+| 操作 Android 应用、读写授权目录           | **Android App** · 屏幕、点按、滑动、文本输入和目录读写                               | Android 11+                       |
 
 ## 工作方式
 
-![Agent 通过 MCP 连接 aBridge Server，macOS、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)
+![Agent 通过 MCP 连接 aBridge Server，macOS、Windows、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)
 
 各客户端独立安装、授权并直接连接 Server。桌面和浏览器可以分别接入。一个 Chrome Profile 对应一个浏览器设备，扩展在该 Profile 内为任务创建独立标签页。
 
@@ -29,12 +28,18 @@ Windows PC 客户端提供屏幕、键鼠、Shell 和文件能力，当前从源
 
 ### 1. 部署 Server
 
-最新正式 [GitHub Release 为 0.4.18](https://github.com/xerrors/aBridge/releases/tag/v0.4.18)。Server 通过 Release 的 tarball 运行，需要 npm 和 Node.js 22.x（22.13 起）、23.x（23.4 起）或 24 及以上版本：
+以下命令使用 [GitHub Release v0.4.23](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) 的 Server tarball。运行需要 npm 和 Node.js 22.x（22.13 起）、23.x（23.4 起）或 24 及以上版本。
 
 ```sh
 npm exec --yes \
-  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.18/xerrors-abridge-0.4.18.tgz \
+  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.23/xerrors-abridge-0.4.23.tgz \
   -- abridge --web
+```
+
+在 Windows PowerShell 中运行：
+
+```powershell
+npm.cmd exec --yes --package=https://github.com/xerrors/aBridge/releases/download/v0.4.23/xerrors-abridge-0.4.23.tgz -- abridge --web
 ```
 
 默认监听 [127.0.0.1:8765](http://127.0.0.1:8765)。`--web` 在本机打开实例管理页面，可通过 `--data-dir` 指定持久目录。
@@ -42,14 +47,14 @@ npm exec --yes \
 <details>
 <summary>使用 Docker</summary>
 
-下面使用已发布的 **0.4.17** 镜像，支持 Linux amd64 和 arm64：
+下面使用已发布的 **0.4.23** 镜像，支持 Linux amd64 和 arm64。
 
 ```sh
 docker run -d --name abridge --restart unless-stopped \
   -p 127.0.0.1:8765:8765 \
   -v abridge-data:/data \
   -e ABRIDGE_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
-  ghcr.io/xerrors/abridge:0.4.17
+  ghcr.io/xerrors/abridge:0.4.23
 ```
 
 镜像版本单独发布。更新时复用 `abridge-data` 卷。通过 [GHCR 镜像列表](https://github.com/xerrors/aBridge/pkgs/container/abridge) 查询可用标签。
@@ -77,9 +82,10 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 按需安装客户端，并填写设备可以访问的 Server 地址。
 
 - **浏览器扩展**。在想授权的 Profile 中安装扩展并完成浏览器授权。[Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) · [源码安装](docs/browser-profile-design.md)
-- **macOS App**。下载 macOS ZIP，经浏览器授权后在系统设置中开启所需权限。0.4.18 的 ZIP 使用 ad hoc 签名。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) · [安装与权限](docs/deployment.md#macos-app)
-- **Linux CLI**。下载对应架构的包，用管理台签发的 Device Token 绑定。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) · [安装与绑定](apps/linux-client/README.md#安装与绑定)
-- **Android 预览**。从同一份源码构建 APK 和配套 Server，以支持设备时间握手。用 Device Key 绑定，在 Android 设置开启无障碍。[构建与绑定](apps/android/README.md)
+- **macOS App**。下载 macOS ZIP，经浏览器授权后在系统设置中开启所需权限。v0.4.23 的 ZIP 使用 ad hoc 签名。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与权限](docs/deployment.md#macos-app)
+- **Windows 客户端预览**。从 GitHub Actions 获取未签名便携 ZIP，或在 Windows 上从源码构建。完整解压后启动 `aBridge.exe`，填写服务端网址并在浏览器中确认授权。[下载、安装与绑定](docs/windows-client.md)
+- **Linux CLI**。下载对应架构的包，用管理台签发的 Device Token 绑定。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与绑定](apps/linux-client/README.md#安装与绑定)
+- **Android App**。下载签名 APK，用 Device Key 绑定，在 Android 设置开启无障碍，再回到 App 允许 Agent 操作。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与绑定](apps/android/README.md)
 
 完成后，在管理台确认设备已上线。
 
@@ -90,8 +96,7 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 以本机的 Codex CLI 为例，将 Agent Key 通过私有环境变量 `ABRIDGE_AGENT_KEY` 提供给 Codex 进程，再添加 MCP Server 并启动新会话。[Codex MCP 配置](https://developers.openai.com/codex/mcp/)
 
 ```sh
-codex mcp add abridge --url http://127.0.0.1:8765/mcp \
-  --bearer-token-env-var ABRIDGE_AGENT_KEY
+codex mcp add abridge --url http://127.0.0.1:8765/mcp --bearer-token-env-var ABRIDGE_AGENT_KEY
 codex
 ```
 
@@ -130,12 +135,13 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 
 <!-- benchmark:coverage:start -->
 
-| 客户端           | 公开 Agent 任务                                            | 已验证的范围                                            | 证据                                                                                                                                                                 |
-| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Chrome 扩展**  | MiniWoB++ **12/12**                                        | 实际 Chrome 扩展，6 类网页任务                          | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json)                                                                                 |
-| **Android 预览** | AndroidWorld 回归 **15/15（100%）**；挑战 **15/30（50%）** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务       | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |
-| **macOS App**    | 暂无公开任务分数                                           | 原生 App 构建、设备连接与执行回归                       | [原生验证](tools/README.md)                                                                                                                                          |
-| **Linux CLI**    | 暂无公开任务分数                                           | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具 | [Linux 验证](apps/linux-client/README.md)                                                                                                                            |
+| 客户端                 | 公开 Agent 任务                                            | 已验证的范围                                                  | 证据                                                                                                                                                                 |
+| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Chrome 扩展**        | MiniWoB++ **12/12**                                        | 实际 Chrome 扩展，6 类网页任务                                | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json)                                                                                 |
+| **Android 预览**       | AndroidWorld 回归 **15/15（100%）**；挑战 **15/30（50%）** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务             | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |
+| **macOS App**          | 暂无公开任务分数                                           | 原生 App 构建、设备连接与执行回归                             | [原生验证](tools/README.md)                                                                                                                                          |
+| **Windows 客户端预览** | 暂无公开任务分数                                           | Windows x64 CI 验包，覆盖设备绑定、权限控制、Shell 和文件操作 | [Windows 验证](docs/windows-client.md#验证)                                                                                                                          |
+| **Linux CLI**          | 暂无公开任务分数                                           | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具       | [Linux 验证](apps/linux-client/README.md)                                                                                                                            |
 
 <!-- benchmark:coverage:end -->
 
@@ -207,6 +213,7 @@ npm run check
 | ---------------------------------------------- | ------------------------------------------------ |
 | [安装与维护](docs/deployment.md)               | Docker、Node.js、App、反向代理、升级与 OIDC 配置 |
 | [架构与执行契约](docs/architecture.md)         | 模块职责、工具接口、会话、去重、取消与结果语义   |
+| [Windows 客户端](docs/windows-client.md)       | 便携包、设备绑定、本机能力、更新与验证           |
 | [浏览器客户端](docs/browser-profile-design.md) | Profile 授权、任务标签、网页工具及浏览器代码接口 |
 | [Server API](apps/server/README.md)            | 管理员接口、Server 运行方式与分发说明            |
 | [贡献指南](.github/CONTRIBUTING.md)            | 开发环境、检查命令与提交规范                     |

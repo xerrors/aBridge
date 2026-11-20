@@ -6,11 +6,13 @@ import deepseek from "../../assets/brand/agents/deepseek-color.svg";
 import workbuddy from "../../assets/brand/agents/workbuddy-color.svg";
 import opencode from "../../assets/brand/agents/opencode.svg";
 import yuxi from "../../assets/brand/agents/yuxi.svg";
+import { Network } from "@lucide/vue";
 import { withBase } from "vitepress";
 import bridge from "../../assets/brand/bridge.svg";
 import wordmark from "../../assets/brand/wordmark.svg";
 import chrome from "../../assets/brand/platforms/chrome.svg";
 import macos from "../../assets/brand/platforms/macos.svg";
+import windows from "../../assets/brand/platforms/windows.svg";
 import linux from "../../assets/brand/platforms/linux.svg";
 import android from "../../assets/brand/platforms/android.svg";
 
@@ -24,10 +26,11 @@ const agents = [
   { name: "OpenCode", icon: opencode, slot: "bottom" },
 ];
 const devices = [
-  { name: "Chrome", icon: chrome, capability: "浏览器扩展" },
-  { name: "macOS", icon: macos, capability: "桌面应用" },
-  { name: "Linux", icon: linux, capability: "Shell 与文件" },
-  { name: "Android", icon: android, capability: "移动端预览" },
+  { name: "Chrome", icon: chrome, position: { left: "50%", top: "15%" } },
+  { name: "macOS", icon: macos, position: { left: "83.3%", top: "39.2%" } },
+  { name: "Windows", icon: windows, position: { left: "16.7%", top: "39.2%" } },
+  { name: "Linux", icon: linux, position: { left: "70.6%", top: "78.3%" } },
+  { name: "Android", icon: android, position: { left: "29.4%", top: "78.3%" } },
 ];
 </script>
 
@@ -55,35 +58,44 @@ const devices = [
         </div>
         <span class="protocol">WebSocket</span>
       </div>
-      <ul class="destinations" aria-label="设备客户端">
-        <li v-for="device in devices" :key="device.name">
-          <img :src="device.icon" alt="" /><strong>{{ device.name }}</strong
-          ><small>{{ device.capability }}</small>
-        </li>
-      </ul>
+      <div class="device-orbit">
+        <div class="orbit-hub" aria-hidden="true">
+          <Network :size="23" :stroke-width="1.7" />
+          <span>设备端</span>
+        </div>
+        <ul class="destinations" aria-label="设备客户端">
+          <li v-for="device in devices" :key="device.name" :style="device.position">
+            <span class="device-emblem"><img :src="device.icon" alt="" /></span>
+            <strong>{{ device.name }}</strong>
+          </li>
+        </ul>
+      </div>
     </div>
   </section>
 </template>
 <style scoped>
 .topology {
+  --diagram-gap: clamp(10px, 2vw, 32px);
+  --diagram-surface: #f6f9fd;
   isolation: isolate;
   position: relative;
   display: grid;
-  grid-template-columns: minmax(220px, 1.12fr) minmax(220px, 1.26fr) minmax(190px, 0.78fr);
+  grid-template-columns: minmax(205px, 1.12fr) minmax(205px, 1.26fr) minmax(240px, 0.9fr);
   align-items: center;
-  gap: clamp(10px, 2vw, 32px);
+  gap: var(--diagram-gap);
   padding: 36px clamp(16px, 3vw, 44px);
   margin-top: 26px;
   border-radius: 18px;
-  background: #f6f9fd;
+  background: var(--diagram-surface);
   overflow: hidden;
 }
 .topology::before {
   content: "";
   position: absolute;
   z-index: -1;
+  grid-area: 1 / 1 / 2 / 3;
   left: 8%;
-  right: 25%;
+  right: calc(var(--diagram-gap) / -2);
   top: 50%;
   height: 58%;
   transform: translateY(-50%);
@@ -181,41 +193,79 @@ const devices = [
 .hub-name {
   width: 59%;
 }
-.server-node small,
-.destinations small {
+.server-node small {
   font-size: 12px;
   line-height: 1.4;
   color: #556a7e;
 }
-.destinations {
+.device-orbit {
+  position: relative;
+  justify-self: center;
+  width: min(100%, 304px);
+  aspect-ratio: 1;
+}
+.device-orbit::before {
+  content: "";
+  position: absolute;
+  inset: 15%;
+  border: 1px dashed #a9c4e2;
+  border-radius: 50%;
+}
+.orbit-hub,
+.device-emblem {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 25px 12px;
+  place-items: center;
+  border: 1px solid #ccdaeb;
+  border-radius: 50%;
+}
+.orbit-hub {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: clamp(52px, 5vw, 64px);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  align-content: center;
+  gap: 3px;
+  background: #edf4ff;
+  color: #0058c2;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 .destinations li {
+  position: absolute;
   display: grid;
   justify-items: center;
-  align-content: start;
+  transform: translate(-50%, -17px);
+  white-space: nowrap;
+}
+.device-emblem {
+  width: 34px;
+  aspect-ratio: 1;
+  margin-bottom: 2px;
+  background: #fff;
 }
 .destinations img {
-  width: 32px;
-  height: 32px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
-  margin-bottom: 7px;
 }
 .destinations strong {
-  font-size: 16px;
-  line-height: 1.4;
+  padding-inline: 3px;
+  background: var(--diagram-surface);
+  line-height: 1.3;
+  font-size: 14px;
   font-weight: 600;
 }
-@media (max-width: 760px) {
+@media (max-width: 820px) {
   .topology {
     grid-template-columns: 1fr;
     padding: 24px 12px;
     gap: 20px;
   }
   .topology::before {
-    inset: 18% 18% 12%;
+    grid-area: 1 / 1 / 3 / 2;
+    inset: 24% 22% -12px;
     width: auto;
     height: auto;
     transform: none;
@@ -235,15 +285,6 @@ const devices = [
   .honeycomb img {
     width: 21px;
     height: 21px;
-  }
-  .destinations {
-    grid-template-columns: repeat(4, 1fr);
-    width: 100%;
-    gap: 4px;
-  }
-  .destinations img {
-    width: 25px;
-    height: 25px;
   }
   .bridge-lane {
     gap: 12px;

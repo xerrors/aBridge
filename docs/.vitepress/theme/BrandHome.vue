@@ -7,6 +7,7 @@ import { ChevronRight } from "@lucide/vue";
 import BridgeFigure from "./BridgeFigure.vue";
 import chrome from "../../assets/brand/platforms/chrome.svg";
 import macos from "../../assets/brand/platforms/macos.svg";
+import windows from "../../assets/brand/platforms/windows.svg";
 import linux from "../../assets/brand/platforms/linux.svg";
 import android from "../../assets/brand/platforms/android.svg";
 import wordmark from "../../assets/brand/wordmark.svg";
@@ -40,6 +41,18 @@ const clients = [
     capabilities: ["屏幕与键鼠", "Shell", "文件读写"],
   },
   {
+    name: "Windows",
+    icon: windows,
+    type: "桌面客户端预览",
+    title: "在 Windows 上操作前台应用",
+    summary:
+      "解压未签名便携 ZIP 并完成设备授权。Agent 可以截取桌面、操作前台应用，也可以使用 Shell 和文件工具。",
+    requirement: "Windows 10/11 x64",
+    link: "/windows-client.html",
+    prompt: "打开记事本，在新文档里写一份会议准备清单，再把它保存到我的文档文件夹。",
+    capabilities: ["截图与前台键鼠", "Shell", "文件读写"],
+  },
+  {
     name: "Linux",
     icon: linux,
     type: "命令行客户端",
@@ -55,11 +68,10 @@ const clients = [
   {
     name: "Android",
     icon: android,
-    type: "移动客户端预览",
+    type: "移动客户端",
     title: "在 Android 设备上执行任务",
-    summary:
-      "从源码构建预览客户端和配套 Server。授权后，Agent 可以查看屏幕、点按和滑动，也可以读写你选定的目录。",
-    requirement: "Android 13+ · 源码构建",
+    summary: "安装 APK 并开启无障碍服务。授权后，Agent 可以查看屏幕、点按和滑动，也可以读写你选定的目录。",
+    requirement: "Android 11+",
     link: "https://github.com/xerrors/aBridge/tree/main/apps/android",
     prompt: "帮我在手机日历里添加下周二上午 12 点的日程，然后给小汪发短信：“下周二我有个会，你先吃饭”。",
     capabilities: ["屏幕与触控", "文本输入", "授权目录"],

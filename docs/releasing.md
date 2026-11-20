@@ -73,6 +73,12 @@ npm run package:macos -- --reuse-build
 
 [Apple 官方公证说明](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) · [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
+## Windows
+
+Windows x64 预览包由 `ci.yml` 的 **Windows client** 任务构建。在 Windows runner 上运行 `npm run windows:shell:check`、`npm run package:windows` 和 `npm run package:windows:check` 后，CI 将未签名 ZIP 及其 SHA-256 校验文件上传到 **windows-client-unsigned**，保留 30 天。完整解压后的程序目录须小于 10,000,000 字节。
+
+当前 `release.yml` 的 tag 分发范围为 Server、Chrome 扩展、macOS、Linux 及启用签名时的 Android APK。Windows 用户可通过 CI 或源码构建取得预览包。[Windows 安装与验证](windows-client.md)
+
 ## Android
 
 Set `ANDROID_SIGNING_ENABLED=true` and configure repository secrets `ANDROID_KEYSTORE_BASE64` (single-line Base64 of the release keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The tag workflow recompresses and aligns the standalone APK before signing. It verifies the signed `aBridge-<version>-android.apk` and enforces a 200,000-byte size limit before including it in the GitHub Release.
