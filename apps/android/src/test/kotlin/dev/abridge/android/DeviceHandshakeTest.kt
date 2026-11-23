@@ -9,6 +9,12 @@ import java.nio.ByteBuffer
 
 class DeviceHandshakeTest {
     @Test
+    fun onlySendBearerForConfiguredDeviceKey() {
+        assertEquals(emptyMap<String, String>(), deviceHandshakeHeaders(""))
+        assertEquals(mapOf("Authorization" to "Bearer sample"), deviceHandshakeHeaders("sample"))
+    }
+
+    @Test
     fun onlyUnauthorizedUpgradeResponsesRevokeCredentials() {
         for (status in listOf(401, 403, 503)) {
             var rejected = false

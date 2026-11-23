@@ -49,6 +49,7 @@ class DeviceService : AccessibilityService() {
     private val files by lazy { WorkspaceFiles(this) }
     private val journal by lazy { getSharedPreferences("operations", Context.MODE_PRIVATE) }
     private var socket: WebSocketClient? = null
+    private val unbinding = mutableMapOf<WebSocketClient, DeviceUnbinding>()
     private var maintenance: Job? = null
     private var reconnect: Job? = null
     private var epoch = 0L
@@ -64,10 +65,6 @@ class DeviceService : AccessibilityService() {
     private var running: Running? = null
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
-            "key", "url" -> {
-                disconnect()
-                connect()
-            }
             "paused", "tree", "screen", "input", "files" -> {
                 // Maintain the input boundary even before the Server receives the update.
                 if (key == "tree" || paused() || running?.capabilities?.any { !available(it) } == true) stopWork()
@@ -83,6 +80,7 @@ class DeviceService : AccessibilityService() {
             serviceInfo = serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR }
         }
         active = true
+        instance = this
         prefs.registerOnSharedPreferenceChangeListener(listener)
         prefs.edit().remove("connection").apply()
         connect()
@@ -96,6 +94,8 @@ class DeviceService : AccessibilityService() {
 
     override fun onDestroy() {
         active = false
+        if (instance === this) instance = null
+        unbinding.values.toList().forEach { it.finish(false) }
         prefs.unregisterOnSharedPreferenceChangeListener(listener)
         disconnect()
         scope.cancel()
@@ -124,7 +124,7 @@ class DeviceService : AccessibilityService() {
         var authorizationRejected = false
         val draft = DeviceHandshake(maxFrame) { authorizationRejected = true }
         val client = object : WebSocketClient(endpoint, draft,
-            mapOf("Authorization" to "Bearer $key"), 10000) {
+            deviceHandshakeHeaders(key), 10000) {
             override fun onSetSSLParameters(params: SSLParameters) {
                 super.onSetSSLParameters(params)
                 params.endpointIdentificationAlgorithm = "HTTPS"
@@ -136,6 +136,10 @@ class DeviceService : AccessibilityService() {
                     .put("capabilities", capabilities()).put("paused", paused()))
             } }
             override fun onMessage(text: String) { val self = this; scope.launch {
+                unbinding[self]?.let { pending ->
+                    runCatching { JSONObject(text) }.getOrNull()?.let(pending::receive)
+                    return@launch
+                }
                 if (self !== this@DeviceService.socket) return@launch
                 try {
                     require(text.toByteArray(Charsets.UTF_8).size <= maxFrame)
@@ -149,10 +153,12 @@ class DeviceService : AccessibilityService() {
                 if (self === this@DeviceService.socket) scheduleReconnect()
             } }
             override fun onClose(code: Int, reason: String, remote: Boolean) { val self = this; scope.launch {
+                unbinding[self]?.let { it.finish(remote && code == 4403); return@launch }
                 if (self !== this@DeviceService.socket) return@launch
                 if (authorizationRejected || (remote && code == 4403)) revoke() else scheduleReconnect()
             } }
             override fun onError(error: Exception) { val self = this; scope.launch {
+                unbinding[self]?.let { it.finish(false); return@launch }
                 if (self === this@DeviceService.socket) {
                     Log.w("aBridge", "Connection failed: ${error.javaClass.simpleName}")
                     if (authorizationRejected) revoke() else scheduleReconnect()
@@ -187,6 +193,30 @@ class DeviceService : AccessibilityService() {
         closedSessions.clear()
         stopWork()
         setState("offline")
+    }
+
+    private fun unbind(complete: (Boolean) -> Unit) {
+        val previous = socket
+        val previousEpoch = epoch
+        // Retire the connection before clearing preferences. Its callbacks must never
+        // alter a subsequent binding, but it may still acknowledge cloud revocation.
+        socket = null
+        disconnect()
+        if (previous == null || previousEpoch == 0L || !previous.isOpen) {
+            previous?.closeConnection(1000, "Unbound locally")
+            complete(false)
+            return
+        }
+        val pending = DeviceUnbinding(previousEpoch) { confirmed ->
+            unbinding.remove(previous)
+            previous.closeConnection(1000, "Unbound locally")
+            complete(confirmed)
+        }
+        unbinding[previous] = pending
+        runCatching {
+            previous.send(JSONObject().put("type", "unbind").put("connection_epoch", previousEpoch).toString())
+        }.onFailure { pending.finish(false) }
+        scope.launch { delay(2000); pending.finish(false) }
     }
 
     private fun scheduleReconnect() {
@@ -347,10 +377,25 @@ class DeviceService : AccessibilityService() {
     internal companion object {
         @Volatile var active = false
             private set
+        private var instance: DeviceService? = null
+        val grantedCapabilities: Set<String>
+            get() = instance?.takeIf { it.epoch > 0 }?.grant.orEmpty()
+        fun rebind() {
+            instance?.apply {
+                disconnect()
+                connect()
+            }
+        }
+        fun unbind(complete: (Boolean) -> Unit) {
+            instance?.unbind(complete) ?: complete(false)
+        }
         private val identity = Regex("^[A-Za-z0-9_-]{1,100}$")
     }
 }
 
+
+internal fun deviceHandshakeHeaders(key: String): Map<String, String> =
+    if (key.isEmpty()) emptyMap() else mapOf("Authorization" to "Bearer $key")
 
 internal class DeviceHandshake(
     private val frameLimit: Int,

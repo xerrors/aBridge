@@ -2,7 +2,11 @@
 
 The Android app supports Android 11 and later. Install the signed APK from GitHub Releases and use a Server version that supports Android devices. [GitHub Releases](https://github.com/xerrors/aBridge/releases/latest)
 
-In the management console, create an Android device and copy its Device Key. Open the app, enter the Server address and key, then enable the aBridge accessibility service in Android Settings. Choose the capabilities and working directory in **设置**, then tap **允许 Agent 操作**. Use **暂停 Agent 操作** to pause access while keeping the device connected.
+Enter the Server address. For the standard aBridge Server, create an Android device in the management console and enter its Device Key. For a compatible server that accepts devices without credentials, leave **Device Key** empty. The app then omits the Authorization header. If the server rejects the connection, tap **填写 Device Key** to supply its key.
+
+Enable the aBridge accessibility service in Android Settings. Choose the capabilities and working directory in **设置**, then tap **允许 Agent 操作**. Use **暂停 Agent 操作** to pause access while keeping the device connected.
+
+To unbind, open **设置 → 解除设备绑定** and confirm. The app stops accepting operations and returns to the connection form immediately. When connected, it also requests revocation from the server. If the app cannot confirm revocation, remove the old device in the server console.
 
 Use HTTPS for remote connections. If you enter an HTTP address, the app asks you to confirm it because the key and device traffic will travel without encryption. The confirmation applies to the saved address, and a device bound over HTTPS keeps using HTTPS.
 

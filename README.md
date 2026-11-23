@@ -85,7 +85,7 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 - **macOS App**。下载 macOS ZIP，经浏览器授权后在系统设置中开启所需权限。v0.4.23 的 ZIP 使用 ad hoc 签名。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与权限](docs/deployment.md#macos-app)
 - **Windows 客户端预览**。下载未签名便携 ZIP，完整解压后启动 `aBridge.exe`，填写服务端网址并在浏览器中确认授权。[下载、安装与绑定](docs/windows-client.md)
 - **Linux CLI**。下载对应架构的包，用管理台签发的 Device Token 绑定。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与绑定](apps/linux-client/README.md#安装与绑定)
-- **Android App**。下载签名 APK，用 Device Key 绑定，在 Android 设置开启无障碍，再回到 App 允许 Agent 操作。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与绑定](apps/android/README.md)
+- **Android App**。填写服务器地址和 Device Key，连接支持免 Key 的兼容服务时可将 Key 留空。在 Android 设置开启无障碍，再回到 App 允许 Agent 操作。[发布产物](https://github.com/xerrors/aBridge/releases/latest) · [安装与绑定](apps/android/README.md)
 
 完成后，在管理台确认设备已上线。
 
