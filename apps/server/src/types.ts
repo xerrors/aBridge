@@ -1,6 +1,7 @@
 import type {
   OperationError,
   OperationState,
+  DeviceInteractionState,
   SessionInfo,
   SessionErrorDetails,
   SessionState,
@@ -82,6 +83,7 @@ export interface DeviceConnection {
   kind: DeviceKind;
   capabilities: Partial<Record<Capability, boolean>>;
   paused: boolean;
+  interactionState?: DeviceInteractionState;
   heartbeatAt: number;
   sequence: number;
   transport: DeviceTransport;

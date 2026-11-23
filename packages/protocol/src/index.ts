@@ -16,6 +16,7 @@ import {
   capabilitySchema,
   deviceKindSchema,
   connectionLossSchema,
+  deviceInteractionStateSchema,
   deviceMetadataSchema,
   deviceRecoverySchema,
   policyCapabilities,
@@ -736,6 +737,7 @@ export const deviceHelloSchema = z
     protocol: z.literal(PROTOCOL_VERSION),
     capabilities: z.record(z.string(), z.boolean()),
     paused: z.boolean(),
+    interaction_state: deviceInteractionStateSchema.optional(),
     ...deviceMetadataSchema.shape,
   })
   .passthrough();

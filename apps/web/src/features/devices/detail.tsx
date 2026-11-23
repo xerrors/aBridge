@@ -1,6 +1,6 @@
 import { platformName, CapabilityIcon } from "../../components/icons.js";
 import { ActionButton } from "../../components/actions.js";
-import { capabilityLabels, stateLabels } from "../../lib/labels.js";
+import { capabilityLabels, deviceScreenStatus, stateLabels } from "../../lib/labels.js";
 import { Field, Form, Modal } from "../../components/forms.js";
 import { useState } from "preact/hooks";
 import type { Device, ManagementData, Mutate, RunAction } from "../../lib/types.js";
@@ -32,6 +32,7 @@ export function DevicePage({
   const [renaming, setRenaming] = useState(false);
   const activeSection = ["activity", "settings"].includes(section) ? section : "overview";
   const details = device?.details;
+  const screenStatus = device && deviceScreenStatus(device);
   return (
     <>
       <a class="device-back" href="#devices">
@@ -51,6 +52,7 @@ export function DevicePage({
                 <span class="device-state">
                   <span class={`dot ${device.paused ? "paused" : device.status}`} />
                   {device.paused ? "已暂停" : (stateLabels[device.status] ?? device.status)}
+                  {screenStatus && <> · {screenStatus}</>}
                 </span>
               </div>
               <div class="actions">
@@ -115,13 +117,17 @@ export function DevicePage({
             <ActivityPage key={device.id} data={data} deviceId={device.id} refresh={refresh} run={run} />
           ) : (
             <>
-              {device.status !== "online" || device.paused ? (
+              {device.status !== "online" || device.paused || screenStatus ? (
                 <div class="status-banner" role="status">
                   {device.status === "unknown"
                     ? "无法获取设备状态，请检查服务连接。"
                     : device.paused
                       ? "已暂停，请在客户端恢复。"
-                      : "设备离线，请打开客户端。"}
+                      : device.status !== "online"
+                        ? "设备离线，请打开客户端。"
+                        : device.interaction_state === "locked"
+                          ? "请在设备上解锁，恢复屏幕和键鼠操作。"
+                          : "请在设备上亮屏，恢复屏幕和键鼠操作。"}
                 </div>
               ) : null}
               <section class="device-summary">

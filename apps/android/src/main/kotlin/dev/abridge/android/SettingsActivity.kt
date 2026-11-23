@@ -189,6 +189,13 @@ class SettingsActivity : Activity() {
                 if (address.startsWith("http://")) confirmHttpBinding(address, key)
                 else if (httpDialog == null) bind(address, key)
             }
+            "standby" -> (request.opt("enabled") as? Boolean)?.let { enabled ->
+                preferences.edit().putBoolean("background_standby", enabled).commit()
+                if (enabled && Build.VERSION.SDK_INT >= 33 &&
+                    checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2)
+            }
+            "batterySettings" -> startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             "access" -> (request.opt("allowed") as? Boolean)?.let(::setAgentAccess)
             "capability" -> {
                 val capability = LocalCapability.entries.find { it.preference == request.optString("name") }
@@ -369,6 +376,10 @@ class SettingsActivity : Activity() {
             .put("bound", bound)
             .put("server", preferences.getString("url", "").orEmpty())
             .put("connection", connection.name)
+            .put("standbyEnabled", preferences.getBoolean("background_standby", false))
+            .put("standbyActive", preferences.getBoolean("standby_active", false))
+            .put("batteryUnrestricted", getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))
+            .put("interactionState", interactionState().wire)
             .put("agentAllowed", bound && !revoked && !preferences.getBoolean("paused", true))
             .put("enabledCapabilities", JSONArray(enabled.map { it.preference }))
             .put("grantedCapabilities", JSONArray(DeviceService.grantedCapabilities))

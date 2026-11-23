@@ -13,13 +13,15 @@ function deferred() {
   let resolve!: () => void;
   return { promise: new Promise<void>((done) => (resolve = done)), resolve: () => resolve() };
 }
-async function fixture(kind: DeviceKind = "computer") {
+async function fixture(
+  kind: DeviceKind = "computer",
+  capabilities: Capability[] = kind === "browser" ? ["browser"] : ["shell"],
+) {
   const dir = await mkdtemp(join(tmpdir(), "abridge-device-metadata-"));
   const path = join(dir, "server.db");
   let store = new Store(path);
   let control = new ControlService(store);
   const owner = await store.createUser("metadata-fixture", "synthetic-metadata-password");
-  const capabilities: Capability[] = kind === "browser" ? ["browser"] : ["shell"];
   const { device, key } = store.createDevice(owner.id, "Fixture", capabilities, kind);
   const { agentConnection } = store.createAgentConnection(owner.id, "Fixture agent", {
     mode: "selected",
@@ -270,6 +272,43 @@ test("queued reconnects leave the newest successful metadata when an old close a
     assert.deepEqual(deviceMetadataSchema.parse(f.view()), { platform: "darwin", version: "fixture-2" });
   } finally {
     release.resolve();
+    await f.close();
+  }
+});
+
+test("Android interaction state gates UI capabilities independently of connectivity and files", async () => {
+  const f = await fixture("computer", ["screen", "input", "files"]);
+  try {
+    const ticket = await f.attach({ platform: "android", interaction_state: "ready" });
+    const ui = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    const files = f.control.openSession(f.agentConnection, f.device.id, ["files"]);
+    const report = (interaction_state: "locked" | "screen_off" | "ready") =>
+      f.control.receive(ticket, {
+        type: "heartbeat",
+        connection_epoch: ticket.epoch,
+        interaction_state,
+        capabilities: { screen: true, input: true, files: true },
+      });
+    for (const [state, code] of [
+      ["locked", "device_locked"],
+      ["screen_off", "screen_off"],
+    ] as const) {
+      await report(state);
+      const view = f.control.devices(f.agentConnection)[0];
+      assert.equal(view.status, "online");
+      assert.equal(view.interaction_state, state);
+      assert.deepEqual(view.available, { screen: false, input: false, files: true });
+      assert.throws(() => f.control.openSession(f.agentConnection, f.device.id, ["screen"]), { code });
+      assert.equal(f.store.session(ui.id)?.status, "stopped");
+      assert.equal(f.store.session(files.id)?.status, "active");
+    }
+    await report("ready");
+    assert.equal(f.view().interaction_state, "ready");
+    assert.notEqual(f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]).id, ui.id);
+    f.control.dropConnection(ticket);
+    assert.equal(f.view().status, "offline");
+    assert.equal(f.view().interaction_state, undefined);
+  } finally {
     await f.close();
   }
 });

@@ -7,6 +7,7 @@ import {
   deviceMetadataSchema,
   sessionInfoSchema,
   connectionLossSchema,
+  deviceInteractionStateSchema,
   operationStateSchema,
 } from "./common.js";
 
@@ -21,6 +22,7 @@ export const deviceViewSchema = deviceMetadataSchema.extend({
   capabilities: z.array(capabilitySchema),
   status: z.enum(["online", "offline", "revoked"]),
   paused: z.boolean(),
+  interaction_state: deviceInteractionStateSchema.optional(),
   available: z.record(z.string(), z.boolean()),
   available_tools: z.array(z.string()).optional(),
   active_operations: z.array(z.string()),

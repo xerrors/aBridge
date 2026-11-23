@@ -100,6 +100,10 @@ type DeviceState = {
   server: string;
   connection: Connection;
   agentAllowed: boolean;
+  standbyEnabled: boolean;
+  standbyActive: boolean;
+  batteryUnrestricted: boolean;
+  interactionState: "ready" | "screen_off" | "locked";
   enabledCapabilities: Capability[];
   grantedCapabilities: Capability[];
   directoryAuthorized: boolean;
@@ -119,6 +123,7 @@ type Request =
   | {
       type:
         | "ready"
+        | "batterySettings"
         | "accessibility"
         | "directory"
         | "revokeDirectory"
@@ -129,6 +134,7 @@ type Request =
         | "downloadUpdate";
     }
   | { type: "bind"; address: string; key: string }
+  | { type: "standby"; enabled: boolean }
   | { type: "access"; allowed: boolean }
   | { type: "capability"; name: Capability; enabled: boolean };
 type Reply =
@@ -449,6 +455,7 @@ function AccessScreen() {
           ({ key }) =>
             state.enabledCapabilities.includes(key) &&
             state.grantedCapabilities.includes(key) &&
+            (key === "files" || state.interactionState === "ready") &&
             (key !== "files" || state.directoryAuthorized),
         )
       : [];
@@ -607,6 +614,29 @@ function AccessScreen() {
               )}
               <Separator borderColor={line} />
               <SettingsRow title={connectionLabel[state.connection]} />
+            </SettingsSection>
+            <SettingsSection title="后台待命">
+              <CapabilityRow
+                name="熄屏保持连接"
+                description="开启常驻通知并提高后台连接稳定性，会增加耗电"
+                checked={state.standbyEnabled}
+                onChange={(enabled) => send({ type: "standby", enabled })}
+              />
+              {state.standbyEnabled && (
+                <>
+                  {!state.standbyActive && (
+                    <Text color={secondary} fontSize={12} marginHorizontal={14} marginBottom={8}>
+                      待命未生效，请检查无障碍和系统后台设置。
+                    </Text>
+                  )}
+                  <Separator borderColor={line} />
+                  <SettingsRow
+                    title="电池优化"
+                    detail={state.batteryUnrestricted ? "已允许不受限制" : "允许后台运行可改善熄屏连接"}
+                    onPress={() => send({ type: "batterySettings" })}
+                  />
+                </>
+              )}
             </SettingsSection>
             <SettingsSection title="权限">
               <SettingsRow title="Agent 能力" onPress={() => setPanel("permissions")} />

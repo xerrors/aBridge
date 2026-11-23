@@ -39,9 +39,35 @@ android {
     sourceSets.main.assets.srcDir('ui/dist')
 }
 
-def syncContract = tasks.register('syncDeviceContract', Copy) {
-    from contractFile
-    into layout.buildDirectory.dir('generated/contract')
+// Android validates only its own tools plus operation and welcome frames.
+def withoutSchemaAnnotations(value) {
+    if (value instanceof Map) {
+        return value.findAll { key, item ->
+            !(key in ['$schema', 'description', 'default'] && !(item instanceof Map))
+        }.collectEntries { key, item -> [key, withoutSchemaAnnotations(item)] }
+    }
+    if (value instanceof List) return value.collect { withoutSchemaAnnotations(it) }
+    return value
+}
+def syncContract = tasks.register('syncDeviceContract') {
+    inputs.file(contractFile)
+    def output = layout.buildDirectory.file('generated/contract/desktop-contract.json')
+    outputs.file(output)
+    doLast {
+        def tools = contract.androidTools as Set
+        def schemaNames = tools + ['operation', 'welcome']
+        def androidContract = [
+            version: contract.version,
+            protocol: contract.protocol,
+            limits: contract.limits,
+            androidTools: contract.androidTools,
+            toolCapabilities: contract.toolCapabilities.findAll { name, capability -> name in tools },
+            schemas: withoutSchemaAnnotations(contract.schemas.findAll { name, schema -> name in schemaNames })
+        ]
+        def target = output.get().asFile
+        target.parentFile.mkdirs()
+        target.text = groovy.json.JsonOutput.toJson(androidContract)
+    }
 }
 def buildUi = tasks.register('buildAndroidUi', Exec) {
     inputs.files(fileTree('ui') {

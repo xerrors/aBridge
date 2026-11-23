@@ -6,6 +6,10 @@ Enter the Server address. For the standard aBridge Server, create an Android dev
 
 Enable the aBridge accessibility service in Android Settings. Choose the capabilities and working directory in **设置**, then tap **允许 Agent 操作**. Use **暂停 Agent 操作** to pause access while keeping the device connected.
 
+For a device that needs to stay available with the screen off, enable **设置 → 后台待命 → 熄屏保持连接**. This keeps a foreground notification and holds a bounded CPU wake lock while the connection is active, which increases battery use. **电池优化** opens the system power settings. Android Doze, Low Power Standby, and vendor battery policies can still interrupt the network. Opening the notification returns to aBridge; unlock the device to resume screen operations.
+
+The client reports screen-off and locked states separately. Screen and input capabilities become temporarily unavailable while the screen is off or the keyguard is showing. File operations keep their existing directory authorization. UI operations are interrupted when the screen state changes, and old observations are invalidated. Paused Agent access remains paused after the device wakes.
+
 To unbind, open **设置 → 解除设备绑定** and confirm. The app stops accepting operations and returns to the connection form immediately. When connected, it also requests revocation from the server. If the app cannot confirm revocation, remove the old device in the server console.
 
 Use HTTPS for remote connections. If you enter an HTTP address, the app asks you to confirm it because the key and device traffic will travel without encryption. The confirmation applies to the saved address, and a device bound over HTTPS keeps using HTTPS.

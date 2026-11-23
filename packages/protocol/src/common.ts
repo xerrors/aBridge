@@ -5,6 +5,8 @@ import { portable } from "./portable.js";
 export const CAPABILITIES = ["screen", "input", "shell", "files", "browser"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 export type DeviceKind = "computer" | "browser";
+export const deviceInteractionStateSchema = z.enum(["ready", "screen_off", "locked"]);
+export type DeviceInteractionState = z.infer<typeof deviceInteractionStateSchema>;
 export const DESKTOP_CAPABILITIES = ["screen", "input", "shell", "files"] as const;
 export const sessionStateSchema = z.enum([
   "active",

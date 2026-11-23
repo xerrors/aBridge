@@ -137,6 +137,8 @@ Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-s
 
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `devices_list` 一致的设备摘要，包含名称、类型、平台、连接状态和可用的系统与浏览器版本信息。管理台及已授权 Agent 的 `device_get` 可读取完整详情，包括主机名、型号、运行用户和归属账户。
 
+Android 的 hello 和心跳可上报 `interaction_state`（`ready`、`screen_off`、`locked`）。在线时设备摘要包含该状态。熄屏或锁屏暂停屏幕和输入能力并终止受影响的会话，文件能力继续按独立授权判断。亮屏且退出锁屏界面后，任务打开新会话并重新观察。
+
 `devices_list` 与 `session_open` 通过 `available_tools` 公布默认参数下可用的设备工具。会话清单还受本次请求的能力约束。Server 按同一平台清单拒绝未实现的工具。桌面输入被拒绝后，`error.recovery.action` 可提示重新观察或请求用户接管。重新观察后应核对目标，并且只重试一次明确未执行的操作。
 
 设备的 `platform`、`version` 和可选 `details` 保存最近一次通过身份校验且成功发送欢迎消息的连接上报，断连和 Server 重启后仍可读取。后续成功连接替换整份上报，缺失字段保持未知。基础字段 `platform` 保留平台标签，`version` 表示 aBridge 客户端或扩展版本。`details` 可包含系统及版本、发行版、架构和浏览器品牌及主版本。macOS 和 Linux 可提供主机名、型号和客户端进程的系统用户名，Linux 额外提供内核版本。归属账户来自 Server 的绑定关系。设备上报只用于展示和排障，授权仍由 Server 验证，在线状态由连接与心跳判定。失败、过期连接和凭据撤销后的迟到握手不会更新设备信息。
