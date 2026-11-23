@@ -92,7 +92,8 @@ function CapabilityRow({
 }
 
 type Capability = (typeof capabilities)[number]["key"];
-type Connection = "Online" | "Connecting" | "Offline" | "ServiceUnavailable" | "Revoked" | "Unbound";
+type Connection =
+  "Online" | "Connecting" | "Offline" | "ServiceUnavailable" | "KeyRequired" | "Revoked" | "Unbound";
 type DeviceState = {
   type: "state";
   bound: boolean;
@@ -100,6 +101,7 @@ type DeviceState = {
   connection: Connection;
   agentAllowed: boolean;
   enabledCapabilities: Capability[];
+  grantedCapabilities: Capability[];
   directoryAuthorized: boolean;
   accessibilityActive: boolean;
   model: string;
@@ -132,7 +134,7 @@ type Request =
 type Reply =
   | DeviceState
   | UpdateState
-  | { type: "bound" | "back" | "bindingCancelled" }
+  | { type: "bound" | "back" | "bindingCancelled" | "unbound" }
   | { type: "error"; message: string };
 
 declare global {
@@ -153,7 +155,8 @@ const connectionLabel: Record<Connection, string> = {
   Connecting: "连接中",
   Offline: "离线",
   ServiceUnavailable: "无障碍未连接",
-  Revoked: "凭据已撤销",
+  KeyRequired: "服务器未接受免 Key 连接",
+  Revoked: "Device Key 无效或已撤销",
   Unbound: "尚未绑定",
 };
 
@@ -204,7 +207,7 @@ function DeviceDialog({
               ? state.agentAllowed
                 ? "关闭开关可随时收回对应能力"
                 : "所选能力在允许 Agent 访问后生效"
-              : "此设备将停止接收 aBridge 操作。"}
+              : "此设备将立即停止接收 aBridge 操作。离线时还需在 Server 管理台撤销旧设备。"}
           </Dialog.Description>
           {permissions ? (
             <YStack borderWidth={1} borderColor={line} borderRadius={12} overflow="hidden">
@@ -261,8 +264,8 @@ function BindingForm({
   function submit() {
     const cleanAddress = address.trim();
     const cleanKey = key.trim();
-    if (!cleanAddress || !cleanKey) {
-      setValidation("请填写 Server 地址和 Device Key");
+    if (!cleanAddress) {
+      setValidation("请填写服务器地址");
       return;
     }
     setValidation("");
@@ -308,12 +311,13 @@ function BindingForm({
         </YStack>
       )}
       <Text color={ink} fontSize={14}>
-        Device Key
+        Device Key（可选）
       </Text>
       <Input
         id="device-key"
         aria-label="Device Key"
         value={key}
+        placeholder="服务器允许免 Key 时留空"
         onChangeText={setKey}
         autoComplete="off"
         autoCapitalize="none"
@@ -416,6 +420,13 @@ function AccessScreen() {
         setPending(false);
         setEditing(false);
         setSettings(false);
+      } else if (message.type === "unbound") {
+        setError("");
+        setPending(false);
+        setEditing(false);
+        setSettings(false);
+        setUpdatePage(false);
+        setPanel(null);
       } else if (message.type === "bindingCancelled") {
         setPending(false);
       } else if (message.type === "error") {
@@ -436,37 +447,43 @@ function AccessScreen() {
     allowed && state?.connection === "Online"
       ? capabilities.filter(
           ({ key }) =>
-            state.enabledCapabilities.includes(key) && (key !== "files" || state.directoryAuthorized),
+            state.enabledCapabilities.includes(key) &&
+            state.grantedCapabilities.includes(key) &&
+            (key !== "files" || state.directoryAuthorized),
         )
       : [];
-  const blocked = state?.connection === "Revoked" || state?.connection === "ServiceUnavailable";
-  const action =
-    state?.connection === "Revoked"
-      ? "重新绑定"
-      : state?.connection === "ServiceUnavailable" && !allowed
-        ? "打开无障碍设置"
-        : allowed
-          ? "暂停 Agent 操作"
-          : "允许 Agent 操作";
+  const needsKey = state?.connection === "KeyRequired";
+  const needsRebind = state?.connection === "Revoked" || needsKey;
+  const blocked = needsRebind || state?.connection === "ServiceUnavailable";
+  const action = needsRebind
+    ? needsKey
+      ? "填写 Device Key"
+      : "重新绑定"
+    : state?.connection === "ServiceUnavailable" && !allowed
+      ? "打开无障碍设置"
+      : allowed
+        ? "暂停 Agent 操作"
+        : "允许 Agent 操作";
   function primary() {
     setError("");
-    if (state?.connection === "Revoked") setEditing(true);
+    if (needsRebind) setEditing(true);
     else if (state?.connection === "ServiceUnavailable" && !allowed) send({ type: "accessibility" });
     else send({ type: "access", allowed: !allowed });
   }
 
-  const feedback =
-    state?.connection === "Revoked"
-      ? "重新绑定后可恢复访问"
-      : state?.connection === "ServiceUnavailable"
-        ? "请在系统设置中启用 aBridge 无障碍服务"
-        : state?.connection !== "Online"
-          ? "设备连接后才能接收 Agent 操作"
-          : !allowed
-            ? "手机仍在线，Agent 无法执行新操作"
-            : effective.length
-              ? "Agent 可使用本机已开启且获授权的能力"
-              : "请先开启所需能力";
+  const feedback = needsRebind
+    ? needsKey
+      ? "请填写该服务器签发的 Device Key"
+      : "重新绑定后可恢复访问"
+    : state?.connection === "ServiceUnavailable"
+      ? "请在系统设置中启用 aBridge 无障碍服务"
+      : state?.connection !== "Online"
+        ? "设备连接后才能接收 Agent 操作"
+        : !allowed
+          ? "手机仍在线，Agent 无法执行新操作"
+          : effective.length
+            ? "Agent 可使用本机已开启且获授权的能力"
+            : "请检查本机能力设置和服务器授权";
 
   return (
     <YStack
