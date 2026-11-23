@@ -20,10 +20,11 @@ printf '%s' "$ANDROID_KEYSTORE_BASE64" | openssl base64 -d -A > "$work/release.k
 "$python" tools/recompress-android-apk.py "$unsigned" "$work/repacked.apk"
 "$build_tools/zipalign" -f -P 16 4 "$work/repacked.apk" "$work/aligned.apk"
 "$build_tools/zipalign" -c -P 16 4 "$work/aligned.apk"
+# Android 11+ verifies APK signing blocks directly; omit redundant JAR signature entries.
 "$build_tools/apksigner" sign \
   --ks "$work/release.keystore" --ks-key-alias "$ANDROID_KEY_ALIAS" \
   --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
-  --v4-signing-enabled false --out "$work/release.apk" "$work/aligned.apk"
+  --v1-signing-enabled false --v4-signing-enabled false --out "$work/release.apk" "$work/aligned.apk"
 "$build_tools/apksigner" verify "$work/release.apk"
 size=$(wc -c < "$work/release.apk")
 if (( size > 200000 )); then
