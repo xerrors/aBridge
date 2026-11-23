@@ -85,7 +85,7 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 ## Go Agent 服务
 
-`apps/agent/` 是独立运行的 Android 任务服务。任务 API 接收显式设备 ID 和目标，执行器通过模型工具调用驱动 aBridge MCP，使用选中设备的控制会话读取观察并执行输入。调度按设备串行，同一进程可并行执行不同设备的任务。MCP Server 继续核对设备授权、运行状态和操作回执。[运行和接口示例](../apps/agent/README.md)
+`apps/agent/` 是独立运行的 Android 任务服务。任务 API 接收显式设备 ID 和目标，执行器通过模型工具调用驱动 aBridge MCP，使用选中设备的控制会话读取观察并执行输入。调度按设备串行，同一进程可并行执行不同设备的任务。MCP Server 继续核对设备授权、运行状态和操作回执。[运行和接口示例](https://github.com/xerrors/aBridge/blob/main/apps/agent/README.md)
 
 ## 执行链与状态归属
 
