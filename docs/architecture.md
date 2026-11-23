@@ -83,6 +83,10 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 `npm run linux:check` 执行 Rust 格式、测试、Clippy 及真实 Server 联调，Linux CI 另验收用户 systemd 安装/停止/重启/卸载。`npm run package:linux` 仅打包 Linux ELF，生成校验和、第三方许可及体积记录；可执行文件和压缩包预算分别为 15 MiB、5 MiB。安装、能力控制和后台运行见[部署说明](deployment.md#linux-cli)。
 
+## Go Agent 服务
+
+`apps/agent/` 是独立运行的 Android 任务服务。任务 API 接收显式设备 ID 和目标，执行器通过模型工具调用驱动 aBridge MCP，使用选中设备的控制会话读取观察并执行输入。调度按设备串行，同一进程可并行执行不同设备的任务。MCP Server 继续核对设备授权、运行状态和操作回执。[运行和接口示例](https://github.com/xerrors/aBridge/blob/main/apps/agent/README.md)
+
 ## 执行链与状态归属
 
 普通工具经过 `mcp.ts → ControlService.execute → 设备 WebSocket → 客户端 dispatch → 执行器`，设备回执由 `ControlService.receive` 校验归属，再由 `finish` 发布终态。SQLite 保存操作元信息和去重身份，返回内容留在有界内存缓存中。
@@ -136,6 +140,8 @@ Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-s
 在管理台的连接预览里，可以看到该连接有权使用哪些设备以及设备当前的状态和能力。MCP 的 `devices_list` 返回当前连接获准且具有有效能力的设备，以及连接 ID 和名称。
 
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `devices_list` 一致的设备摘要，包含名称、类型、平台、连接状态和可用的系统与浏览器版本信息。管理台及已授权 Agent 的 `device_get` 可读取完整详情，包括主机名、型号、运行用户和归属账户。
+
+Android 的 hello 和心跳可上报 `interaction_state`（`ready`、`screen_off`、`locked`）。在线时设备摘要包含该状态。熄屏或锁屏暂停屏幕和输入能力并终止受影响的会话，文件能力继续按独立授权判断。亮屏且退出锁屏界面后，任务打开新会话并重新观察。
 
 `devices_list` 与 `session_open` 通过 `available_tools` 公布默认参数下可用的设备工具。会话清单还受本次请求的能力约束。Server 按同一平台清单拒绝未实现的工具。桌面输入被拒绝后，`error.recovery.action` 可提示重新观察或请求用户接管。重新观察后应核对目标，并且只重试一次明确未执行的操作。
 

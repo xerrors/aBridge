@@ -2,6 +2,11 @@ package dev.abridge.android
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
@@ -48,6 +53,16 @@ class DeviceService : AccessibilityService() {
     private val screen by lazy { ScreenInput(this, contract.limits.getInt("imageBytes")) }
     private val files by lazy { WorkspaceFiles(this) }
     private val journal by lazy { getSharedPreferences("operations", Context.MODE_PRIVATE) }
+    private val standby by lazy { Standby(this) }
+    private var currentInteraction = InteractionState.Ready
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { updateInteraction() }
+    }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { ui.post {
+            if (active && socket?.isOpen != true) { retries = 0; scheduleReconnect() }
+        } }
+    }
     private var socket: WebSocketClient? = null
     private val unbinding = mutableMapOf<WebSocketClient, DeviceUnbinding>()
     private var maintenance: Job? = null
@@ -65,6 +80,7 @@ class DeviceService : AccessibilityService() {
     private var running: Running? = null
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
+            "background_standby", "key", "revoked" -> updateStandby()
             "paused", "tree", "screen", "input", "files" -> {
                 // Maintain the input boundary even before the Server receives the update.
                 if (key == "tree" || paused() || running?.capabilities?.any { !available(it) } == true) stopWork()
@@ -81,14 +97,25 @@ class DeviceService : AccessibilityService() {
         }
         active = true
         instance = this
+        currentInteraction = interactionState()
+        registerReceiver(screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        })
+        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
         prefs.registerOnSharedPreferenceChangeListener(listener)
+        updateStandby()
         prefs.edit().remove("connection").apply()
         connect()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) screen.invalidate()
+            event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            screen.invalidate()
+            updateInteraction()
+        }
     }
     override fun onInterrupt() { stopWork() }
 
@@ -97,6 +124,9 @@ class DeviceService : AccessibilityService() {
         if (instance === this) instance = null
         unbinding.values.toList().forEach { it.finish(false) }
         prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        runCatching { unregisterReceiver(screenReceiver) }
+        runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }
+        standby.stop()
         disconnect()
         scope.cancel()
         fileExecutor.shutdownNow()
@@ -104,13 +134,38 @@ class DeviceService : AccessibilityService() {
     }
 
     private fun paused() = prefs.getBoolean("paused", true) || prefs.getBoolean("revoked", false)
-    private fun available(name: String) = prefs.getBoolean(name, false) &&
-        (name in listOf("screen", "input") || name == "files" && files.authorizedTree() != null)
+    private fun available(name: String) = prefs.getBoolean(name, false) && when (name) {
+        "screen", "input" -> interactionState() == InteractionState.Ready
+        "files" -> files.authorizedTree() != null
+        else -> false
+    }
     private fun capabilities() = JSONObject().apply {
         for (name in listOf("screen", "input", "files")) put(name, available(name))
     }
 
-    private fun setState(state: String) { prefs.edit().putString("connection", state).apply() }
+    private fun updateStandby() {
+        val enabled = active && prefs.getBoolean("background_standby", false) && prefs.contains("key") &&
+            !prefs.getBoolean("revoked", false)
+        val active = standby.update(enabled, socket?.isOpen == true, interactionState())
+        if (prefs.getBoolean("standby_active", false) != active)
+            prefs.edit().putBoolean("standby_active", active).apply()
+    }
+
+    private fun updateInteraction() {
+        val next = interactionState()
+        if (next == currentInteraction) return
+        currentInteraction = next
+        screen.invalidate()
+        if (running?.capabilities?.any { it == "screen" || it == "input" } == true) stopWork()
+        updateStandby()
+        prefs.edit().putString("interaction_state", next.wire).apply()
+        if (epoch > 0) heartbeat()
+    }
+
+    private fun setState(state: String) {
+        prefs.edit().putString("connection", state).apply()
+        updateStandby()
+    }
 
     private fun connect() {
         if (!active || socket != null || prefs.getBoolean("revoked", false)) return
@@ -133,7 +188,8 @@ class DeviceService : AccessibilityService() {
                 if (self !== this@DeviceService.socket) return@launch
                 send(JSONObject().put("type", "hello").put("protocol", contract.protocol)
                     .put("platform", "android").put("version", contract.version)
-                    .put("capabilities", capabilities()).put("paused", paused()))
+                    .put("capabilities", capabilities()).put("paused", paused())
+                    .put("interaction_state", interactionState().wire))
             } }
             override fun onMessage(text: String) { val self = this; scope.launch {
                 unbinding[self]?.let { pending ->
@@ -179,8 +235,12 @@ class DeviceService : AccessibilityService() {
         if (runCatching { connection.send(frame.toString()) }.isFailure) scheduleReconnect()
     }
 
-    private fun heartbeat() = send(JSONObject().put("type", "heartbeat").put("connection_epoch", epoch)
-        .put("capabilities", capabilities()).put("paused", paused()))
+    private fun heartbeat() {
+        updateStandby()
+        send(JSONObject().put("type", "heartbeat").put("connection_epoch", epoch)
+            .put("capabilities", capabilities()).put("paused", paused())
+            .put("interaction_state", interactionState().wire))
+    }
 
     private fun disconnect() {
         val prior = socket
@@ -329,6 +389,10 @@ class DeviceService : AccessibilityService() {
         if (tool !in contract.androidTools) return refuse("unsupported_tool", "Tool is unavailable on Android")
         if (!contract.validate(tool, args)) return refuse("invalid_arguments", "Arguments do not match the tool schema")
         val required = contract.required(tool, args)
+        val interaction = interactionState()
+        if (required.any { it == "screen" || it == "input" } && interaction != InteractionState.Ready)
+            return refuse(interaction.refusal, if (interaction == InteractionState.Locked)
+                "Unlock this device to continue screen operations" else "Wake and unlock this device to continue screen operations")
         val sessionGrant = frame.getJSONArray("session_capabilities").values()
         if (required.isEmpty() || !required.all { it in grant && it in sessionGrant && available(it) })
             return refuse("capability_unavailable", "The required local capability is unavailable")
@@ -348,6 +412,9 @@ class DeviceService : AccessibilityService() {
                     val execution = coroutineContext
                     val check = {
                         execution.ensureActive()
+                        val interaction = interactionState()
+                        if (required.any { it == "screen" || it == "input" } && interaction != InteractionState.Ready)
+                            throw Refusal(interaction.refusal, "Device display is unavailable; observe again after unlocking")
                         if (paused() || required.any { !prefs.getBoolean(it, false) })
                             throw CancellationException("Local authorization changed")
                     }

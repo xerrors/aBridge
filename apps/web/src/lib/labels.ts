@@ -1,4 +1,5 @@
 import type { Capability } from "@abridge/protocol";
+import type { Device } from "./types.js";
 
 export const capabilityLabels: Record<Capability, string> = {
   screen: "屏幕",
@@ -20,3 +21,9 @@ export const stateLabels: Record<string, string> = {
   outcome_unknown: "结果未知",
   cancelled: "已取消",
 };
+
+export function deviceScreenStatus(device: Device): string | undefined {
+  if (device.status !== "online" || device.paused) return;
+  if (device.interaction_state === "locked") return "已锁屏";
+  if (device.interaction_state === "screen_off") return "已熄屏";
+}
