@@ -83,6 +83,10 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 `npm run linux:check` 执行 Rust 格式、测试、Clippy 及真实 Server 联调，Linux CI 另验收用户 systemd 安装/停止/重启/卸载。`npm run package:linux` 仅打包 Linux ELF，生成校验和、第三方许可及体积记录；可执行文件和压缩包预算分别为 15 MiB、5 MiB。安装、能力控制和后台运行见[部署说明](deployment.md#linux-cli)。
 
+## Go Agent 服务
+
+`apps/agent/` 是独立运行的 Android 任务服务。任务 API 接收显式设备 ID 和目标，执行器通过模型工具调用驱动 aBridge MCP，使用选中设备的控制会话读取观察并执行输入。调度按设备串行，同一进程可并行执行不同设备的任务。MCP Server 继续核对设备授权、运行状态和操作回执。[运行和接口示例](../apps/agent/README.md)
+
 ## 执行链与状态归属
 
 普通工具经过 `mcp.ts → ControlService.execute → 设备 WebSocket → 客户端 dispatch → 执行器`，设备回执由 `ControlService.receive` 校验归属，再由 `finish` 发布终态。SQLite 保存操作元信息和去重身份，返回内容留在有界内存缓存中。
