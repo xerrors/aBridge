@@ -1,20 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { createServer } from "node:http";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rm } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
-import { VERSION, deviceDetailsSchema, deviceHelloSchema } from "@abridge/protocol";
+import {
+  VERSION,
+  deviceAuthorizationCancelSchema,
+  deviceAuthorizationRequestSchema,
+  deviceDetailsSchema,
+  deviceHelloSchema,
+} from "@abridge/protocol";
 const exec = promisify(execFile);
 const binary = resolve(
   process.env.ABRIDGE_NATIVE_TEST_APP ?? "dist/desktop/aBridge.app",
   "Contents/MacOS/abridge-desktop",
 );
 const native = process.platform === "darwin" && process.arch === "arm64";
+const deviceKey = "abr_device_fixture";
+const authorizationPath = "/api/device-authorizations";
+const authorizationId = "a".repeat(43);
 type Frame = Record<string, unknown>;
 async function until<T>(
   check: () => T | Promise<T>,
@@ -29,18 +41,46 @@ async function until<T>(
   }
   throw Error(typeof message === "function" ? message() : message);
 }
-async function fixture() {
+async function fixture({ host = "127.0.0.1", seedBinding = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "abridge-native-client-"));
   await chmod(directory, 0o700);
   let name = "Fixture Mac",
     responseId = "fixture",
     reject = false;
+  const requests: {
+    method: string | undefined;
+    path: string | undefined;
+    authorization: string | undefined;
+    body: unknown;
+  }[] = [];
   const http = createServer(async (request, response) => {
-    assert.equal(request.headers.authorization, "Bearer abr_device_fixture");
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    if (request.method === "PATCH") name = (JSON.parse(body) as { name: string }).name;
+    let rawBody = "";
+    for await (const chunk of request) rawBody += chunk;
+    const body: unknown = rawBody ? JSON.parse(rawBody) : null;
+    requests.push({
+      method: request.method,
+      path: request.url,
+      authorization: request.headers.authorization,
+      body,
+    });
     response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === authorizationPath) {
+      response.end(
+        JSON.stringify({
+          id: authorizationId,
+          authorization_url: authorizationURL,
+          expires_at: Date.now() / 1000 + 60,
+        }),
+      );
+      return;
+    }
+    if (request.method === "DELETE" && request.url === `${authorizationPath}/${authorizationId}`) {
+      response.writeHead(204).end();
+      return;
+    }
+    assert.equal(request.url, "/api/device");
+    assert.equal(request.headers.authorization, `Bearer ${deviceKey}`);
+    if (request.method === "PATCH") name = (body as { name: string }).name;
     response.end(
       JSON.stringify(
         request.method === "PATCH"
@@ -49,17 +89,19 @@ async function fixture() {
       ),
     );
   });
-  await new Promise<void>((done) => http.listen(0, "127.0.0.1", done));
+  await once(http.listen(0, host), "listening");
   const address = http.address();
   assert.ok(address && typeof address === "object");
-  const url = `http://127.0.0.1:${address.port}`;
+  const url = `http://${host}:${address.port}`;
+  const authorizationURL = `${url}/?authorize=${authorizationId}`;
   const server = new WebSocketServer({ noServer: true });
   http.on("upgrade", (request, socket, head) => {
     if (reject) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
       return;
     }
-    assert.equal(request.headers.authorization, "Bearer abr_device_fixture");
+    assert.equal(request.url, "/ws/device");
+    assert.equal(request.headers.authorization, `Bearer ${deviceKey}`);
     server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws));
   });
   let peer: WebSocket | undefined,
@@ -101,21 +143,23 @@ async function fixture() {
       if (frame.type === "unbind") socket.send(JSON.stringify({ type: "revoke", connection_epoch: epoch }));
     });
   });
-  await mkdir(join(directory, "credentials"), { mode: 0o700 });
-  await writeFile(
-    join(directory, "config.json"),
-    JSON.stringify({
-      url,
-      paused: false,
-      capabilities: { shell: true, files: true, screen: false, input: false },
-    }),
-    { mode: 0o600 },
-  );
-  await writeFile(
-    join(directory, "credentials/device.json"),
-    JSON.stringify({ server_url: url, device_key: "abr_device_fixture" }),
-    { mode: 0o600 },
-  );
+  if (seedBinding) {
+    await mkdir(join(directory, "credentials"), { mode: 0o700 });
+    await writeFile(
+      join(directory, "config.json"),
+      JSON.stringify({
+        url,
+        paused: false,
+        capabilities: { shell: true, files: true, screen: false, input: false },
+      }),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(directory, "credentials/device.json"),
+      JSON.stringify({ server_url: url, device_key: deviceKey }),
+      { mode: 0o600 },
+    );
+  }
   async function cli(...args: string[]): Promise<Frame> {
     const result = await exec(binary, [...args, "--state-dir", directory], { timeout: 20000 });
     return JSON.parse(result.stdout) as Frame;
@@ -178,6 +222,7 @@ async function fixture() {
   return {
     directory,
     url,
+    requests,
     cli,
     start,
     stop,
@@ -209,6 +254,35 @@ async function fixture() {
   };
 }
 
+async function authorize(directory: string, input: Frame) {
+  const child = spawn(binary, ["authorize", "--stdin", "--state-dir", directory], {
+    env: { ...process.env, ABRIDGE_PARENT_PID: String(process.pid) },
+    stdio: "pipe",
+  });
+  const exited = once(child, "close");
+  const watchdog = setTimeout(() => child.kill("SIGKILL"), 15000);
+  const events: Frame[] = [];
+  let stderr = "";
+  child.stderr.on("data", (data) => (stderr += String(data)));
+  try {
+    child.stdin.write(JSON.stringify(input) + "\n");
+    for await (const line of createInterface({ input: child.stdout })) {
+      const event = JSON.parse(line) as Frame;
+      events.push(event);
+      if (event.event === "authorization") child.stdin.end();
+      if (event.event === "ready")
+        child.stdin.write(JSON.stringify({ command: "commit", capabilities: { files: true } }) + "\n");
+    }
+    const [code, signal] = await exited;
+    assert.equal(signal, null, `Authorization helper terminated: ${stderr}`);
+    return { code, events };
+  } finally {
+    clearTimeout(watchdog);
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited.catch(() => {});
+  }
+}
+
 test(
   "native client: startup loads independently of broken binding and bundles no JS runtime",
   { skip: !native },
@@ -232,6 +306,87 @@ test(
       assert.equal(smoke.authorizations, 0);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "native client: bundled helper authorizes and reconnects over HTTP with exact origin consent",
+  { skip: !native },
+  async () => {
+    const host = Object.values(networkInterfaces())
+      .flat()
+      .find((entry) => entry?.family === "IPv4" && !entry.internal)?.address;
+    assert.ok(host, "HTTP consent regression requires a non-loopback IPv4 address on this Mac");
+    const f = await fixture({ host, seedBinding: false });
+    try {
+      const mismatched = new URL(f.url);
+      mismatched.port = mismatched.port === "8080" ? "8081" : "8080";
+      for (const device_key of [undefined, deviceKey]) {
+        for (const http_confirmed_origin of [undefined, mismatched.origin]) {
+          const { code, events } = await authorize(f.directory, {
+            url: f.url,
+            device_key,
+            http_confirmed_origin,
+          });
+          assert.equal(code, 1);
+          assert.deepEqual(
+            events.map((event) => event.event),
+            ["error"],
+          );
+          assert.match(String(events[0]?.error), /未加密.*HTTP/);
+          assert.deepEqual(f.requests, [], "Consent must be checked before the helper contacts the server");
+        }
+      }
+
+      const input = { url: f.url, http_confirmed_origin: f.url };
+      const browser = await authorize(f.directory, input);
+      assert.equal(browser.code, 1);
+      assert.deepEqual(
+        browser.events.map((event) => event.event),
+        ["authorization", "error"],
+      );
+      assert.equal(browser.events[0]?.authorization_url, `${f.url}/?authorize=${authorizationId}`);
+      assert.deepEqual(
+        f.requests.map(({ method, path }) => [method, path]),
+        [
+          ["POST", authorizationPath],
+          ["DELETE", `${authorizationPath}/${authorizationId}`],
+        ],
+      );
+      const request = deviceAuthorizationRequestSchema.parse(f.requests[0]?.body);
+      const cancellation = deviceAuthorizationCancelSchema.parse(f.requests[1]?.body);
+      assert.equal(request.kind, "computer");
+      assert.equal(
+        createHash("sha256").update(cancellation.code_verifier).digest("base64url"),
+        request.code_challenge,
+      );
+      assert.deepEqual(await readdir(f.directory), []);
+
+      const token = await authorize(f.directory, { ...input, device_key: deviceKey });
+      assert.equal(token.code, 0);
+      assert.deepEqual(
+        token.events.map((event) => event.event),
+        ["ready", "complete"],
+      );
+      assert.deepEqual(f.requests.slice(2), [
+        { method: "GET", path: "/api/device", authorization: `Bearer ${deviceKey}`, body: null },
+      ]);
+      const config = JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")) as Frame;
+      assert.equal(config.http_confirmed_origin, f.url);
+      assert.deepEqual(JSON.parse(await readFile(join(f.directory, "credentials/device.json"), "utf8")), {
+        server_url: f.url,
+        device_key: deviceKey,
+      });
+      await f.start();
+      f.peer.terminate();
+      await until(
+        () => f.frames.filter((frame) => frame.type === "hello").length >= 2,
+        "Expected HTTP WebSocket reconnect",
+      );
+      await until(async () => (await f.cli("status")).connection === "online");
+    } finally {
+      await f.close();
     }
   },
 );
