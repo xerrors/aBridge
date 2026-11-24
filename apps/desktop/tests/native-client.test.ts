@@ -855,7 +855,7 @@ test(
       await f.cli("control", "stop");
       for (let i = 1; i < 8; i++) assert.equal((await f.result(`busy_${i}`)).status, "outcome_unknown");
       assert.equal((await f.cli("status")).active_operations, 0);
-      f.upgradeStatus = 401;
+      f.rotateDeviceKey();
       f.peer.terminate();
       const revoked = await until(async () => {
         const status = await f.cli("status");
