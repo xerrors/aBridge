@@ -92,6 +92,7 @@ actor DeviceClient {
                 if config.revoked == true { try? await sleepMilliseconds(100); continue }
                 do { try await connect(); backoff = 1 }
                 catch {
+                    if status == "online" { backoff = 1 }
                     if !stopping && status != "revoked" {
                         switch error as? ConnectionFailure {
                         case .revoked(let message)?:
@@ -172,19 +173,31 @@ actor DeviceClient {
                 try await receive(frame)
             }
         } catch {
-            throw connectionFailure(error, socket: ws)
+            throw await connectionFailure(error, socket: ws)
         }
     }
     /// 连接状态只发布本机定义的诊断，HTTP 响应正文和 WebSocket 关闭原因始终留在传输层。
-    private func connectionFailure(_ cause: Error, socket ws: URLSessionWebSocketTask) -> ConnectionFailure {
+    private func connectionFailure(_ cause: Error, socket ws: URLSessionWebSocketTask) async -> ConnectionFailure {
         if let failure = cause as? ConnectionFailure { return failure }
         if let failure = cause as? DesktopError, failure.code == "status_write_failed" {
             return .unavailable(failure.message)
         }
-        let responseStatus = (ws.response as? HTTPURLResponse)?.statusCode
+        let response = ws.response as? HTTPURLResponse
+        if let response, contract.isDeviceKeyRejection(response) {
+            return .revoked("\(deviceCredentialRejected)（HTTP 401）")
+        }
+        if status == "connecting", response == nil || response?.statusCode == 401 {
+            // URLSession can surface a failed upgrade without its HTTP response. Ask the same Server.
+            let identity = await deviceIdentityResponse()
+            if let identity, contract.isDeviceKeyRejection(identity) {
+                return .revoked("\(deviceCredentialRejected)（HTTP 401）")
+            }
+            if response?.statusCode == 401 || identity?.statusCode == 401 {
+                return .unavailable("设备连接需要认证，请检查反向代理是否转发 WebSocket 的 Authorization，以及管理台中的设备凭据（HTTP 401）")
+            }
+        }
         let message: String
-        if responseStatus == 401 { return .revoked("\(deviceCredentialRejected)（HTTP 401）") }
-        if status == "connecting", let code = responseStatus, code != 101 {
+        if status == "connecting", let code = response?.statusCode, code != 101 {
             switch code {
             case 200..<300, 400, 404, 426:
                 message = "Server 未建立 WebSocket 连接，请检查 Server 地址和反向代理的 WebSocket 转发（HTTP \(code)）"
@@ -194,8 +207,8 @@ actor DeviceClient {
         } else if status == "online", monotonicSeconds() - lastAck >= lease {
             message = "等待 Server 心跳确认超时，请检查网络及 Server 是否运行"
         } else if let network = cause as? URLError, network.code != .cancelled {
-            if status == "connecting", [.badServerResponse, .cannotParseResponse].contains(network.code) {
-                message = "Server 返回了无效的 WebSocket 握手响应，请检查 Server 地址和反向代理的 WebSocket 转发"
+            if status == "connecting", [.badServerResponse, .cannotParseResponse, .networkConnectionLost].contains(network.code) {
+                message = "设备连接未完成 WebSocket 握手，请检查 Server 和反向代理的认证与 WebSocket 转发"
             } else {
                 message = deviceServerNetworkFailure(network)
             }
@@ -205,6 +218,15 @@ actor DeviceClient {
             message = "与 Server 的设备连接中断，请检查网络及 Server 是否运行"
         }
         return .unavailable(message)
+    }
+    private func deviceIdentityResponse() async -> HTTPURLResponse? {
+        guard !stopping, let url = URL(string: config.url + "/api/device") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 2)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        let session = deviceServerSession(timeout: 2)
+        defer { session.invalidateAndCancel() }
+        guard let (_, response) = try? await session.bytes(for: request) else { return nil }
+        return response as? HTTPURLResponse
     }
     private func next(_ ws: URLSessionWebSocketTask, timeout: Double) async throws -> JSONObject {
         let timer = Task { try await sleepMilliseconds(timeout * 1000); ws.cancel(with: .goingAway, reason: nil) }

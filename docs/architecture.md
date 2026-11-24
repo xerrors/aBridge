@@ -234,4 +234,4 @@ macOS App 包含 AppKit 主程序、Swift 设备客户端、更新器、共享�
 
 macOS 的设备进程使用系统 URLSession 连接用户指定的 Server。HTTPS、WSS 和回环连接由使用系统默认 ATS 策略的 `abridge-desktop` 处理。经 Origin 确认的远端 HTTP 和 WS 由单独签名的 `abridge-desktop-http` 处理，只有这个进程包含 ATS 例外。绑定和启动时，设备进程在连接前复核所选传输方式。更新器也使用系统默认的 ATS 策略。
 
-设备 WebSocket 握手的访问拒绝（HTTP 403）按普通连接错误重试。Server 的凭据拒绝（HTTP 401）或已建立连接收到的撤销消息会停止自动重连，直至重新绑定。
+设备 WebSocket 握手的 HTTP 401/403 通常按连接错误重试。如果系统未提供握手响应或只返回普通 401，Mac 客户端会向同一 Server 发起有时限的 `GET /api/device` 验证。Server 收到并拒绝设备凭据时，HTTP 401 包含 `abridge-device-auth: invalid_device_key`。带这个标记的 401 和已建立连接收到的撤销消息会停止自动重连，直至重新绑定。反向代理需要传递设备请求的 Authorization 和 Server 的认证错误标记。

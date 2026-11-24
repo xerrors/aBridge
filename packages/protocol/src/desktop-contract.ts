@@ -19,6 +19,7 @@ export function desktopContract() {
   return {
     version: p.VERSION,
     protocol: p.PROTOCOL_VERSION,
+    deviceKeyRejection: p.DEVICE_KEY_REJECTION,
     capabilities: p.CAPABILITIES,
     desktopCapabilities: p.DESKTOP_CAPABILITIES,
     toolCapabilities: p.TOOL_CAPABILITIES,

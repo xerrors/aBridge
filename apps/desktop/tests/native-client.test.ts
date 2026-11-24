@@ -15,6 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   DESKTOP_AUTH_CALLBACK_PATH,
+  DEVICE_KEY_REJECTION,
   VERSION,
   deviceAuthorizationCancelSchema,
   deviceAuthorizationRequestSchema,
@@ -59,6 +60,7 @@ async function fixture({
   let name = "Fixture Mac",
     responseId = "fixture",
     socketKey = deviceKey;
+  let revokedKey: string | undefined;
   let upgradeStatus: number | undefined;
   let renameResponse: { status: number; body: string } | undefined;
   const requests: {
@@ -107,6 +109,17 @@ async function fixture({
     }
     assert.equal(request.url, "/api/device");
     assert.equal(request.headers.authorization, `Bearer ${deviceKey}`);
+    if (request.method === "GET") {
+      if (revokedKey && request.headers.authorization === `Bearer ${revokedKey}`) {
+        response.setHeader(DEVICE_KEY_REJECTION.header, DEVICE_KEY_REJECTION.value);
+        response.writeHead(401).end();
+        return;
+      }
+      if (upgradeStatus === 401) {
+        response.writeHead(401).end();
+        return;
+      }
+    }
     if (request.method === "PATCH" && renameResponse) {
       response.writeHead(renameResponse.status).end(renameResponse.body);
       return;
@@ -278,6 +291,7 @@ async function fixture({
       upgradeStatus = value;
     },
     rotateDeviceKey() {
+      revokedKey = socketKey;
       socketKey = "abr_device_rotated_fixture";
     },
     set renameResponse(value: { status: number; body: string } | undefined) {
@@ -655,9 +669,23 @@ test(
       await until(async () => (await f.cli("status")).connection === "online");
       assert.equal((await f.cli("status")).error, "");
 
+      f.upgradeStatus = 401;
+      f.peer.terminate();
+      await expectConnectionError("offline", /需要认证.*反向代理.*HTTP 401/);
+      assert.notEqual(JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")).revoked, true);
+      f.upgradeStatus = undefined;
+      await until(async () => (await f.cli("status")).connection === "online");
+      assert.equal((await f.cli("status")).error, "");
+
+      const beforeRotation = f.requests.length;
       f.rotateDeviceKey();
       f.peer.terminate();
       await expectConnectionError("revoked", /HTTP 401/);
+      assert.ok(
+        f.requests
+          .slice(beforeRotation)
+          .some(({ method, path }) => method === "GET" && path === "/api/device"),
+      );
       assert.equal(JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")).revoked, true);
     } finally {
       await f.close();

@@ -17,6 +17,11 @@ struct NativeContract: Sendable {
     var protocolVersion: String { data.string("protocol")! }
     var desktopCapabilities: [String] { data.array("desktopCapabilities")!.compactMap(\.string) }
     var capabilities: [String] { data.array("capabilities")!.compactMap(\.string) }
+    func isDeviceKeyRejection(_ response: HTTPURLResponse) -> Bool {
+        guard response.statusCode == 401, let rejection = data.object("deviceKeyRejection"),
+              let header = rejection.string("header"), let value = rejection.string("value") else { return false }
+        return response.value(forHTTPHeaderField: header) == value
+    }
     func limit(_ name: String) -> Double { data.object("limits")!.number(name)! }
     func requiredCapabilities(_ tool: String, _ arguments: JSONObject) -> Set<String> {
         guard let capability = data.object("toolCapabilities")?.string(tool) else { return [] }
