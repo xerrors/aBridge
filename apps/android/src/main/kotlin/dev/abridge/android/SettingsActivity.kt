@@ -53,13 +53,8 @@ internal fun approvedServerAddress(raw: String, confirmedHttp: String?, debug: B
     return address.takeIf { debug && URI(it).host in listOf("127.0.0.1", "10.0.2.2") }
 }
 
-internal enum class ConnectionStatus(val label: String) {
-    Online("已连接"),
-    Connecting("连接中"),
-    Offline("离线"),
-    ServiceUnavailable("无障碍未连接"),
-    Revoked("凭据已撤销"),
-    Unbound("尚未绑定"),
+internal enum class ConnectionStatus {
+    Online, Connecting, Offline, ServiceUnavailable, KeyRequired, Revoked, Unbound,
 }
 
 internal enum class LocalCapability(val preference: String) {
@@ -75,6 +70,7 @@ class SettingsActivity : Activity() {
     private var reply: WebMessagePort? = null
     private var httpDialog: AlertDialog? = null
     private val updates = Executors.newSingleThreadExecutor()
+    private var unbindSequence = 0
     private var availableUpdate: AppUpdates.Release? = null
     private var updateStatus = JSONObject().put("type", "update").put("status", "idle")
     private val settingsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> refresh() }
@@ -182,13 +178,24 @@ class SettingsActivity : Activity() {
             "bind" -> {
                 val address = serverAddress(request.optString("address"))
                 val key = request.optString("key").trim()
-                if (address == null || key.isEmpty() || key.length > 512 || key.any { it !in '!'..'~' }) {
-                    sendError("请输入有效的服务器地址和 Device Key")
+                if (address == null) {
+                    sendError("请输入完整的 HTTP 或 HTTPS 服务器地址")
+                    return
+                }
+                if (key.length > 512 || key.any { it !in '!'..'~' }) {
+                    sendError("Device Key 格式无效")
                     return
                 }
                 if (address.startsWith("http://")) confirmHttpBinding(address, key)
                 else if (httpDialog == null) bind(address, key)
             }
+            "standby" -> (request.opt("enabled") as? Boolean)?.let { enabled ->
+                preferences.edit().putBoolean("background_standby", enabled).commit()
+                if (enabled && Build.VERSION.SDK_INT >= 33 &&
+                    checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                    requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2)
+            }
+            "batterySettings" -> startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             "access" -> (request.opt("allowed") as? Boolean)?.let(::setAgentAccess)
             "capability" -> {
                 val capability = LocalCapability.entries.find { it.preference == request.optString("name") }
@@ -274,7 +281,8 @@ class SettingsActivity : Activity() {
         var accepted = false
         httpDialog = AlertDialog.Builder(this)
             .setTitle("使用未加密的 HTTP 连接？")
-            .setMessage("Device Key 和操作数据将通过 HTTP 明文传输。请仅在信任的网络中继续。\n\n$address")
+            .setMessage((if (key.isEmpty()) "操作数据" else "Device Key 和操作数据") +
+                "将通过 HTTP 明文传输。请仅在信任的网络中继续。\n\n$address")
             .setNegativeButton("取消", null)
             .setPositiveButton("使用 HTTP 绑定") { _, _ ->
                 accepted = true
@@ -290,7 +298,8 @@ class SettingsActivity : Activity() {
     private fun bind(address: String, key: String) {
         preferences.edit().putString("url", address).putString("key", key)
             .putString("confirmed_http_url", address.takeIf { it.startsWith("http://") })
-            .putBoolean("paused", true).putBoolean("revoked", false).commit()
+            .putBoolean("paused", true).putBoolean("revoked", false).apply()
+        DeviceService.rebind()
         send(JSONObject().put("type", "bound"))
         refresh()
     }
@@ -305,7 +314,20 @@ class SettingsActivity : Activity() {
     }
 
     private fun unbind() {
-        preferences.edit().remove("key").remove("confirmed_http_url").putBoolean("paused", true).commit()
+        if (!preferences.contains("key")) return
+        val address = preferences.getString("url", "").orEmpty()
+        val sequence = ++unbindSequence
+        DeviceService.unbind { cloudRevoked ->
+            webView?.post {
+                if (!cloudRevoked && !isDestroyed && sequence == unbindSequence && !preferences.contains("key")) {
+                    sendError("已解除本机绑定，未确认 Server 撤销。请在 $address 管理台撤销旧设备。")
+                }
+            }
+        }
+        preferences.edit().remove("key").remove("confirmed_http_url").remove("revoked")
+            .putBoolean("paused", true).commit()
+        send(JSONObject().put("type", "unbound"))
+        refresh()
     }
 
     private fun acceptDirectory(data: Intent) {
@@ -340,6 +362,7 @@ class SettingsActivity : Activity() {
         val revoked = preferences.getBoolean("revoked", false)
         val connection = when {
             !bound -> ConnectionStatus.Unbound
+            revoked && preferences.getString("key", null).isNullOrEmpty() -> ConnectionStatus.KeyRequired
             revoked -> ConnectionStatus.Revoked
             !serviceActive -> ConnectionStatus.ServiceUnavailable
             else -> when (preferences.getString("connection", null)) {
@@ -353,8 +376,13 @@ class SettingsActivity : Activity() {
             .put("bound", bound)
             .put("server", preferences.getString("url", "").orEmpty())
             .put("connection", connection.name)
+            .put("standbyEnabled", preferences.getBoolean("background_standby", false))
+            .put("standbyActive", preferences.getBoolean("standby_active", false))
+            .put("batteryUnrestricted", getSystemService(android.os.PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))
+            .put("interactionState", interactionState().wire)
             .put("agentAllowed", bound && !revoked && !preferences.getBoolean("paused", true))
             .put("enabledCapabilities", JSONArray(enabled.map { it.preference }))
+            .put("grantedCapabilities", JSONArray(DeviceService.grantedCapabilities))
             .put("directoryAuthorized", workspace.authorizedTree() != null)
             .put("accessibilityActive", serviceActive)
             .put("appVersion", BuildConfig.VERSION_NAME)

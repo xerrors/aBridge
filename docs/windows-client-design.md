@@ -1,13 +1,13 @@
 # Windows 客户端界面
 
-Windows 客户端使用 Rust 调用 Win32 原生控件、系统托盘与桌面活动边框，不包含 Electron、Chromium 或 WebView。窗口集中展示设备、连接状态、暂停/停止与四项本机能力；服务器绑定和运行诊断按需展开。关闭窗口保留托盘，退出等待所属设备进程确认完成。
+Windows 客户端用 Rust 调用 Win32 控件、系统托盘和桌面活动边框。主窗口显示设备、连接状态、暂停和停止按钮以及四项本机能力。服务器绑定和运行诊断可以按需展开。关闭窗口后客户端留在托盘，从托盘退出时会等待设备进程结束。
 
 ## 参考
 
 - [Flow Launcher](https://github.com/Flow-Launcher/Flow.Launcher)：参考轻量常驻 Windows 工具的原生窗口和托盘交互。
 - [Microsoft PowerToys](https://github.com/microsoft/PowerToys)：参考系统工具的设置分组与清晰状态呈现。
 
-仅参考交互与布局，不引入上述项目的代码、品牌、图像或依赖。品牌蓝用于主操作及在线状态；外观支持系统、浅色和深色。
+主操作和在线状态使用 aBridge 的品牌蓝。外观可以跟随系统，也可以固定为浅色或深色。
 
 ## 状态与交互
 

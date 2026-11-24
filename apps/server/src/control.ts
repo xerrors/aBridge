@@ -5,6 +5,7 @@ import {
   OPERATION_START_SECONDS,
   SESSION_IDLE_SECONDS,
   deviceCapabilities,
+  deviceInteractionStateSchema,
   deviceMetadataSchema,
   deviceSummaryDetailsSchema,
   requiredCapabilities,
@@ -21,6 +22,7 @@ import {
   type ConnectionLoss,
   type Capability,
   type DeviceKind,
+  type DeviceInteractionState,
   type DeviceTool,
 } from "@abridge/protocol";
 import { BrowserExecutions } from "./browser-execution.js";
@@ -51,6 +53,32 @@ const FINAL_STATES = new Set<OperationState>([
   "cancelled",
 ]);
 const safeId = /^[A-Za-z0-9_-]{1,100}$/;
+function reportedCapabilities(kind: DeviceKind, values: JsonObject, interaction?: DeviceInteractionState) {
+  const available = deviceCapabilities(kind);
+  const screenBlocked = interaction !== undefined && interaction !== "ready";
+  return Object.fromEntries(
+    CAPABILITIES.map((cap) => [
+      cap,
+      values[cap] === true &&
+        available.includes(cap) &&
+        !(screenBlocked && (cap === "input" || cap === "screen")),
+    ]),
+  );
+}
+function requireLocalCapabilities(connection: DeviceConnection, capabilities: Capability[]) {
+  if (capabilities.some((cap) => cap === "screen" || cap === "input")) {
+    if (connection.interactionState === "locked")
+      throw new BridgeError("device_locked", "Unlock the Android device before continuing", 409, {
+        recovery: { action: "user_handoff" },
+      });
+    if (connection.interactionState === "screen_off")
+      throw new BridgeError("screen_off", "Turn on the Android screen before continuing", 409, {
+        recovery: { action: "user_handoff" },
+      });
+  }
+  if (capabilities.some((cap) => !connection.capabilities[cap]))
+    throw new BridgeError("capability_unavailable", "Local capability is disabled or unavailable");
+}
 interface Pending {
   operation: Operation;
   cancelledByCaller?: boolean;
@@ -160,6 +188,7 @@ export class ControlService {
       kind: device.kind,
       status: device.revoked_at !== null ? "revoked" : online ? "online" : "offline",
       paused: !!connection?.paused,
+      ...(online && connection.interactionState ? { interaction_state: connection.interactionState } : {}),
       capabilities,
       available,
       available_tools: supportedDeviceTools(device.kind, device.platform).filter((tool) =>
@@ -218,8 +247,7 @@ export class ControlService {
     if (capabilities.some((cap) => !deviceAccess(current, device).capabilities.includes(cap)))
       throw new BridgeError("forbidden", "Requested capability is not granted", 403);
     const connection = this.readyConnection(deviceId);
-    if (capabilities.some((cap) => !connection.capabilities[cap]))
-      throw new BridgeError("capability_unavailable", "Local capability is disabled or unavailable");
+    requireLocalCapabilities(connection, capabilities);
     const occupied = this.store
       .sessions(deviceId)
       .filter((session) => session.lease_until > this.now() && session.capabilities.includes("input"));
@@ -531,8 +559,7 @@ export class ControlService {
     if (parentId && (!this.pending.has(parentId) || activeCode !== parentId))
       throw new BridgeError("operation_cancelled", "Parent browser execution ended", 409);
     const connection = this.readyConnection(device.id);
-    if (required.some((cap) => !connection.capabilities[cap]))
-      throw new BridgeError("capability_unavailable", "Local capability is disabled or unavailable");
+    requireLocalCapabilities(connection, required);
     if (
       this.pending.size >= 64 ||
       [...this.pending.values()].filter((p) => p.operation.device_id === device.id).length >= 8
@@ -819,6 +846,10 @@ export class ControlService {
     if (!initial || initial.kind !== kind)
       throw new BridgeError("unauthorized", "Device key is invalid or has the wrong kind", 401);
     const metadata = deviceMetadataSchema.parse(hello);
+    const interactionState =
+      kind === "computer" && metadata.platform === "android"
+        ? deviceInteractionStateSchema.optional().parse(hello.interaction_state)
+        : undefined;
     const previous = this.attachQueues.get(initial.id) ?? Promise.resolve();
     const attaching = previous
       .catch(() => {})
@@ -841,12 +872,8 @@ export class ControlService {
           epoch: this.store.nextEpoch(device.id),
           credentialVersion: device.credential_version,
           kind,
-          capabilities: Object.fromEntries(
-            CAPABILITIES.map((cap) => [
-              cap,
-              capabilities[cap] === true && deviceCapabilities(kind).includes(cap),
-            ]),
-          ),
+          capabilities: reportedCapabilities(kind, capabilities, interactionState),
+          interactionState,
           paused: hello.paused === true,
           heartbeatAt: this.mono(),
           sequence: 0,
@@ -942,13 +969,14 @@ export class ControlService {
         old = { ...ticket.capabilities };
       if (message.capabilities !== undefined && !object(message.capabilities))
         throw new BridgeError("invalid_message", "Invalid capability state", 422);
+      if (
+        device.kind === "computer" &&
+        device.platform === "android" &&
+        message.interaction_state !== undefined
+      )
+        ticket.interactionState = deviceInteractionStateSchema.parse(message.interaction_state);
       const values = object(message.capabilities) ? message.capabilities : ticket.capabilities;
-      ticket.capabilities = Object.fromEntries(
-        CAPABILITIES.map((cap) => [
-          cap,
-          values[cap] === true && deviceCapabilities(device.kind).includes(cap),
-        ]),
-      );
+      ticket.capabilities = reportedCapabilities(device.kind, values, ticket.interactionState);
       ticket.paused = message.paused === undefined ? ticket.paused : message.paused === true;
       this.localAccess.set(device.id, { capabilities: ticket.capabilities, paused: ticket.paused });
       ticket.heartbeatAt = this.mono();

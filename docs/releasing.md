@@ -1,14 +1,14 @@
 # 发布
 
-软件版本只修改根 `package.json`。发布使用 `v<version>` tag，tag 必须与该版本完全相同，提交必须在 `main` 历史中。`.github/workflows/release.yml` 在 tag 推送后验证源码，在 Linux 打包并验证最终 Server 和浏览器 ZIP，在 macOS 构建并验证 Apple Silicon App，并运行 Linux CLI 发布检查。
+1. 从上个发布 tag 开始核对变更，在根 `package.json` 中修改版本号。把版本、日期和变更写入变更记录。涉及协议、数据库或安装方式的调整，一起写清升级步骤。[变更记录](changelog.md)
+2. 版本提交进入 `main` 后，在该提交上创建并推送对应的 `v<version>` tag。发布工作流会核对版本和提交归属。
+3. Release 工作流构建并验证 Server、浏览器扩展、macOS App、Linux CLI 和 Windows 预览包。启用 Android 签名时，也会打包 APK。构建成功后检查 GitHub Release 中的文件和校验和。
 
-创建 tag 前，将本次版本号、日期、发布状态及变更摘要写入[变更记录](changelog.md)顶部，与版本号一起提交。对照上一发布 tag 核对实际交付内容；涉及协议、数据库或安装方式变化时，写明受影响的用户和升级步骤。
-
-项目采用根目录 [Apache-2.0](https://github.com/xerrors/aBridge/blob/main/LICENSE)；第三方组件保留各自许可证。候选构建成功、上传到商店、商店审核通过和 npm 实际可安装是不同状态。
+分发包内应保留项目和第三方组件的许可证。[Apache-2.0](https://github.com/xerrors/aBridge/blob/main/LICENSE) · [第三方许可](third-party-notices.md)
 
 ## npm
 
-公开分发包默认名为 `@xerrors/abridge`，内部 `@abridge/server` workspace 不公开发布。分发只有编译后的 Server、管理台及服务端依赖，不包含桌面 SDK。可用仓库变量 `NPM_PACKAGE_NAME` 调整公开包名。
+公开包默认为 `@xerrors/abridge`，包含编译后的 Server、管理台和服务端依赖。更名时设置仓库变量 `NPM_PACKAGE_NAME`。
 
 第一次发布前，在已登录 npm 的终端构建公开包：
 
@@ -20,7 +20,7 @@ npm run package:check
 npm publish dist/releases/*.tgz --access public
 ```
 
-也可以使用 npm staged publishing 先暂存再确认。网页已登录不等于 CLI 已登录；首次发布可能需要 npm 账户验证。不要把凭据放入仓库。完成首包后，在 npm 包 Settings 中添加 Trusted Publisher：
+也可以用 npm staged publishing 暂存首包，核对后再确认。发布前检查 npm CLI 的登录状态，按提示完成账户验证。首包发布后，在 npm 包的 Settings 添加 Trusted Publisher。
 
 | 字段                 | 值                                   |
 | -------------------- | ------------------------------------ |
@@ -37,17 +37,13 @@ npm publish dist/releases/*.tgz --access public
 
 带预发布后缀的版本使用 npm `next`，并标记为 GitHub Pre-release。无后缀的版本作为正式版发布，使用 npm `latest`。已存在版本不可覆盖；修改版本后再创建新的 tag。
 
-发布验证后，Server 的使用入口为 `npx @xerrors/abridge --web`；在确认 npm 上实际存在之前，不将这个入口表述为已可用。
+npm 发布完成后，用 `npx @xerrors/abridge --web` 验证可安装性。通过 GitHub Release 分发时，按快速开始里的 tarball 命令验证。[快速开始](guide/start.md)
 
 [npm 官方可信发布说明](https://docs.npmjs.com/trusted-publishers/) · [npm trust 的包存在前提](https://docs.npmjs.com/cli/v11/commands/npm-trust/)
 
 ## macOS
 
-**编译不要求 Apple Developer 证书。** GitHub `macos-15` Apple Silicon runner 构建 `aBridge-<version>-macos-arm64-unsigned.zip`，其中 App 为 ad hoc 签名候选，未公证。下载后不能宣称已通过 Gatekeeper 分发审核。
-
-App 内含 Swift 客户端、独立原生更新器和 arm64 Cua dylib；所有程序与资源从 App Bundle 相对解析，用户数据仍在 `~/Library/Application Support/aBridge`。产物不包含 CI 用户名、构建目录或本机凭据。将 App 拖入 Applications 后即可运行，不需要源码目录、Python 或本机 npm 环境。
-
-Server 最低支持 Node 22.13.0，CI 覆盖最低补丁版本及 Node 22、24、26。npm 发布 job 单独使用 Node 26 附带的新 npm，以满足可信发布要求；这不提高产品的最低运行版本。
+GitHub 的 `macos-15` Apple Silicon runner 先构建 ad hoc 签名、未经公证的 `aBridge-<version>-macos-arm64-unsigned.zip`。App 随包带上 Swift 客户端、更新器和 arm64 Cua dylib，用户数据保存在 `~/Library/Application Support/aBridge`。应用支持 Apple Silicon 和 macOS 14 及以上版本。
 
 本地构建：
 
@@ -69,15 +65,21 @@ npm run package:macos -- --reuse-build
 
 设置仓库变量 `APPLE_SIGNING_ENABLED=true` 才执行签名公证。缺任一输入会明确失败，不把未签名产物冒充正式包。临时 keychain 与私钥在该步骤退出时清理；内嵌 Mach-O 先签名，再签 App；公证 Accepted 后 staple 并输出 `*-notarized.zip`。
 
-当前仅支持 Apple Silicon/macOS14+。构建与运行时自检不等于用户设备已授予录屏和辅助功能；ad hoc 原生签名改变还可能影响现有系统授权。不要放宽 designated requirement 来规避权限校验。
+验收时解压实际发布的 App，检查启动、录屏和辅助功能权限。ad hoc 签名变化后，macOS 可能要求重新授权。继续使用同一 Developer ID 签名，可保持发布身份一致。
 
 [Apple 官方公证说明](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) · [GitHub 官方 runner 列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 
+## Windows
+
+CI 和 tag 发布复用 `windows-client.yml`。Windows runner 执行 `npm run check`、`npm run windows:shell:check`、`npm run package:windows` 和 `npm run package:windows:check`。完整解压后的程序目录须小于 10,000,000 字节。
+
+CI 上传 **windows-client-unsigned**，保留 30 天。tag 发布另将 `aBridge-<version>-windows-x64-unsigned.zip` 和同名 `.sha256` 附在 GitHub Release 中。创建 Release 前会再次核对 ZIP 的 SHA-256。Windows 仍以未签名便携预览包分发。[Windows 安装与验证](windows-client.md)
+
 ## Android
 
-Set `ANDROID_SIGNING_ENABLED=true` and configure repository secrets `ANDROID_KEYSTORE_BASE64` (single-line Base64 of the release keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. The tag workflow recompresses and aligns the standalone APK before signing. It verifies the signed `aBridge-<version>-android.apk` and enforces a 200,000-byte size limit before including it in the GitHub Release.
+发布正式 APK 时，设置 `ANDROID_SIGNING_ENABLED=true`，并配置 `ANDROID_KEYSTORE_BASE64`（密钥库的单行 Base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`。工作流重新压缩并对齐 APK，然后签名。在加入 GitHub Release 前，检查 `aBridge-<version>-android.apk` 签名和 200,000 字节的体积上限。
 
-Use the same signing key for subsequent releases to allow in-place upgrades. Android checks package identity, signing identity, and version when the user opens the downloaded APK. The Debug APK uses a development signature and is intended for testing.
+后续版本继续使用同一签名密钥，已安装用户即可原地升级。Android 安装器会检查包标识、签名和版本。调试 APK 使用开发签名，供本地和 CI 测试。
 
 ## Linux
 
@@ -87,10 +89,10 @@ Use the same signing key for subsequent releases to allow in-place upgrades. And
 
 `dist/releases/abridge-browser-<version>.zip` 是商店上传包。首次上传在开发者信息中心完成，需准备商店名称、简要说明、用途、截图、图标、隐私政策及权限用途说明。上传后还需完成商店审核并取得 item ID；首次发布状态以信息中心为准。
 
-当前 tag 工作流生成可上传 ZIP，不自动代替商店提交与审核。后续自动上传需要已建立的 item ID 和 Chrome Web Store API 凭据；不把 Google 登录 Cookie 或账号密码放进 CI。
+tag 工作流会生成商店 ZIP。到开发者信息中心提交审核，再核对上架状态。若以后启用自动上传，使用已登记的 item ID 和 Chrome Web Store API 凭据。
 
 ## 容器镜像发布
 
 `release.yml` 在正式 GitHub Release 创建成功后显式调用可复用的 `.github/workflows/container.yml` 构建镜像，也支持手动输入已发布的正式 tag 补发。使用 `GITHUB_TOKEN` 创建 Release 不会触发另一个 release 事件工作流，因此发布链路直接调用。带预发布后缀的版本不生成容器镜像。使用对应 tag 的源码和当前 Dockerfile，在原生 amd64、arm64 Linux runner 分别构建并验收健康接口、页面脚本、管理员认证及 Server 分发边界，再向 GHCR 推送版本和 `latest` 多架构清单。发布权限使用临时 `GITHUB_TOKEN`，不配置长期 registry token。
 
-首次推送后须在 GitHub Package 设置中将镜像设为 Public，并验证匿名拉取；仓库公开不代表首次创建的容器包自动公开。部署命令见[Docker 镜像](deployment.md#docker-镜像)。
+首次推送后，在 GitHub Package 设置中把镜像可见性设为 Public，并实际验证匿名拉取。[Docker 部署](deployment.md#docker-镜像)

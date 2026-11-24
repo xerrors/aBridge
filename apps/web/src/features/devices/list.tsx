@@ -1,16 +1,18 @@
 import { CapabilityIcon, DeviceIcon } from "../../components/icons.js";
 import { ActionButton } from "../../components/actions.js";
-import { capabilityLabels, stateLabels } from "../../lib/labels.js";
+import { capabilityLabels, deviceScreenStatus, stateLabels } from "../../lib/labels.js";
 import { Select } from "../../components/forms.js";
 import { useState } from "preact/hooks";
 import type { Device, Mutate, RunAction } from "../../lib/types.js";
 import { ChevronRight, Plus, Search, Square } from "lucide-preact";
 import { deviceSummary } from "./metadata.js";
 function DeviceStatus({ device }: { device: Device }) {
+  const screenStatus = deviceScreenStatus(device);
   return (
     <span class="device-state">
       <span class={`dot ${device.paused ? "paused" : device.status}`} />
       {device.paused ? "已暂停" : (stateLabels[device.status] ?? device.status)}
+      {screenStatus && <> · {screenStatus}</>}
     </span>
   );
 }
@@ -148,7 +150,7 @@ export function DevicesPage({
               <button onClick={addDevice}>
                 <DeviceIcon kind="computer" />
                 <span>
-                  添加客户端<span class="small muted">macOS、Linux 或 Android</span>
+                  添加客户端<span class="small muted">macOS、Windows、Linux 或 Android</span>
                 </span>
                 <ChevronRight aria-hidden="true" />
               </button>

@@ -4,24 +4,23 @@
 
 [快速开始](#快速开始) · [选择客户端](#选择客户端) · [评测与验证](#评测与验证) · [Yuxi 集成](#与-yuxi-一起使用) · [开发与文档](#开发与文档) · [下载](https://github.com/xerrors/aBridge/releases/latest)
 
-aBridge 由 Server 和按需安装的客户端组成。Server 提供统一的 MCP 入口和授权管理，客户端在对应设备或 Chrome Profile 上执行操作。你可以为每个 Agent 单独指定设备、能力和有效期。
+在自己的机器上运行 aBridge Server，再把要用的设备接进来。你可以为每个 Agent 单独指定设备、能力和有效期。
 
 ## 选择客户端
 
-| 想完成的任务                           | 客户端                                                           | 环境                     |
-| -------------------------------------- | ---------------------------------------------------------------- | ------------------------ |
-| 在已登录的业务系统里查资料、填表       | **浏览器扩展** · 观察、导航和操作网页，复用所选 Profile 的登录态 | Chrome 116+              |
-| 查看桌面窗口、操作原生应用或处理文件   | **macOS App** · 屏幕、键鼠、Shell、UTF-8 文件                    | Apple Silicon，macOS 14+ |
-| 在开发机或服务器上执行 Shell、读写文件 | **Linux CLI** · Shell、UTF-8 文件，支持 systemd 后台运行         | Linux amd64 / arm64      |
-| 操作 Android 应用、读写授权目录        | **Android 预览** · 屏幕、点按、滑动、文本输入和目录读写          | Android 11+，从源码构建  |
-
-Windows PC 客户端提供屏幕、键鼠、Shell 和文件能力，当前从源码构建未签名便携包：[下载、安装与连接](docs/windows-client.md)。
+| 想完成的任务                              | 客户端                                                                               | 环境                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------- |
+| 在已登录的业务系统里查资料、填表          | **浏览器扩展** · 观察、导航和操作网页，复用所选 Profile 的登录态                     | Chrome 116+                       |
+| 查看 Mac 窗口、操作原生应用或处理文件     | **macOS App** · 屏幕、键鼠、Shell、UTF-8 文件                                        | Apple Silicon，macOS 14+          |
+| 查看 Windows 桌面、操作前台应用或处理文件 | **[Windows 客户端预览](docs/windows-client.md)** · 截图、前台键鼠、Shell、UTF-8 文件 | Windows 10/11 x64，未签名便携 ZIP |
+| 在开发机或服务器上执行 Shell、读写文件    | **Linux CLI** · Shell、UTF-8 文件，支持 systemd 后台运行                             | Linux amd64 / arm64               |
+| 操作 Android 应用、读写授权目录           | **Android App** · 屏幕、点按、滑动、文本输入和目录读写                               | Android 11+                       |
 
 ## 工作方式
 
-![Agent 通过 MCP 连接 aBridge Server，macOS、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)
+![Agent 通过 MCP 连接 aBridge Server，macOS、Windows、Linux、Android 和浏览器客户端分别通过 WebSocket 连接 Server。](docs/assets/architecture.svg)
 
-各客户端独立安装、授权并直接连接 Server。桌面和浏览器可以分别接入。一个 Chrome Profile 对应一个浏览器设备，扩展在该 Profile 内为任务创建独立标签页。
+Agent 通过 MCP 把请求交给 Server，Server 核对授权后再派发给客户端。桌面客户端和 Chrome 扩展可以各自接入。每个 Chrome Profile 都可以注册为一个浏览器设备，并为任务打开独立标签页。
 
 ## 快速开始
 
@@ -29,12 +28,18 @@ Windows PC 客户端提供屏幕、键鼠、Shell 和文件能力，当前从源
 
 ### 1. 部署 Server
 
-最新正式 [GitHub Release 为 0.4.18](https://github.com/xerrors/aBridge/releases/tag/v0.4.18)。Server 通过 Release 的 tarball 运行，需要 npm 和 Node.js 22.x（22.13 起）、23.x（23.4 起）或 24 及以上版本：
+以下命令使用 [GitHub Release v0.4.23](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) 的 Server tarball。运行需要 npm 和 Node.js 22.x（22.13 起）、23.x（23.4 起）或 24 及以上版本。
 
 ```sh
 npm exec --yes \
-  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.18/xerrors-abridge-0.4.18.tgz \
+  --package=https://github.com/xerrors/aBridge/releases/download/v0.4.23/xerrors-abridge-0.4.23.tgz \
   -- abridge --web
+```
+
+在 Windows PowerShell 中运行：
+
+```powershell
+npm.cmd exec --yes --package=https://github.com/xerrors/aBridge/releases/download/v0.4.23/xerrors-abridge-0.4.23.tgz -- abridge --web
 ```
 
 默认监听 [127.0.0.1:8765](http://127.0.0.1:8765)。`--web` 在本机打开实例管理页面，可通过 `--data-dir` 指定持久目录。
@@ -42,14 +47,14 @@ npm exec --yes \
 <details>
 <summary>使用 Docker</summary>
 
-下面使用已发布的 **0.4.17** 镜像，支持 Linux amd64 和 arm64：
+下面使用已发布的 **0.4.23** 镜像，支持 Linux amd64 和 arm64。
 
 ```sh
 docker run -d --name abridge --restart unless-stopped \
   -p 127.0.0.1:8765:8765 \
   -v abridge-data:/data \
   -e ABRIDGE_PUBLIC_ORIGIN=http://127.0.0.1:8765 \
-  ghcr.io/xerrors/abridge:0.4.17
+  ghcr.io/xerrors/abridge:0.4.23
 ```
 
 镜像版本单独发布。更新时复用 `abridge-data` 卷。通过 [GHCR 镜像列表](https://github.com/xerrors/aBridge/pkgs/container/abridge) 查询可用标签。
@@ -77,9 +82,10 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 按需安装客户端，并填写设备可以访问的 Server 地址。
 
 - **浏览器扩展**。在想授权的 Profile 中安装扩展并完成浏览器授权。[Chrome 应用商店](https://chromewebstore.google.com/detail/abridge-for-browser/jbkhngckehhhhkbgpjlifbbchhbeodjc) · [源码安装](docs/browser-profile-design.md)
-- **macOS App**。下载 macOS ZIP，经浏览器授权后在系统设置中开启所需权限。0.4.18 的 ZIP 使用 ad hoc 签名。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) · [安装与权限](docs/deployment.md#macos-app)
-- **Linux CLI**。下载对应架构的包，用管理台签发的 Device Token 绑定。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.18) · [安装与绑定](apps/linux-client/README.md#安装与绑定)
-- **Android 预览**。从同一份源码构建 APK 和配套 Server，以支持设备时间握手。用 Device Key 绑定，在 Android 设置开启无障碍。[构建与绑定](apps/android/README.md)
+- **macOS App**。下载 macOS ZIP，经浏览器授权后在系统设置中开启所需权限。v0.4.23 的 ZIP 使用 ad hoc 签名。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与权限](docs/deployment.md#macos-app)
+- **Windows 客户端预览**。下载未签名便携 ZIP，完整解压后启动 `aBridge.exe`，填写服务端网址并在浏览器中确认授权。[下载、安装与绑定](docs/windows-client.md)
+- **Linux CLI**。下载对应架构的包，用管理台签发的 Device Token 绑定。[发布产物](https://github.com/xerrors/aBridge/releases/tag/v0.4.23) · [安装与绑定](apps/linux-client/README.md#安装与绑定)
+- **Android App**。填写服务器地址和 Device Key，连接支持免 Key 的兼容服务时可将 Key 留空。在 Android 设置开启无障碍，再回到 App 允许 Agent 操作。[发布产物](https://github.com/xerrors/aBridge/releases/latest) · [安装与绑定](apps/android/README.md)
 
 完成后，在管理台确认设备已上线。
 
@@ -90,8 +96,7 @@ console.log(process.env.ABRIDGE_PUBLIC_ORIGIN + "/#admin_token=" + encodeURIComp
 以本机的 Codex CLI 为例，将 Agent Key 通过私有环境变量 `ABRIDGE_AGENT_KEY` 提供给 Codex 进程，再添加 MCP Server 并启动新会话。[Codex MCP 配置](https://developers.openai.com/codex/mcp/)
 
 ```sh
-codex mcp add abridge --url http://127.0.0.1:8765/mcp \
-  --bearer-token-env-var ABRIDGE_AGENT_KEY
+codex mcp add abridge --url http://127.0.0.1:8765/mcp --bearer-token-env-var ABRIDGE_AGENT_KEY
 codex
 ```
 
@@ -113,16 +118,14 @@ codex
 
 ## 与 Yuxi 一起使用
 
-aBridge 可以与 [Yuxi](https://github.com/xerrors/Yuxi) 一起部署，复用 Yuxi 的账户体系；通过 Yuxi 的对外入口及容器内部网络集成，无需为 aBridge 单独开放公网端口。设备仍连接到部署中为 aBridge 配置的可达地址。
-
-两种接入路径的区别：
+aBridge 可以和 Yuxi 一起部署，使用 Yuxi 的账户和对外入口。服务之间通过容器网络通信，设备仍使用部署时为 aBridge 配置的地址。[Yuxi](https://github.com/xerrors/Yuxi)
 
 | 路径          | 账户登录           | MCP 调用认证                               |
 | ------------- | ------------------ | ------------------------------------------ |
 | **独立使用**  | 管理员创建本地账户 | 管理台生成的 Agent Key                     |
 | **Yuxi 集成** | OIDC 单点登录      | 显式启用平台委托后，由平台签发短期委托令牌 |
 
-OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接作为 MCP 访问令牌。平台连接仍受用户设备授权、本机开关与系统权限限制。部署参数、回调地址及容器内认证请求配置见 [OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)。
+OIDC 用于登录管理台。通过 Yuxi 调用 MCP 时，还需要启用委托并由 Yuxi 签发短期令牌。平台连接可以使用哪些设备和能力，仍由用户授权、本机开关和系统权限决定。[OIDC 登录与平台 MCP 委托](docs/deployment.md#可选-oidc-登录与平台-mcp-委托)
 
 ## 评测与验证
 
@@ -130,12 +133,13 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 
 <!-- benchmark:coverage:start -->
 
-| 客户端           | 公开 Agent 任务                                            | 已验证的范围                                            | 证据                                                                                                                                                                 |
-| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Chrome 扩展**  | MiniWoB++ **12/12**                                        | 实际 Chrome 扩展，6 类网页任务                          | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json)                                                                                 |
-| **Android 预览** | AndroidWorld 回归 **15/15（100%）**；挑战 **15/30（50%）** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务       | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |
-| **macOS App**    | 暂无公开任务分数                                           | 原生 App 构建、设备连接与执行回归                       | [原生验证](tools/README.md)                                                                                                                                          |
-| **Linux CLI**    | 暂无公开任务分数                                           | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具 | [Linux 验证](apps/linux-client/README.md)                                                                                                                            |
+| 客户端                 | 公开 Agent 任务                                            | 已验证的范围                                                  | 证据                                                                                                                                                                 |
+| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Chrome 扩展**        | MiniWoB++ **12/12**                                        | 实际 Chrome 扩展，6 类网页任务                                | [方法](docs/benchmarks/miniwob.md) · [数据](docs/benchmarks/miniwob-v2-results.json)                                                                                 |
+| **Android 预览**       | AndroidWorld 回归 **15/15（100%）**；挑战 **15/30（50%）** | Android 13 模拟器，覆盖文件管理、笔记和跨应用任务             | [方法](docs/benchmarks/android-world.md) · [回归数据](docs/benchmarks/android-world-results.json) · [挑战数据](docs/benchmarks/android-world-challenge-results.json) |
+| **macOS App**          | 暂无公开任务分数                                           | 原生 App 构建、设备连接与执行回归                             | [原生验证](tools/README.md)                                                                                                                                          |
+| **Windows 客户端预览** | 暂无公开任务分数                                           | Windows x64 CI 验包，覆盖设备绑定、权限控制、Shell 和文件操作 | [Windows 验证](docs/windows-client.md#验证)                                                                                                                          |
+| **Linux CLI**          | 暂无公开任务分数                                           | amd64 / arm64 CI，真实 Server 联调覆盖 Shell 和文件工具       | [Linux 验证](apps/linux-client/README.md)                                                                                                                            |
 
 <!-- benchmark:coverage:end -->
 
@@ -144,9 +148,9 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 
 <!-- benchmark:miniwob:start -->
 
-真实 **gpt-6.1-sol（medium）Agent** 通过 aBridge 完成公开 MiniWoB++ 任务：**12/12（100.0%）**。任务、种子和预算在跑分前冻结，无重试，全部结果保留。
+使用 **gpt-6.1-sol（medium）** 运行 MiniWoB++ 适配任务，共完成 **12/12（100.0%）**。任务、种子和预算在运行前确定，每例运行一次。
 
-同模型目录与评测器的基线 **5/12** → 修复后 **12/12**；模型、任务 prompt、seed 0/1 和预算不变。基线已包含真实浏览器启动修复；两侧均固定同一份现有模型元数据，避免目录刷新超时。另用额外 seed=2 验证：**6/6**，单独统计。标准审核剔除 **0** 例。
+主对照使用种子 0 和 1，基线完成 **5/12**，修复后完成 **12/12**。基线已包含浏览器启动修复。两侧使用相同的模型目录、评测器、任务提示和预算。额外种子 2 单独运行，完成 **6/6**。审核排除 **0** 例。
 
 ![浏览器工具优化前后对照](docs/benchmarks/miniwob-v2-comparison.svg)
 
@@ -159,17 +163,17 @@ OIDC 登录本身不授予 MCP 调用权限，浏览器 ID Token 也不能直接
 | `click-menu-2`           | 2/2    | 2/2    | 60.1            | 8            | 321924 / 812           | 2/2      |
 | `multi-layouts`          | 1/2    | 2/2    | 66.0            | 10           | 361814 / 820           | 2/2      |
 
-每例限 180 秒 / 40 次工具调用，并发 2；仅开放观察、读取、操作、等待，支持 DOM 与截图，不开放 JS 执行、源码直接读取或判分接口。P50 包含 CLI 启动和模型调用，已启动的失败也计时。表中 token 为已知样本合计（输入含缓存），超时未返回用量视为未知，不能按 0 计费；CLI 不提供实际美元账单。
+每例限 180 秒和 40 次工具调用，并发 2。Agent 可以通过 DOM 和截图观察页面，也可以读取、操作和等待。P50 从 CLI 启动开始计时，包含模型调用及已启动的失败任务。表中的 token 是已报告样本的合计，输入包含缓存。缺少用量的样本记为未知。
 
-失败分类：无。用量覆盖 12/12；会话清理 12/12。
+失败分类：无。用量覆盖 12/12，会话清理 12/12。
 
-模型元数据通过CLI本地目录参数固定，未改全局配置、模型或任务prompt；这不消除网络和模型响应波动。失败全部保留，不能仅凭小样本宣称稳定速度或成本优势。
+两侧都通过 CLI 参数加载同一份从缓存逐字复制的模型目录，以避开目录刷新超时。实际耗时仍会随模型服务和网络变化。
 
-模型目录 SHA-256：578e4bab76fbd3999747b7d3c8c34b83a4cdbef4a3bd033f21f0399e094f1c3d；逐字复制实际缓存的元数据，不修改模型指令或能力。
+模型目录的 SHA-256 为 `578e4bab76fbd3999747b7d3c8c34b83a4cdbef4a3bd033f21f0399e094f1c3d`。
 
-测量快照：v0.4.16 / c02c42b。环境：Apple M4 / darwin arm64 / Chrome/153.0.8010.12 / Node v22.23.5 / codex-cli 0.166.0；记录时间 2026-11-18T02:07:05.629Z。
+测量版本为 v0.4.16（c02c42b）。环境为 Apple M4 / darwin arm64 / Chrome/153.0.8010.12 / Node v22.23.5 / codex-cli 0.166.0，记录于 2026-11-18T02:07:05.629Z。
 
-这是 **6 类任务、每类 2 个种子的小样本适配子集**，原始任务限时统一延长至 180 秒，不是官方榜单成绩；单次前后对照仍有模型随机性，也不能单独证明 aBridge 优于其他工具或覆盖 macOS App。固定策略的 30/30 仅作为执行链冒烟历史数据，与 Agent 分数分开。[方法与限制](docs/benchmarks/miniwob.md) · [工具修复报告](docs/benchmarks/browser-reliability-v2.md) · [全量报告](docs/benchmarks/cases-all.md) · [标准审核报告](docs/benchmarks/cases-conforming.md) · [逐次实测数据](docs/benchmarks/miniwob-v2-results.json)。
+结果对应 Chrome 扩展上的 6 类适配任务，每类 2 个种子，采用这里列出的时间预算。早期固定策略的 30/30 见执行链冒烟记录。[评测方法](docs/benchmarks/miniwob.md) · [工具修复报告](docs/benchmarks/browser-reliability-v2.md) · [全量报告](docs/benchmarks/cases-all.md) · [标准审核报告](docs/benchmarks/cases-conforming.md) · [逐次实测数据](docs/benchmarks/miniwob-v2-results.json)
 
 ```sh
 npm run benchmark:miniwob
@@ -185,10 +189,10 @@ npm run benchmark:miniwob
 
 ## 授权与安全边界
 
-- **设备与能力显式授权**：每个 Agent 连接可选择设备、能力和有效期；设备本机可以暂停或关闭能力，自动重连不会解除这些限制。
-- **凭据各司其职**：Admin Token 用于实例管理，Device Key 用于设备连接，Agent Key 用于 MCP 调用，三者不能互换。
-- **沿用用户的执行环境**：浏览器脚本具有当前站点登录用户的页面权限；Shell 与文件工具在已授权设备上执行。请按任务分配所需能力。
-- **未知操作不盲目重放**：断连或超时可能发生在副作用之后；应查询原操作状态、重新观察，再决定下一步。撤销权限不能回滚已执行的操作。
+- 在管理台为每个 Agent 选择设备、能力和有效期。设备本机可以随时暂停访问或关闭能力，这些设置会在重连后继续生效。
+- 用 Admin Token 管理实例，用 Device Key 连接设备，用 Agent Key 调用 MCP。
+- 浏览器任务沿用该 Profile 的网站登录状态，页面脚本拥有当前用户的页面权限。Shell 和文件工具使用客户端所在账户的系统权限。
+- 操作途中断连或超时时，先查询原操作状态，再检查页面或文件是否已经改变。撤销权限会阻止后续操作，已发生的修改需要另行处理。
 
 ## 开发与文档
 
@@ -207,6 +211,7 @@ npm run check
 | ---------------------------------------------- | ------------------------------------------------ |
 | [安装与维护](docs/deployment.md)               | Docker、Node.js、App、反向代理、升级与 OIDC 配置 |
 | [架构与执行契约](docs/architecture.md)         | 模块职责、工具接口、会话、去重、取消与结果语义   |
+| [Windows 客户端](docs/windows-client.md)       | 便携包、设备绑定、本机能力、更新与验证           |
 | [浏览器客户端](docs/browser-profile-design.md) | Profile 授权、任务标签、网页工具及浏览器代码接口 |
 | [Server API](apps/server/README.md)            | 管理员接口、Server 运行方式与分发说明            |
 | [贡献指南](.github/CONTRIBUTING.md)            | 开发环境、检查命令与提交规范                     |

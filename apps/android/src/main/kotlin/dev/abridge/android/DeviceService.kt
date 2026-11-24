@@ -2,6 +2,11 @@ package dev.abridge.android
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.BroadcastReceiver
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
@@ -48,7 +53,18 @@ class DeviceService : AccessibilityService() {
     private val screen by lazy { ScreenInput(this, contract.limits.getInt("imageBytes")) }
     private val files by lazy { WorkspaceFiles(this) }
     private val journal by lazy { getSharedPreferences("operations", Context.MODE_PRIVATE) }
+    private val standby by lazy { Standby(this) }
+    private var currentInteraction = InteractionState.Ready
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) { updateInteraction() }
+    }
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) { ui.post {
+            if (active && socket?.isOpen != true) { retries = 0; scheduleReconnect() }
+        } }
+    }
     private var socket: WebSocketClient? = null
+    private val unbinding = mutableMapOf<WebSocketClient, DeviceUnbinding>()
     private var maintenance: Job? = null
     private var reconnect: Job? = null
     private var epoch = 0L
@@ -64,10 +80,7 @@ class DeviceService : AccessibilityService() {
     private var running: Running? = null
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         when (key) {
-            "key", "url" -> {
-                disconnect()
-                connect()
-            }
+            "background_standby", "key", "revoked" -> updateStandby()
             "paused", "tree", "screen", "input", "files" -> {
                 // Maintain the input boundary even before the Server receives the update.
                 if (key == "tree" || paused() || running?.capabilities?.any { !available(it) } == true) stopWork()
@@ -83,20 +96,37 @@ class DeviceService : AccessibilityService() {
             serviceInfo = serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR }
         }
         active = true
+        instance = this
+        currentInteraction = interactionState()
+        registerReceiver(screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        })
+        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
         prefs.registerOnSharedPreferenceChangeListener(listener)
+        updateStandby()
         prefs.edit().remove("connection").apply()
         connect()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) screen.invalidate()
+            event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            screen.invalidate()
+            updateInteraction()
+        }
     }
     override fun onInterrupt() { stopWork() }
 
     override fun onDestroy() {
         active = false
+        if (instance === this) instance = null
+        unbinding.values.toList().forEach { it.finish(false) }
         prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        runCatching { unregisterReceiver(screenReceiver) }
+        runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }
+        standby.stop()
         disconnect()
         scope.cancel()
         fileExecutor.shutdownNow()
@@ -104,13 +134,38 @@ class DeviceService : AccessibilityService() {
     }
 
     private fun paused() = prefs.getBoolean("paused", true) || prefs.getBoolean("revoked", false)
-    private fun available(name: String) = prefs.getBoolean(name, false) &&
-        (name in listOf("screen", "input") || name == "files" && files.authorizedTree() != null)
+    private fun available(name: String) = prefs.getBoolean(name, false) && when (name) {
+        "screen", "input" -> interactionState() == InteractionState.Ready
+        "files" -> files.authorizedTree() != null
+        else -> false
+    }
     private fun capabilities() = JSONObject().apply {
         for (name in listOf("screen", "input", "files")) put(name, available(name))
     }
 
-    private fun setState(state: String) { prefs.edit().putString("connection", state).apply() }
+    private fun updateStandby() {
+        val enabled = active && prefs.getBoolean("background_standby", false) && prefs.contains("key") &&
+            !prefs.getBoolean("revoked", false)
+        val active = standby.update(enabled, socket?.isOpen == true, interactionState())
+        if (prefs.getBoolean("standby_active", false) != active)
+            prefs.edit().putBoolean("standby_active", active).apply()
+    }
+
+    private fun updateInteraction() {
+        val next = interactionState()
+        if (next == currentInteraction) return
+        currentInteraction = next
+        screen.invalidate()
+        if (running?.capabilities?.any { it == "screen" || it == "input" } == true) stopWork()
+        updateStandby()
+        prefs.edit().putString("interaction_state", next.wire).apply()
+        if (epoch > 0) heartbeat()
+    }
+
+    private fun setState(state: String) {
+        prefs.edit().putString("connection", state).apply()
+        updateStandby()
+    }
 
     private fun connect() {
         if (!active || socket != null || prefs.getBoolean("revoked", false)) return
@@ -124,7 +179,7 @@ class DeviceService : AccessibilityService() {
         var authorizationRejected = false
         val draft = DeviceHandshake(maxFrame) { authorizationRejected = true }
         val client = object : WebSocketClient(endpoint, draft,
-            mapOf("Authorization" to "Bearer $key"), 10000) {
+            deviceHandshakeHeaders(key), 10000) {
             override fun onSetSSLParameters(params: SSLParameters) {
                 super.onSetSSLParameters(params)
                 params.endpointIdentificationAlgorithm = "HTTPS"
@@ -133,9 +188,14 @@ class DeviceService : AccessibilityService() {
                 if (self !== this@DeviceService.socket) return@launch
                 send(JSONObject().put("type", "hello").put("protocol", contract.protocol)
                     .put("platform", "android").put("version", contract.version)
-                    .put("capabilities", capabilities()).put("paused", paused()))
+                    .put("capabilities", capabilities()).put("paused", paused())
+                    .put("interaction_state", interactionState().wire))
             } }
             override fun onMessage(text: String) { val self = this; scope.launch {
+                unbinding[self]?.let { pending ->
+                    runCatching { JSONObject(text) }.getOrNull()?.let(pending::receive)
+                    return@launch
+                }
                 if (self !== this@DeviceService.socket) return@launch
                 try {
                     require(text.toByteArray(Charsets.UTF_8).size <= maxFrame)
@@ -149,10 +209,12 @@ class DeviceService : AccessibilityService() {
                 if (self === this@DeviceService.socket) scheduleReconnect()
             } }
             override fun onClose(code: Int, reason: String, remote: Boolean) { val self = this; scope.launch {
+                unbinding[self]?.let { it.finish(remote && code == 4403); return@launch }
                 if (self !== this@DeviceService.socket) return@launch
                 if (authorizationRejected || (remote && code == 4403)) revoke() else scheduleReconnect()
             } }
             override fun onError(error: Exception) { val self = this; scope.launch {
+                unbinding[self]?.let { it.finish(false); return@launch }
                 if (self === this@DeviceService.socket) {
                     Log.w("aBridge", "Connection failed: ${error.javaClass.simpleName}")
                     if (authorizationRejected) revoke() else scheduleReconnect()
@@ -173,8 +235,12 @@ class DeviceService : AccessibilityService() {
         if (runCatching { connection.send(frame.toString()) }.isFailure) scheduleReconnect()
     }
 
-    private fun heartbeat() = send(JSONObject().put("type", "heartbeat").put("connection_epoch", epoch)
-        .put("capabilities", capabilities()).put("paused", paused()))
+    private fun heartbeat() {
+        updateStandby()
+        send(JSONObject().put("type", "heartbeat").put("connection_epoch", epoch)
+            .put("capabilities", capabilities()).put("paused", paused())
+            .put("interaction_state", interactionState().wire))
+    }
 
     private fun disconnect() {
         val prior = socket
@@ -187,6 +253,30 @@ class DeviceService : AccessibilityService() {
         closedSessions.clear()
         stopWork()
         setState("offline")
+    }
+
+    private fun unbind(complete: (Boolean) -> Unit) {
+        val previous = socket
+        val previousEpoch = epoch
+        // Retire the connection before clearing preferences. Its callbacks must never
+        // alter a subsequent binding, but it may still acknowledge cloud revocation.
+        socket = null
+        disconnect()
+        if (previous == null || previousEpoch == 0L || !previous.isOpen) {
+            previous?.closeConnection(1000, "Unbound locally")
+            complete(false)
+            return
+        }
+        val pending = DeviceUnbinding(previousEpoch) { confirmed ->
+            unbinding.remove(previous)
+            previous.closeConnection(1000, "Unbound locally")
+            complete(confirmed)
+        }
+        unbinding[previous] = pending
+        runCatching {
+            previous.send(JSONObject().put("type", "unbind").put("connection_epoch", previousEpoch).toString())
+        }.onFailure { pending.finish(false) }
+        scope.launch { delay(2000); pending.finish(false) }
     }
 
     private fun scheduleReconnect() {
@@ -299,6 +389,10 @@ class DeviceService : AccessibilityService() {
         if (tool !in contract.androidTools) return refuse("unsupported_tool", "Tool is unavailable on Android")
         if (!contract.validate(tool, args)) return refuse("invalid_arguments", "Arguments do not match the tool schema")
         val required = contract.required(tool, args)
+        val interaction = interactionState()
+        if (required.any { it == "screen" || it == "input" } && interaction != InteractionState.Ready)
+            return refuse(interaction.refusal, if (interaction == InteractionState.Locked)
+                "Unlock this device to continue screen operations" else "Wake and unlock this device to continue screen operations")
         val sessionGrant = frame.getJSONArray("session_capabilities").values()
         if (required.isEmpty() || !required.all { it in grant && it in sessionGrant && available(it) })
             return refuse("capability_unavailable", "The required local capability is unavailable")
@@ -318,6 +412,9 @@ class DeviceService : AccessibilityService() {
                     val execution = coroutineContext
                     val check = {
                         execution.ensureActive()
+                        val interaction = interactionState()
+                        if (required.any { it == "screen" || it == "input" } && interaction != InteractionState.Ready)
+                            throw Refusal(interaction.refusal, "Device display is unavailable; observe again after unlocking")
                         if (paused() || required.any { !prefs.getBoolean(it, false) })
                             throw CancellationException("Local authorization changed")
                     }
@@ -347,10 +444,25 @@ class DeviceService : AccessibilityService() {
     internal companion object {
         @Volatile var active = false
             private set
+        private var instance: DeviceService? = null
+        val grantedCapabilities: Set<String>
+            get() = instance?.takeIf { it.epoch > 0 }?.grant.orEmpty()
+        fun rebind() {
+            instance?.apply {
+                disconnect()
+                connect()
+            }
+        }
+        fun unbind(complete: (Boolean) -> Unit) {
+            instance?.unbind(complete) ?: complete(false)
+        }
         private val identity = Regex("^[A-Za-z0-9_-]{1,100}$")
     }
 }
 
+
+internal fun deviceHandshakeHeaders(key: String): Map<String, String> =
+    if (key.isEmpty()) emptyMap() else mapOf("Authorization" to "Bearer $key")
 
 internal class DeviceHandshake(
     private val frameLimit: Int,

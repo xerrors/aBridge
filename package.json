@@ -43,7 +43,9 @@
     "package:windows:check": "node --import tsx tools/check-windows-package.ts",
     "desktop:windows": ".local\\release\\windows\\aBridge\\aBridge.exe",
     "windows:shell:check": "node --import tsx tools/windows-native.ts check",
-    "test:windows:shell:live": "node --import tsx tools/check-windows-shell.ts"
+    "test:windows:shell:live": "node --import tsx tools/check-windows-shell.ts",
+    "agent:build": "cd apps/agent && go build -o ../../dist/agent/abridge-agent ./cmd/abridge-agent",
+    "agent:check": "cd apps/agent && go test -race ./... && go vet ./..."
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",
@@ -61,7 +63,7 @@
     "vitepress": "^1.6.4",
     "vue": "^3.5.45"
   },
-  "version": "0.4.23",
+  "version": "0.5.1",
   "type": "module",
   "workspaces": [
     "apps/*",

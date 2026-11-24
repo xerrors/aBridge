@@ -1,6 +1,7 @@
 import "./webview-compat";
 import React, { useEffect, useState } from "react";
 import "./styles.css";
+import { capabilityStatus, type Capability, type CapabilityState, connectionLabel } from "./capability-state";
 import { createRoot } from "react-dom/client";
 import type { defaultConfig } from "@tamagui/config/v6";
 import { selectionStyles } from "@tamagui/config/v6-base";
@@ -38,9 +39,9 @@ function Dot({ color = blue }) {
 }
 
 const capabilities = [
-  { key: "screen", name: "屏幕观察", description: "允许查看当前屏幕" },
-  { key: "input", name: "触控与文本输入", description: "允许点按、滑动和输入" },
-  { key: "files", name: "文件读写", description: "仅限已授权的工作目录" },
+  { key: "screen", name: "屏幕观察" },
+  { key: "input", name: "触控与文本输入" },
+  { key: "files", name: "文件读写" },
 ] as const;
 
 function CapabilityRow({
@@ -91,16 +92,13 @@ function CapabilityRow({
   );
 }
 
-type Capability = (typeof capabilities)[number]["key"];
-type Connection = "Online" | "Connecting" | "Offline" | "ServiceUnavailable" | "Revoked" | "Unbound";
-type DeviceState = {
+type DeviceState = CapabilityState & {
   type: "state";
   bound: boolean;
   server: string;
-  connection: Connection;
-  agentAllowed: boolean;
-  enabledCapabilities: Capability[];
-  directoryAuthorized: boolean;
+  standbyEnabled: boolean;
+  standbyActive: boolean;
+  batteryUnrestricted: boolean;
   accessibilityActive: boolean;
   model: string;
   androidVersion: string;
@@ -117,6 +115,7 @@ type Request =
   | {
       type:
         | "ready"
+        | "batterySettings"
         | "accessibility"
         | "directory"
         | "revokeDirectory"
@@ -127,12 +126,13 @@ type Request =
         | "downloadUpdate";
     }
   | { type: "bind"; address: string; key: string }
+  | { type: "standby"; enabled: boolean }
   | { type: "access"; allowed: boolean }
   | { type: "capability"; name: Capability; enabled: boolean };
 type Reply =
   | DeviceState
   | UpdateState
-  | { type: "bound" | "back" | "bindingCancelled" }
+  | { type: "bound" | "back" | "bindingCancelled" | "unbound" }
   | { type: "error"; message: string };
 
 declare global {
@@ -147,15 +147,6 @@ declare global {
 function send(request: Request) {
   window.aBridgeNative?.postMessage(JSON.stringify(request));
 }
-
-const connectionLabel: Record<Connection, string> = {
-  Online: "已连接",
-  Connecting: "连接中",
-  Offline: "离线",
-  ServiceUnavailable: "无障碍未连接",
-  Revoked: "凭据已撤销",
-  Unbound: "尚未绑定",
-};
 
 type Panel = "permissions" | "unbind";
 
@@ -201,23 +192,19 @@ function DeviceDialog({
           </Dialog.Title>
           <Dialog.Description color={secondary} fontSize={13}>
             {permissions
-              ? state.agentAllowed
-                ? "关闭开关可随时收回对应能力"
-                : "所选能力在允许 Agent 访问后生效"
-              : "此设备将停止接收 aBridge 操作。"}
+              ? "本机授权与生效状态"
+              : "此设备将立即停止接收 aBridge 操作。离线时还需在 Server 管理台撤销旧设备。"}
           </Dialog.Description>
           {permissions ? (
             <YStack borderWidth={1} borderColor={line} borderRadius={12} overflow="hidden">
-              {capabilities.map(({ key, name, description }, index) => (
-                <React.Fragment key={key}>
-                  {index > 0 && <Separator borderColor={line} marginHorizontal={14} />}
-                  <CapabilityRow
-                    name={name}
-                    description={description}
-                    checked={state.enabledCapabilities.includes(key)}
-                    onChange={(enabled) => send({ type: "capability", name: key, enabled })}
-                  />
-                </React.Fragment>
+              {capabilities.map(({ key, name }) => (
+                <CapabilityRow
+                  key={key}
+                  name={name}
+                  description={capabilityStatus(state, key) ?? "已生效"}
+                  checked={state.enabledCapabilities.includes(key)}
+                  onChange={(enabled) => send({ type: "capability", name: key, enabled })}
+                />
               ))}
             </YStack>
           ) : (
@@ -261,8 +248,8 @@ function BindingForm({
   function submit() {
     const cleanAddress = address.trim();
     const cleanKey = key.trim();
-    if (!cleanAddress || !cleanKey) {
-      setValidation("请填写 Server 地址和 Device Key");
+    if (!cleanAddress) {
+      setValidation("请填写服务器地址");
       return;
     }
     setValidation("");
@@ -308,12 +295,13 @@ function BindingForm({
         </YStack>
       )}
       <Text color={ink} fontSize={14}>
-        Device Key
+        Device Key（可选）
       </Text>
       <Input
         id="device-key"
         aria-label="Device Key"
         value={key}
+        placeholder="服务器允许免 Key 时留空"
         onChangeText={setKey}
         autoComplete="off"
         autoCapitalize="none"
@@ -416,6 +404,13 @@ function AccessScreen() {
         setPending(false);
         setEditing(false);
         setSettings(false);
+      } else if (message.type === "unbound") {
+        setError("");
+        setPending(false);
+        setEditing(false);
+        setSettings(false);
+        setUpdatePage(false);
+        setPanel(null);
       } else if (message.type === "bindingCancelled") {
         setPending(false);
       } else if (message.type === "error") {
@@ -432,41 +427,24 @@ function AccessScreen() {
   }, [panel, editing, settings, updatePage]);
 
   const allowed = state?.agentAllowed ?? false;
-  const effective =
-    allowed && state?.connection === "Online"
-      ? capabilities.filter(
-          ({ key }) =>
-            state.enabledCapabilities.includes(key) && (key !== "files" || state.directoryAuthorized),
-        )
-      : [];
-  const blocked = state?.connection === "Revoked" || state?.connection === "ServiceUnavailable";
-  const action =
-    state?.connection === "Revoked"
-      ? "重新绑定"
-      : state?.connection === "ServiceUnavailable" && !allowed
-        ? "打开无障碍设置"
-        : allowed
-          ? "暂停 Agent 操作"
-          : "允许 Agent 操作";
+  const effective = state ? capabilities.filter(({ key }) => capabilityStatus(state, key) === null) : [];
+  const needsKey = state?.connection === "KeyRequired";
+  const needsRebind = state?.connection === "Revoked" || needsKey;
+  const action = needsRebind
+    ? needsKey
+      ? "填写 Device Key"
+      : "重新绑定"
+    : state?.connection === "ServiceUnavailable" && !allowed
+      ? "打开无障碍设置"
+      : allowed
+        ? "暂停 Agent 操作"
+        : "允许 Agent 操作";
   function primary() {
     setError("");
-    if (state?.connection === "Revoked") setEditing(true);
+    if (needsRebind) setEditing(true);
     else if (state?.connection === "ServiceUnavailable" && !allowed) send({ type: "accessibility" });
     else send({ type: "access", allowed: !allowed });
   }
-
-  const feedback =
-    state?.connection === "Revoked"
-      ? "重新绑定后可恢复访问"
-      : state?.connection === "ServiceUnavailable"
-        ? "请在系统设置中启用 aBridge 无障碍服务"
-        : state?.connection !== "Online"
-          ? "设备连接后才能接收 Agent 操作"
-          : !allowed
-            ? "手机仍在线，Agent 无法执行新操作"
-            : effective.length
-              ? "Agent 可使用本机已开启且获授权的能力"
-              : "请先开启所需能力";
 
   return (
     <YStack
@@ -591,6 +569,29 @@ function AccessScreen() {
               <Separator borderColor={line} />
               <SettingsRow title={connectionLabel[state.connection]} />
             </SettingsSection>
+            <SettingsSection title="后台待命">
+              <CapabilityRow
+                name="熄屏保持连接"
+                description="开启常驻通知并提高后台连接稳定性，会增加耗电"
+                checked={state.standbyEnabled}
+                onChange={(enabled) => send({ type: "standby", enabled })}
+              />
+              {state.standbyEnabled && (
+                <>
+                  {!state.standbyActive && (
+                    <Text color={secondary} fontSize={12} marginHorizontal={14} marginBottom={8}>
+                      待命未生效，请检查无障碍和系统后台设置。
+                    </Text>
+                  )}
+                  <Separator borderColor={line} />
+                  <SettingsRow
+                    title="电池优化"
+                    detail={state.batteryUnrestricted ? "已允许不受限制" : "允许后台运行可改善熄屏连接"}
+                    onPress={() => send({ type: "batterySettings" })}
+                  />
+                </>
+              )}
+            </SettingsSection>
             <SettingsSection title="权限">
               <SettingsRow title="Agent 能力" onPress={() => setPanel("permissions")} />
               <Separator borderColor={line} />
@@ -692,14 +693,12 @@ function AccessScreen() {
               操作权限
             </Text>
             <XStack alignItems="center" gap={8} minHeight={34}>
-              <Dot color={allowed && !blocked ? blue : "#718098"} />
+              <Dot color={allowed && state.connection === "Online" ? blue : "#718098"} />
               <Text aria-live="polite" color={ink} fontWeight="750" fontSize={24}>
                 {allowed ? "Agent 访问已开启" : "Agent 访问已关闭"}
               </Text>
             </XStack>
-            <Text color={secondary} fontSize={13} marginTop={7} minHeight={23}>
-              {feedback}
-            </Text>
+
             <Button
               aria-label={action}
               height={48}
@@ -722,7 +721,8 @@ function AccessScreen() {
             }
             subTitle={
               <Text color={secondary} fontSize={12}>
-                {effective.length ? effective.map(({ name }) => name).join("、") : "当前无生效能力"}
+                {effective.map(({ name }) => name).join("、") ||
+                  (state.connection === "Online" ? "查看状态" : connectionLabel[state.connection])}
               </Text>
             }
             iconAfter={
