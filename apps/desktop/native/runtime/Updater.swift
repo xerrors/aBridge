@@ -187,10 +187,12 @@ func prepareNativeUpdate(app: String, current: String, version: String, stateDir
         try rejectSymlinks(candidate)
         try assertNativeApp(candidate, version: version)
         try verifyTeam(app, candidate)
-        let runtime = childPath(candidate, "Contents/MacOS/abridge-desktop")
-        guard updaterFiles.isExecutableFile(atPath: runtime), updaterFiles.isExecutableFile(atPath: childPath(candidate, "Contents/MacOS/abridge-updater")) else { throw UpdateFailure("更新缺少原生运行时") }
+        let binaries = ["abridge-desktop", "abridge-desktop-http", "abridge-updater"].map { childPath(candidate, "Contents/MacOS/" + $0) }
+        guard binaries.allSatisfy({ updaterFiles.isExecutableFile(atPath: $0) }) else { throw UpdateFailure("更新缺少原生运行时") }
         let smokeState = childPath(work, "smoke-state")
-        _ = try JSONSerialization.jsonObject(with: Data(updaterRun(runtime, ["status", "--state-dir", smokeState]).utf8))
+        for runtime in binaries.dropLast() {
+            _ = try JSONSerialization.jsonObject(with: Data(updaterRun(runtime, ["status", "--state-dir", smokeState]).utf8))
+        }
         try? updaterFiles.removeItem(atPath: smokeState)
         try updaterFiles.copyItem(atPath: CommandLine.arguments[0], toPath: childPath(work, "abridge-updater"))
         guard chmod(childPath(work, "abridge-updater"), 0o700) == 0 else { throw UpdateFailure("更新程序不可执行") }

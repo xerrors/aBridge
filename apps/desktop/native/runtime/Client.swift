@@ -136,7 +136,7 @@ actor DeviceClient {
     }
     private func connect() async throws {
         var components = URLComponents(string: config.url)!
-        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        components.scheme = components.scheme?.lowercased() == "https" ? "wss" : "ws"
         components.path += "/ws/device"
         var request = URLRequest(url: components.url!); request.timeoutInterval = 10
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -184,9 +184,6 @@ actor DeviceClient {
         let responseStatus = (ws.response as? HTTPURLResponse)?.statusCode
         let message: String
         if responseStatus == 401 { return .revoked("\(deviceCredentialRejected)（HTTP 401）") }
-        if responseStatus == 403 {
-            return .revoked("Server 拒绝了设备连接（HTTP 403），请检查 Server 和反向代理的访问规则后重新绑定这台 Mac")
-        }
         if status == "connecting", let code = responseStatus, code != 101 {
             switch code {
             case 200..<300, 400, 404, 426:

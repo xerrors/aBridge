@@ -193,6 +193,7 @@ enum NativeAuthorization {
 
     static func verifyToken(server: String, key: String, confirmedHttpOrigin: String? = nil) async throws -> JSONObject {
         let normalized = try normalizeServerURL(server, confirmedHttpOrigin: confirmedHttpOrigin)
+        try requireDeviceServerTransport(normalized)
         guard key.hasPrefix("abr_device_"), key.utf8.count <= 4096 else { throw DesktopError(code: "invalid_arguments", message: "请输入 Device Key") }
         let value = try await fetch(normalized + "/api/device", stage: .verify, key: key)
         let identity = try validateServerResponse(value, schema: "deviceIdentity", contract: NativeContract.load(), stage: .verify)
@@ -256,6 +257,7 @@ enum NativeAuthorization {
                 guard let rawURL = start.string("url") else { throw DesktopError(code: "invalid_arguments", message: "Server 地址无效") }
                 let confirmed = start.string("http_confirmed_origin")
                 let url = try normalizeServerURL(rawURL, confirmedHttpOrigin: confirmed)
+                try requireDeviceServerTransport(url)
                 let key: String
                 if let supplied = start.string("device_key") {
                     _ = try await verifyToken(server: url, key: supplied, confirmedHttpOrigin: confirmed)

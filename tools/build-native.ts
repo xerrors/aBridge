@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { desktopSwiftTargets, desktopTarget } from "./lib/desktop-swift.js";
+import { desktopRuntimeExecutables, desktopSwiftTargets, desktopTarget } from "./lib/desktop-swift.js";
 import { run } from "./lib/process.js";
 import { resolvePackageDirectory } from "./lib/native-sdk.js";
 export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -109,7 +109,7 @@ export async function nativeBuildInputs(
   const files = [
     "apps/desktop/native/aBridge.swift",
     "apps/desktop/native/main.swift",
-    "apps/desktop/native/runtime/Info.plist",
+    "apps/desktop/native/runtime/HTTPInfo.plist",
     ...nativeSources.map((name) => "apps/desktop/native/runtime/" + name),
     "dist/desktop/desktop-contract.json",
     "docs/third-party-notices.md",
@@ -210,30 +210,42 @@ export async function buildNative(
     const library = join(frameworks, "libcua_driver_sdk.dylib");
     await run("/usr/bin/lipo", [await nativeLibrary(root), "-thin", "arm64", "-output", library]);
     await run("/usr/bin/install_name_tool", ["-id", "@rpath/libcua_driver_sdk.dylib", library]);
-    await run("/usr/bin/swiftc", [
-      "-O",
-      ...swift["abridge-desktop"],
-      "-L",
-      frameworks,
-      "-lcua_driver_sdk",
-      "-Xlinker",
-      "-sectcreate",
-      "-Xlinker",
-      "__TEXT",
-      "-Xlinker",
-      "__info_plist",
-      "-Xlinker",
-      join(root, "apps/desktop/native/runtime/Info.plist"),
-      "-Xlinker",
-      "-rpath",
-      "-Xlinker",
-      "@executable_path/../Frameworks",
-      "-o",
-      join(macos, "abridge-desktop"),
-    ]);
+    for (const name of desktopRuntimeExecutables) {
+      const httpPlist =
+        name === "abridge-desktop-http"
+          ? [
+              "-Xlinker",
+              "-sectcreate",
+              "-Xlinker",
+              "__TEXT",
+              "-Xlinker",
+              "__info_plist",
+              "-Xlinker",
+              join(root, "apps/desktop/native/runtime/HTTPInfo.plist"),
+            ]
+          : [];
+      await run("/usr/bin/swiftc", [
+        "-O",
+        ...swift[name],
+        "-L",
+        frameworks,
+        "-lcua_driver_sdk",
+        ...httpPlist,
+        "-Xlinker",
+        "-rpath",
+        "-Xlinker",
+        "@executable_path/../Frameworks",
+        "-o",
+        join(macos, name),
+      ]);
+    }
     await run("/usr/bin/swiftc", ["-O", ...swift["abridge-updater"], "-o", join(macos, "abridge-updater")]);
     await clearBuildMetadata(staging);
-    for (const binary of [library, join(macos, "abridge-desktop"), join(macos, "abridge-updater")]) {
+    for (const binary of [
+      library,
+      ...desktopRuntimeExecutables.map((name) => join(macos, name)),
+      join(macos, "abridge-updater"),
+    ]) {
       await chmod(binary, 0o755);
       await run("/usr/bin/codesign", [
         ...(options.signingIdentity === "-" ? [] : ["--options", "runtime", "--timestamp"]),

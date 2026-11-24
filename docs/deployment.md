@@ -167,6 +167,8 @@ dist/desktop/aBridge.app/Contents/MacOS/abridge-desktop diagnose
 
 自定义状态目录使用 `--state-dir`，日志位于 `<state-dir>/logs/client.log`。检查屏幕录制及辅助功能时，请打开实际安装的 App，用自己的窗口验证截图和输入。
 
+App 自动为经明确确认的远端 HTTP Server 选择 `Contents/MacOS/abridge-desktop-http`。直接运行 CLI 的 `authorize`、`configure` 或 `run` 时，远端 HTTP 使用该程序，HTTPS 和回环地址使用 `abridge-desktop`。`status`、`diagnose` 和本机控制继续使用 `abridge-desktop`。
+
 ### 应用内更新
 
 在 macOS 菜单选择“检查更新…”，或在设置的“软件更新”中检查。发现正式新版后，依次点击“下载更新”和“安装并重启”。下载期间可以继续使用；安装会结束当前执行，保留设备绑定、能力开关、暂停状态和数据目录。应用必须位于可写的本机目录；从磁盘镜像或 App Translocation 启动时先移入 Applications。

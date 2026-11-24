@@ -1,6 +1,22 @@
 import Foundation
 import Security
 
+func requireDeviceServerTransport(_ normalizedServer: String) throws {
+    guard let server = URL(string: normalizedServer) else {
+        throw DesktopError(code: "invalid_url", message: "Server 地址无效")
+    }
+    let transport = DeviceServerTransport(server: server)
+    #if ABRIDGE_CONFIRMED_HTTP
+    guard transport == .confirmedHTTP else {
+        throw DesktopError(code: "transport_mismatch", message: "此设备客户端仅用于明确确认的远端 HTTP Server。请使用 abridge-desktop 连接 HTTPS 或回环地址。")
+    }
+    #else
+    guard transport == .standard else {
+        throw DesktopError(code: "transport_mismatch", message: "连接已确认的远端 HTTP Server 需要使用 abridge-desktop-http。")
+    }
+    #endif
+}
+
 /// 设备授权请求、改名和 WebSocket 都只连接已选 Server，不随重定向传递凭据。
 private final class DeviceNetworkDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {

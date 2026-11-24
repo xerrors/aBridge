@@ -232,4 +232,6 @@ macOS App 包含 AppKit 主程序、Swift 设备客户端、更新器、共享�
 
 公网 HTTP 由用户显式确认具体 Origin；共享协议包负责地址规范化和确认匹配。确认写入成功绑定的本机配置，连接恢复时再次校验，浏览器 PKCE 状态与回调校验保持不变。HTTP 风险确认不代替 Server Host/Origin 访问校验，OIDC 的公网 HTTP 另由部署管理员通过 `--allow-insecure-http` / `ABRIDGE_ALLOW_INSECURE_HTTP=true` 显式开启。
 
-macOS 的设备进程使用系统 URLSession 连接用户指定的 Server。在此进程中允许明文传输，HTTP 和 WS 受上述 Origin 确认约束。HTTPS 和 WSS 要求 TLS 1.2 或更高版本，并使用系统证书和主机名校验。此配置会放宽设备进程的 ATS 附加限制，例如前向保密要求。更新器在独立进程中使用系统默认的 ATS 策略。
+macOS 的设备进程使用系统 URLSession 连接用户指定的 Server。HTTPS、WSS 和回环连接由使用系统默认 ATS 策略的 `abridge-desktop` 处理。经 Origin 确认的远端 HTTP 和 WS 由单独签名的 `abridge-desktop-http` 处理，只有这个进程包含 ATS 例外。绑定和启动时，设备进程在连接前复核所选传输方式。更新器也使用系统默认的 ATS 策略。
+
+设备 WebSocket 握手的访问拒绝（HTTP 403）按普通连接错误重试。Server 的凭据拒绝（HTTP 401）或已建立连接收到的撤销消息会停止自动重连，直至重新绑定。

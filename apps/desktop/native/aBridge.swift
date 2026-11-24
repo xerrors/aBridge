@@ -101,7 +101,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             runtime = settings
         }
-        runtime["cli_path"] = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/abridge-desktop").path
         if runtime["state_dir"] == nil {
             runtime["state_dir"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/aBridge").path
@@ -799,8 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func confirmHttp(_ server: String) -> Bool {
-        guard let url = URL(string: server), url.scheme == "http",
-              let host = url.host, !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host) else { return true }
+        guard let url = URL(string: server), DeviceServerTransport(server: url) == .confirmedHTTP else { return true }
         var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         parts.path = ""
         let origin = parts.string!
@@ -828,7 +826,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             return
         }
         guard confirmHttp(address) else { return }
-        guard let process = runtimeProcess(arguments: clientArguments(["authorize", "--stdin"])) else {
+        guard let process = runtimeProcess(arguments: clientArguments(["authorize", "--stdin"]), server: address) else {
             finishAuthorization("找不到 aBridge 的设备客户端，请重新安装完整的 Mac 应用。")
             return
         }
@@ -1180,9 +1178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func startDaemon() {
         guard !stoppingDaemon,
-              boundServerAddress() != nil,
+              let server = boundServerAddress(),
               daemon?.isRunning != true else { return }
-        guard let process = runtimeProcess(arguments: clientArguments(["run"])) else {
+        guard let process = runtimeProcess(arguments: clientArguments(["run"]), server: server) else {
             statusLabel.stringValue = "运行时文件缺失"
             environmentLabels["runtime"]?.stringValue = "未安装 / 路径失效"
             return
@@ -1262,14 +1260,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
-    private func runtimeProcess(arguments: [String]) -> Process? {
-        guard let cli = runtime["cli_path"], cli.hasPrefix("/"),
-              FileManager.default.isExecutableFile(atPath: cli)
-        else { return nil }
+    private func runtimeProcess(arguments: [String], server: String? = nil) -> Process? {
+        let transport = server.flatMap { URL(string: $0) }.map(DeviceServerTransport.init) ?? .standard
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/" + transport.executableName)
+        guard FileManager.default.isExecutableFile(atPath: cli.path) else { return nil }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: cli)
+        process.executableURL = cli
         process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: cli).deletingLastPathComponent()
+        process.currentDirectoryURL = cli.deletingLastPathComponent()
         var environment = ProcessInfo.processInfo.environment
         environment["ABRIDGE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         process.environment = environment
@@ -1293,6 +1291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         case "credential_invalid", "credential_mismatch", "configuration_invalid": return "本机绑定记录无效或与服务地址不匹配，请检查地址并重新绑定这台 Mac。"
         case "status_write_failed", "journal_failed": return "设备客户端无法保存本机状态，请检查磁盘可用空间和 aBridge 数据目录的写入权限。"
         case "invalid_url": return "本机绑定记录的服务地址无效或缺少 HTTP 确认，设备连接已停止。请检查已有的本机绑定配置。"
+        case "transport_mismatch": return "本机服务地址与设备客户端的传输方式不匹配，请检查绑定配置并重新连接。"
         case "device_offline", "rename_failed", "control_unavailable":
             if let message = error?["message"] as? String, !message.isEmpty { return message }
         default: break

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { createServer as createSecureServer } from "node:https";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rm } from "node:fs/promises";
@@ -26,6 +27,7 @@ const binary = resolve(
   process.env.ABRIDGE_NATIVE_TEST_APP ?? "dist/desktop/aBridge.app",
   "Contents/MacOS/abridge-desktop",
 );
+const httpBinary = join(dirname(binary), "abridge-desktop-http");
 const native = process.platform === "darwin" && process.arch === "arm64";
 const deviceKey = "abr_device_fixture";
 const browserDeviceKey = "abr_device_browser_fixture";
@@ -50,7 +52,8 @@ async function fixture({
   host = "127.0.0.1",
   urlHost = host,
   seedBinding = true,
-}: { host?: string; urlHost?: string; seedBinding?: boolean } = {}) {
+  executable = binary,
+}: { host?: string; urlHost?: string; seedBinding?: boolean; executable?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "abridge-native-client-"));
   await chmod(directory, 0o700);
   let name = "Fixture Mac",
@@ -125,10 +128,10 @@ async function fixture({
   const server = new WebSocketServer({ noServer: true });
   http.on("upgrade", (request, socket, head) => {
     assert.equal(request.url, "/ws/device");
-    assert.equal(request.headers.authorization, `Bearer ${socketKey}`);
-    if (upgradeStatus !== undefined) {
+    const status = request.headers.authorization === `Bearer ${socketKey}` ? upgradeStatus : 401;
+    if (status !== undefined) {
       socket.end(
-        `HTTP/1.1 ${upgradeStatus} Fixture response\r\nContent-Length: ${deviceKey.length}\r\nConnection: close\r\n\r\n${deviceKey}`,
+        `HTTP/1.1 ${status} Fixture response\r\nContent-Length: ${deviceKey.length}\r\nConnection: close\r\n\r\n${deviceKey}`,
       );
       return;
     }
@@ -204,7 +207,7 @@ async function fixture({
     clearTimeout(forced);
   }
   async function start() {
-    child = spawn(binary, ["run", "--state-dir", directory], { stdio: ["ignore", "pipe", "pipe"] });
+    child = spawn(executable, ["run", "--state-dir", directory], { stdio: ["ignore", "pipe", "pipe"] });
     child.stderr!.on("data", (data) => {
       stderr += String(data);
     });
@@ -274,6 +277,9 @@ async function fixture({
     set upgradeStatus(value: number | undefined) {
       upgradeStatus = value;
     },
+    rotateDeviceKey() {
+      socketKey = "abr_device_rotated_fixture";
+    },
     set renameResponse(value: { status: number; body: string } | undefined) {
       renameResponse = value;
     },
@@ -287,9 +293,14 @@ async function fixture({
   };
 }
 
-async function authorize(directory: string, input: Frame, approveInBrowser?: () => Promise<void>) {
-  const child = spawn(binary, ["--state-dir", directory, "authorize", "--stdin"], {
-    cwd: dirname(binary),
+async function authorize(
+  directory: string,
+  input: Frame,
+  executable = binary,
+  approveInBrowser?: () => Promise<void>,
+) {
+  const child = spawn(executable, ["--state-dir", directory, "authorize", "--stdin"], {
+    cwd: dirname(executable),
     env: { ...process.env, ABRIDGE_PARENT_PID: String(process.pid) },
     stdio: "pipe",
   });
@@ -378,17 +389,17 @@ function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) 
       assert.ok(address, "HTTP consent regression requires a non-loopback IPv4 address on this Mac");
       if (urlHost && urlHost !== address)
         assert.deepEqual(await lookup(urlHost, { all: true }), [{ address, family: 4 }]);
-      const f = await fixture({ host: address, urlHost, seedBinding: false });
+      const f = await fixture({ host: address, urlHost, seedBinding: false, executable: httpBinary });
       try {
         const mismatched = new URL(f.url);
         mismatched.port = mismatched.port === "8080" ? "8081" : "8080";
         for (const device_key of [undefined, deviceKey]) {
           for (const http_confirmed_origin of [undefined, mismatched.origin]) {
-            const { code, events } = await authorize(f.directory, {
-              url: f.url,
-              device_key,
-              http_confirmed_origin,
-            });
+            const { code, events } = await authorize(
+              f.directory,
+              { url: f.url, device_key, http_confirmed_origin },
+              httpBinary,
+            );
             assert.equal(code, 1);
             assert.deepEqual(
               events.map((event) => event.event),
@@ -400,7 +411,12 @@ function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) 
         }
 
         const input = { url: f.url, http_confirmed_origin: f.url };
-        const browser = await authorize(f.directory, input);
+        const standard = await authorize(f.directory, { ...input, device_key: deviceKey });
+        assert.equal(standard.code, 1);
+        assert.match(String(standard.events[0]?.error), /需要使用 abridge-desktop-http/);
+        assert.equal(f.requests.length, 0);
+
+        const browser = await authorize(f.directory, input, httpBinary);
         assert.equal(browser.code, 1);
         assert.deepEqual(
           browser.events.map((event) => event.event),
@@ -425,7 +441,7 @@ function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) 
         assert.deepEqual(await readdir(f.directory), []);
 
         const approvalOffset = f.requests.length;
-        const approval = await authorize(f.directory, input, async () => {
+        const approval = await authorize(f.directory, input, httpBinary, async () => {
           const start = deviceAuthorizationRequestSchema.parse(f.requests[approvalOffset]?.body);
           const callback = new URL(start.redirect_uri);
           assert.equal(callback.protocol, "http:");
@@ -472,7 +488,7 @@ function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) 
         await f.stop();
 
         const tokenOffset = f.requests.length;
-        const token = await authorize(f.directory, { ...input, device_key: deviceKey });
+        const token = await authorize(f.directory, { ...input, device_key: deviceKey }, httpBinary);
         assert.equal(token.code, 0, JSON.stringify(token.events));
         assert.deepEqual(
           token.events.map((event) => event.event),
@@ -501,6 +517,101 @@ if (testHttpAddress && testHttpHostname) {
   testHttpConsent(`TEST-NET IPv4 ${testHttpAddress}`, testHttpAddress);
   testHttpConsent(`DNS hostname ${testHttpHostname}`, testHttpAddress, testHttpHostname);
 }
+
+test("packaged desktop runtime keeps HTTPS under default ATS", { skip: !native }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "abridge-native-tls-"));
+  try {
+    const [standard, http, updater] = await Promise.all(
+      [binary, httpBinary, join(dirname(binary), "abridge-updater")].map((executable) =>
+        exec("/usr/bin/otool", ["-l", executable]),
+      ),
+    );
+    assert.doesNotMatch(standard.stdout, /sectname __info_plist/);
+    assert.doesNotMatch(updater.stdout, /sectname __info_plist/);
+    assert.match(http.stdout, /sectname __info_plist/);
+    assert.doesNotMatch(
+      await readFile(join(dirname(dirname(binary)), "Info.plist"), "utf8"),
+      /NSAllowsArbitraryLoads/,
+    );
+
+    // Use a fresh untrusted identity, so a machine's existing trust store cannot accept it.
+    const key = join(directory, "key.pem");
+    const cert = join(directory, "cert.pem");
+    await exec("/usr/bin/openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-subj",
+      "/CN=localhost",
+      "-days",
+      "1",
+      "-keyout",
+      key,
+      "-out",
+      cert,
+    ]);
+    let requests = 0;
+    const server = createSecureServer(
+      { key: await readFile(key), cert: await readFile(cert), minVersion: "TLSv1.2" },
+      (_request, response) => {
+        requests++;
+        response.writeHead(500).end();
+      },
+    );
+    server.on("upgrade", (_request, socket) => {
+      requests++;
+      socket.destroy();
+    });
+    try {
+      await once(server.listen(0, "127.0.0.1"), "listening");
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      const input = { url: `https://localhost:${address.port}`, device_key: deviceKey };
+      const unsecured = await authorize(directory, input, httpBinary);
+      assert.equal(unsecured.code, 1);
+      assert.match(String(unsecured.events[0]?.error), /仅用于明确确认的远端 HTTP/);
+      const hardened = await authorize(directory, input);
+      assert.equal(hardened.code, 1);
+      assert.match(String(hardened.events[0]?.error), /HTTPS.*证书/);
+
+      await mkdir(join(directory, "credentials"), { mode: 0o700 });
+      await writeFile(
+        join(directory, "config.json"),
+        JSON.stringify({ url: input.url, capabilities: {}, paused: false }),
+        { mode: 0o600 },
+      );
+      await writeFile(
+        join(directory, "credentials/device.json"),
+        JSON.stringify({ server_url: input.url, device_key: deviceKey }),
+        { mode: 0o600 },
+      );
+      const child = spawn(binary, ["run", "--state-dir", directory], { stdio: "ignore" });
+      const exited = once(child, "close");
+      try {
+        await until(async () => {
+          const { stdout } = await exec(binary, ["status", "--state-dir", directory], { timeout: 2000 });
+          const status = JSON.parse(stdout) as Frame;
+          return status.connection === "offline" && /HTTPS.*证书/.test(String(status.error));
+        }, "The WSS connection must report a certificate error");
+      } finally {
+        child.kill("SIGTERM");
+        const watchdog = setTimeout(() => child.kill("SIGKILL"), 6000);
+        try {
+          await exited;
+        } finally {
+          clearTimeout(watchdog);
+        }
+      }
+      assert.equal(requests, 0, "The untrusted peer must not receive the Device Key");
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test(
   "native client: connection status diagnoses invalid frames and failed WebSocket upgrades",
@@ -538,7 +649,15 @@ test(
 
       f.upgradeStatus = 403;
       f.peer.terminate();
-      await expectConnectionError("revoked", /HTTP 403.*访问规则.*重新绑定/);
+      await expectConnectionError("offline", /访问规则.*HTTP 403/);
+      assert.notEqual(JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")).revoked, true);
+      f.upgradeStatus = undefined;
+      await until(async () => (await f.cli("status")).connection === "online");
+      assert.equal((await f.cli("status")).error, "");
+
+      f.rotateDeviceKey();
+      f.peer.terminate();
+      await expectConnectionError("revoked", /HTTP 401/);
       assert.equal(JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")).revoked, true);
     } finally {
       await f.close();

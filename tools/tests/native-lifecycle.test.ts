@@ -28,9 +28,15 @@ test(
         "-swift-version",
         "6",
         "-parse-as-library",
-        ...["JSON", "Contract", "Storage", "LocalControl", "DeviceServerSession", "Authorization"].map(
-          (name) => join(root, `apps/desktop/native/runtime/${name}.swift`),
-        ),
+        ...[
+          "JSON",
+          "Contract",
+          "Storage",
+          "LocalControl",
+          "DeviceServerTransport",
+          "DeviceServerSession",
+          "Authorization",
+        ].map((name) => join(root, `apps/desktop/native/runtime/${name}.swift`)),
         join(root, "tools/fixtures/native-lifecycle.swift"),
         "-lsqlite3",
         "-o",

@@ -4,7 +4,7 @@
 <dict>
     <key>NSAppTransportSecurity</key>
     <dict>
-        <!-- The Server origin is chosen at runtime. normalizeServerURL checks consent before HTTP/WS. -->
+        <!-- Embedded only in abridge-desktop-http. The runtime requires exact Origin consent. -->
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
