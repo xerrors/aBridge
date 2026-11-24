@@ -40,6 +40,7 @@ export interface BrowserProfile {
   server?: string;
   device_id?: string;
   label?: string;
+  platform_revision?: number;
 }
 export interface BrowserStatus {
   http_confirmed_origin?: string;
@@ -58,6 +59,8 @@ export interface BrowserStatus {
   binding_method?: "browser" | "token";
   authorization_expires_at?: number;
   authorization_error?: string;
+  platform_revision?: number;
+  replacement_pending?: boolean;
 }
 export type ControlType = "pause" | "resume" | "stop" | "unbind";
 export type UiMessage =
@@ -87,6 +90,11 @@ export const uiMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("authorize_cancel") }),
   deviceRenameSchema.extend({ type: z.literal("rename") }).strict(),
   z.object({ type: z.enum(["pause", "resume", "stop", "unbind"]) }),
+  z.strictObject({
+    type: z.literal("platform_binding"),
+    action: z.enum(["resume", "confirm", "abort"]),
+    revision: z.number().int().positive(),
+  }),
   z.object({
     type: z.literal("authorize"),
     server: z.string(),
@@ -99,6 +107,7 @@ export const uiMessageSchema = z.discriminatedUnion("type", [
       server: z.string(),
       device_key: z.string().startsWith("abr_device_").max(4096),
       http_confirmed_origin: z.string().optional(),
+      platform_revision: z.number().int().positive().optional(),
     })
     .strict(),
 ]);

@@ -14,6 +14,31 @@ import {
 export const managementUserSchema = z.object({ id: z.string(), username: z.string() });
 export type UserView = z.infer<typeof managementUserSchema>;
 
+export const managedBrowserClaimsSchema = z.object({
+  sub: z.string().min(1).max(160),
+  iat: z.number().int().nonnegative(),
+});
+export const managedBrowserBindingSchema = z.object({
+  installation_id: z.string().min(1).max(160),
+  revision: z.number().int().positive(),
+});
+export const managedBrowserProvisionSchema = managedBrowserBindingSchema.extend({
+  revision: z.number().int().nonnegative(),
+  replace: z.boolean().default(false),
+});
+export const personalBrowserProvisionSchema = managedBrowserProvisionSchema.extend({
+  name: z.string().trim().min(1).max(120).optional(),
+});
+export type BrowserEnrollmentScope = "managed" | "personal";
+export type ManagedBrowserClaims = z.infer<typeof managedBrowserClaimsSchema>;
+export type ManagedBrowserBinding = z.infer<typeof managedBrowserBindingSchema>;
+export type ManagedBrowserProvision = z.infer<typeof managedBrowserProvisionSchema>;
+export type PersonalBrowserProvision = z.infer<typeof personalBrowserProvisionSchema>;
+export const managedBrowserRedeemSchema = z.strictObject({
+  device_id: z.string().min(1).max(160),
+  bootstrap_token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+});
+
 export const deviceViewSchema = deviceMetadataSchema.extend({
   id: z.string(),
   name: z.string(),

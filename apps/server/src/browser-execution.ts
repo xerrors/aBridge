@@ -27,7 +27,7 @@ type StepTool = (typeof STEP_TOOLS)[StepMethod];
 /** All child steps enter ControlService's normal authorization and operation admission. */
 interface ExecutionOperations {
   identifyStep(key: string): string;
-  executeStep(tool: StepTool, args: JsonObject, key: string): Promise<OperationResponse>;
+  executeStep(tool: StepTool, args: JsonObject, key: string, signal: AbortSignal): Promise<OperationResponse>;
   exists(id: string): boolean;
   receipt(id: string): OperationResponse | undefined;
   complete(status: OperationState, result?: unknown, error?: OperationError): void;
@@ -67,8 +67,26 @@ export class BrowserExecutions {
     execution.controller.abort(new Error("Browser execution ended"));
     return progress;
   }
-  private progress(execution: Execution): JsonObject {
+  private pendingStep(execution: Execution): BrowserStepFailure | undefined {
     const step = execution.inFlightStep;
+    if (!step) return undefined;
+    if (!execution.operations.exists(step.operation_id))
+      return {
+        ...step,
+        status: "refused",
+        error: { code: "step_not_dispatched", message: "The step ended before device dispatch" },
+      };
+    return {
+      ...step,
+      status: "outcome_unknown",
+      error: {
+        code: "step_receipt_unconfirmed",
+        message: "Execution ended before this step had a confirmed terminal receipt",
+      },
+    };
+  }
+  private progress(execution: Execution): JsonObject {
+    const step = this.pendingStep(execution);
     const receipt = step ? execution.operations.receipt(step.operation_id) : undefined;
     // A receipt may arrive before the awaiting runtime resumes. Count it once,
     // and never describe an already confirmed step as an unknown side effect.
@@ -81,11 +99,8 @@ export class BrowserExecutions {
               status:
                 receipt && ["refused", "failed", "cancelled"].includes(receipt.status)
                   ? receipt.status
-                  : "outcome_unknown",
-              error: receipt?.error ?? {
-                code: "step_receipt_unconfirmed",
-                message: "Execution ended before this step had a confirmed terminal receipt",
-              },
+                  : step.status,
+              error: receipt?.error ?? step.error,
             },
           }
         : {}),
@@ -116,18 +131,7 @@ export class BrowserExecutions {
         args.code,
         (method, callArgs) => this.step(execution, method, callArgs),
         execution.controller.signal,
-        (): BrowserStepFailure | undefined =>
-          execution.inFlightStep
-            ? {
-                ...execution.inFlightStep,
-                status: "outcome_unknown",
-                error: {
-                  code: "step_receipt_unconfirmed",
-                  message:
-                    "Parent execution ended before this step had a confirmed terminal receipt; query its operation_id before continuing",
-                },
-              }
-            : undefined,
+        () => this.pendingStep(execution),
       )
       .then(
         (result) => operations.complete("executed", result),
@@ -161,7 +165,12 @@ export class BrowserExecutions {
     execution.inFlightStep = { operation_id: id, method };
     let response: OperationResponse;
     try {
-      response = await execution.operations.executeStep(STEP_TOOLS[method as StepMethod], args, key);
+      response = await execution.operations.executeStep(
+        STEP_TOOLS[method as StepMethod],
+        args,
+        key,
+        execution.controller.signal,
+      );
     } catch (caught) {
       // Admission only creates a record after validation and authorization. An
       // existing record means delivery or a receipt may already be in flight.

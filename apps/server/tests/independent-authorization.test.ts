@@ -28,7 +28,7 @@ for (const change of ["revoke", "pause", "disable"] as const)
         { capabilities: { files: true } },
         transport,
       );
-      const session = control.openSession(agentConnection, device.id, ["files"]);
+      const session = await control.openSession(agentConnection, device.id, ["files"]);
       const started = await control.execute(
         agentConnection,
         session.id,
@@ -151,7 +151,7 @@ test("sensitive result that finishes after a local pause cannot escape an existi
       { capabilities: { files: true } },
       { async send() {}, async close() {} },
     );
-    const session = control.openSession(agentConnection, device.id, ["files"]);
+    const session = await control.openSession(agentConnection, device.id, ["files"]);
     const started = await control.execute(
       agentConnection,
       session.id,
@@ -202,7 +202,7 @@ test("terminal results survive a normal disconnect but retain the last local pau
       { capabilities: { files: true } },
       transport,
     );
-    const session = control.openSession(agentConnection, device.id, ["files"]);
+    const session = await control.openSession(agentConnection, device.id, ["files"]);
     const started = await control.execute(
       agentConnection,
       session.id,

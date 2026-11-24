@@ -74,7 +74,7 @@ test("browser code shares session state, forwards steps, deduplicates and yields
       }),
     );
     await welcome;
-    const session = server.control.openSession(agentConnection.agentConnection, device.device.id, [
+    const session = await server.control.openSession(agentConnection.agentConnection, device.device.id, [
       "browser",
     ]);
     async function run(code: string, id: string, timeout = 20000): Promise<OperationResponse> {
@@ -239,7 +239,9 @@ test("browser code shares session state, forwards steps, deduplicates and yields
     );
     assert.ok(["outcome_unknown", "cancelled"].includes(stopped.status), JSON.stringify(stopped));
     await server.control.closeSession(agentConnection.agentConnection, session.id);
-    const next = server.control.openSession(agentConnection.agentConnection, device.device.id, ["browser"]);
+    const next = await server.control.openSession(agentConnection.agentConnection, device.device.id, [
+      "browser",
+    ]);
     const clean = await server.control.execute(
       agentConnection.agentConnection,
       next.id,
@@ -258,7 +260,13 @@ test("browser code shares session state, forwards steps, deduplicates and yields
   }
 });
 
-for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-receipt"] as const)
+for (const ending of [
+  "disconnect",
+  "disconnect-zero",
+  "before-dispatch",
+  "rotate",
+  "confirmed-receipt",
+] as const)
   test(`browser execution preserves step diagnostics on ${ending}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "abridge-browser-progress-"));
     const store = new Store(join(directory, "server.db"));
@@ -282,6 +290,13 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
         "browser",
         { capabilities: { browser: true } },
         {
+          async probe() {
+            if (ending === "before-dispatch" && frames.length === 1) {
+              reached();
+              return false;
+            }
+            return true;
+          },
           async send(frame) {
             if (frame.type !== "dispatch") return;
             frames.push(frame);
@@ -307,7 +322,7 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
           async close() {},
         },
       );
-      const session = control.openSession(agentConnection, device.device.id, ["browser"]);
+      const session = await control.openSession(agentConnection, device.device.id, ["browser"]);
       const started = await control.execute(
         agentConnection,
         session.id,
@@ -320,14 +335,20 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
         false,
       );
       await dispatched;
-      if (ending === "disconnect" || ending === "disconnect-zero") control.dropConnection(ticket);
+      if (ending === "disconnect" || ending === "disconnect-zero" || ending === "before-dispatch")
+        control.dropConnection(ticket);
       if (ending === "rotate") ({ agentConnection } = await control.rotateAgentConnection(agentConnection));
       const result = control.operationStatus(agentConnection, started.operation_id);
       assert.equal(result.status, "outcome_unknown");
       const progress = result.result as JsonObject;
       assert.equal(progress.steps_completed, ending === "disconnect-zero" ? 0 : 1, JSON.stringify(result));
       if (ending === "confirmed-receipt") assert.equal(progress.failed_step, undefined);
-      else {
+      else if (ending === "before-dispatch") {
+        const failed = progress.failed_step as JsonObject;
+        assert.equal(store.operation(String(failed.operation_id)), undefined);
+        assert.equal(failed.method, "locate_act");
+        assert.equal(failed.status, "refused");
+      } else {
         const failed = progress.failed_step as JsonObject;
         assert.equal(failed.operation_id, frames[ending === "disconnect-zero" ? 0 : 1]!.operation_id);
         assert.equal(failed.method, ending === "disconnect-zero" ? "read" : "locate_act");
@@ -336,7 +357,7 @@ for (const ending of ["disconnect", "disconnect-zero", "rotate", "confirmed-rece
       await new Promise((resolve) => setTimeout(resolve, 30));
       assert.equal(
         frames.length,
-        ending === "confirmed-receipt" || ending === "disconnect-zero" ? 1 : 2,
+        ending === "disconnect" || ending === "rotate" ? 2 : 1,
         "No queued step may run",
       );
       assert.deepEqual(
@@ -390,13 +411,16 @@ test("native input receipt deadline includes the hold and verification budgets",
       "browser",
       { capabilities: { browser: true } },
       {
+        async probe() {
+          return true;
+        },
         async send(frame) {
           frames.push(frame);
         },
         async close() {},
       },
     );
-    const session = control.openSession(agentConnection, device.device.id, ["browser"]);
+    const session = await control.openSession(agentConnection, device.device.id, ["browser"]);
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
     for (const tool of ["browser_act", "browser_locate_act"] as const) {

@@ -20,12 +20,16 @@ import {
   deviceAuthorizationDecisionSchema,
   deviceAuthorizationTokenRequestSchema,
   deviceAuthorizationCancelSchema,
+  managedBrowserBindingSchema,
+  managedBrowserProvisionSchema,
+  personalBrowserProvisionSchema,
+  managedBrowserRedeemSchema,
   adminCreateUserSchema,
   type AdminOverview,
 } from "@abridge/protocol";
 import { Identity, validateIdentityConfig, type IdentityConfig } from "./identity.js";
 import { AdminAuth, ADMIN_SESSION_SECONDS, loadAdminToken } from "./admin.js";
-import { Store, acquireInstanceLock } from "./store.js";
+import { Store, acquireInstanceLock, type BrowserEnrollmentIdentity } from "./store.js";
 import { DeviceAuthorizations } from "./device-authorization.js";
 import { ControlService } from "./control.js";
 import { createMcpServer } from "./mcp.js";
@@ -144,6 +148,7 @@ export async function createServer(config: ServerConfig) {
     const extensionAuthorization =
       (pathname === "/api/device-authorizations" && request.method === "POST") ||
       (pathname === "/api/device-authorizations/token" && request.method === "POST") ||
+      (pathname === "/api/managed-browsers/abandon" && request.method === "POST") ||
       (pathname === "/api/device" && ["GET", "PATCH"].includes(request.method)) ||
       (/^\/api\/device-authorizations\/[^/]+$/.test(pathname) && request.method === "DELETE");
     if (pathname === "/ws/browser" || (extensionAuthorization && browserOrigin.test(origin))) {
@@ -365,9 +370,25 @@ export async function createServer(config: ServerConfig) {
     return control.deviceView(store.device(device.id)!);
   });
   app.get("/api/device", async (request) => {
-    const device = store.authenticateDevice(bearer(request));
+    const key = bearer(request);
+    const active = store.authenticateDevice(key);
+    const device =
+      active ?? (identity.managedBrowserEnabled ? store.browserReplacementDevice(key) : undefined);
     if (!device) throw new BridgeError("unauthorized", "设备 Token 无效或已撤销", 401);
-    return { id: device.id, name: device.name, kind: device.kind, capabilities: device.capabilities };
+    const revision =
+      device.kind === "browser"
+        ? active
+          ? store.browserEnrollmentRevision(device.id)
+          : store.browserReplacement(device.id)?.revision
+        : undefined;
+    return {
+      id: device.id,
+      name: device.name,
+      kind: device.kind,
+      capabilities: device.capabilities,
+      ...(revision !== undefined && { revision }),
+      ...(!active && { pending: true }),
+    };
   });
   app.patch("/api/device", async (request) => {
     const device = store.authenticateDevice(bearer(request));
@@ -392,7 +413,7 @@ export async function createServer(config: ServerConfig) {
   app.post("/api/devices/:id/credentials", async (request) => {
     const device = owned(request);
     if (device.revoked_at !== null) throw new BridgeError("revoked", "Device was revoked", 409);
-    const key = store.rotateDevice(device.id);
+    const key = store.rotateDeviceCredentials(device.id);
     await control.invalidateDevice(device.id);
     store.audit(device.owner_id, device.id, null, null, "device_credentials", "rotated");
     return { id: device.id, key };
@@ -497,6 +518,131 @@ export async function createServer(config: ServerConfig) {
       request.headers.origin,
     );
   });
+  function browserBindingView(
+    row: NonNullable<ReturnType<Store["managedBrowser"]> | ReturnType<Store["personalBrowser"]>>,
+  ) {
+    const device = store.device(row.device_id)!;
+    const view = control.deviceView(device);
+    const revoked =
+      view.status === "revoked" ||
+      ("agent_connection_id" in row && store.agentConnection(row.agent_connection_id)?.revoked_at !== null);
+    return {
+      installation_id: row.installation_id,
+      revision: row.revision,
+      device_id: row.device_id,
+      key_issued: !!row.key_issued,
+      status: revoked
+        ? "revoked"
+        : control.isLocalCapabilityBlocked(row.device_id, "browser")
+          ? "paused"
+          : view.status,
+    };
+  }
+
+  function browserReplacementView(row: NonNullable<ReturnType<Store["browserReplacement"]>>) {
+    return {
+      installation_id: row.installation_id,
+      revision: row.revision,
+      device_id: row.device_id,
+      key_issued: row.key_digest !== null,
+      status: "offline",
+      pending: true,
+      expires_at: row.expires_at,
+    };
+  }
+
+  for (const scope of ["managed", "personal"] as const) {
+    const path = `/api/${scope}-browsers`;
+    const registration = (grant: BrowserEnrollmentIdentity) =>
+      scope === "managed" ? store.managedBrowser(grant) : store.personalBrowser(grant);
+    app.get(path + "/status", async (request, reply) => {
+      const { grant } = await identity.authenticateBrowserEnrollment(bearer(request), scope, "status");
+      const row = registration(grant);
+      const replacement = row && store.browserReplacement(row.device_id);
+      reply.header("Cache-Control", "no-store");
+      return {
+        version: 2,
+        enabled: identity.managedBrowserEnabled,
+        browser_origin: publicOrigin!.origin,
+        binding: row ? browserBindingView(row) : null,
+        ...(replacement && { replacement: browserReplacementView(replacement) }),
+      };
+    });
+    app.post(path + "/provision", async (request, reply) => {
+      const { grant, payload } = await identity.authenticateBrowserEnrollment(
+        bearer(request),
+        scope,
+        "provision",
+      );
+      const existing = registration(grant);
+      if (existing && browserBindingView(existing).status === "paused")
+        throw new BridgeError("device_paused", "Resume the browser's local access before provisioning", 409);
+      const { row, replacement } =
+        scope === "managed"
+          ? store.provisionManagedBrowser(grant, managedBrowserProvisionSchema.parse(payload))
+          : store.provisionPersonalBrowser(
+              grant,
+              personalBrowserProvisionSchema.parse(payload),
+              config.identity?.clientName?.trim(),
+            );
+      const view = browserBindingView(row);
+      if (view.status === "revoked")
+        throw new BridgeError("managed_browser_revoked", "Browser access was revoked", 403);
+      reply.header("Cache-Control", "no-store");
+      if (replacement)
+        return {
+          ...browserReplacementView(replacement),
+          key_issued: false,
+          bootstrap_token: store.issueReplacementBootstrap(replacement),
+        };
+      return {
+        ...view,
+        bootstrap_token: store.issueBrowserBootstrap(row, scope),
+      };
+    });
+  }
+  app.post("/api/managed-browsers/redeem", async (request, reply) => {
+    if (!identity.managedBrowserEnabled)
+      throw new BridgeError("managed_browser_disabled", "Managed browsers are not enabled", 404);
+    rateLimit(request, "managed-browser-redeem", 120);
+    const body = managedBrowserRedeemSchema.parse(request.body);
+    const { device, key, pending, revision } = store.redeemManagedBrowser(
+      body.device_id,
+      body.bootstrap_token,
+      control.isLocalCapabilityBlocked(body.device_id, "browser"),
+    );
+    if (!pending) {
+      await control.invalidateDevice(device.id);
+      if (!store.authenticateDevice(key))
+        throw new BridgeError("stale_binding", "The browser binding changed", 409);
+    }
+    reply.header("Cache-Control", "no-store");
+    return {
+      device_id: device.id,
+      key,
+      pending,
+      revision,
+      kind: device.kind,
+      name: device.name,
+      capabilities: device.capabilities,
+    };
+  });
+  app.post("/api/managed-browsers/abandon", async (request) => {
+    rateLimit(request, "browser-replacement-abandon", 120);
+    return { status: store.abandonBrowserReplacement(bearer(request)) };
+  });
+  app.post("/api/managed-browsers/stop", async (request, reply) => {
+    const { grant, payload } = await identity.authenticateBrowserEnrollment(
+      bearer(request),
+      "managed",
+      "stop",
+    );
+    const row = store.stopManagedBrowser(grant, managedBrowserBindingSchema.parse(payload));
+    await control.invalidateDevice(row.device_id);
+    reply.header("Cache-Control", "no-store");
+    return browserBindingView(row);
+  });
+
   app.all("/mcp", async (request, reply) => {
     const token = bearer(request);
     const agentConnection = store.authenticateAgent(token) ?? (await identity.authenticate(token));
@@ -517,6 +663,10 @@ export async function createServer(config: ServerConfig) {
       void mcp.close().catch(() => {});
     };
     reply.raw.once("close", cleanup);
+    if (reply.raw.destroyed) {
+      cleanup();
+      return;
+    }
     try {
       await transport.handleRequest(request.raw, reply.raw, request.body);
     } catch {
@@ -582,7 +732,14 @@ export async function createServer(config: ServerConfig) {
                 const key = kind === "browser" ? hello.device_key : bearer(request);
                 if (typeof key !== "string")
                   throw new BridgeError("unauthorized", "Device key is required", 401);
-                ticket = await control.attachConnection(key, kind, hello, transport);
+                ticket = await control.attachConnection(
+                  key,
+                  kind,
+                  hello,
+                  transport,
+                  identity.managedBrowserEnabled,
+                  () => !closed && socket.readyState === socket.OPEN,
+                );
                 clearTimeout(timer);
                 if (closed) {
                   control.dropConnection(ticket);
@@ -592,9 +749,13 @@ export async function createServer(config: ServerConfig) {
               }
               await control.receive(ticket, message);
             })
-            .catch(async () => {
+            .catch(async (error: unknown) => {
               closed = true;
               clearTimeout(timer);
+              if (!ticket && error instanceof BridgeError && error.status === 401) {
+                await transport.close(4401, "Device key is invalid or revoked");
+                return;
+              }
               if (ticket) control.dropConnection(ticket, "invalid_message", 4400);
               await transport.close(4400, "Invalid or stale device message");
             })

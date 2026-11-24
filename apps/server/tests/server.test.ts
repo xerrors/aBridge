@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { createServer } from "../src/server.js";
@@ -26,9 +27,10 @@ async function fixture() {
     },
   };
 }
-async function rpc(url: string, key: string, name: string, args: JsonObject = {}) {
+async function rpc(url: string, key: string, name: string, args: JsonObject = {}, signal?: AbortSignal) {
   const response = await fetch(url + "/mcp", {
     method: "POST",
+    signal,
     headers: {
       authorization: "Bearer " + key,
       "content-type": "application/json",
@@ -53,11 +55,12 @@ async function connect(
   kind = "computer",
   onDispatch?: (frame: JsonObject, socket: WebSocket) => void,
   platform = kind === "browser" ? "Browser extension" : "darwin",
+  autoPong = true,
 ) {
   const socket = new WebSocket(
     f.url.replace("http:", "ws:") + "/ws/" + (kind === "browser" ? "browser" : "device"),
     kind === "browser"
-      ? { origin: "chrome-extension://" + "a".repeat(32) }
+      ? { origin: "chrome-extension://" + "a".repeat(32), autoPong }
       : { headers: { authorization: "Bearer " + key } },
   );
   socket.on("message", (data) => {
@@ -499,6 +502,322 @@ test("session_open returns the same device summary as devices_list across platfo
   }
 });
 
+test("a new browser session waits for the same device to reconnect after a stale socket", async () => {
+  const f = await fixture();
+  try {
+    const user = await f.store.createUser("resume-browser", "synthetic-fixture-password");
+    const device = f.store.createDevice(user.id, "Browser", ["browser"], "browser");
+    const agent = f.store.createAgentConnection(user.id, "Fixture", {
+      mode: "all",
+      capabilities: ["browser"],
+      overrides: [],
+    });
+    const open = () =>
+      rpc(f.url, agent.key, "session_open", { device_id: device.device.id, capabilities: ["browser"] });
+    const oldDispatches: JsonObject[] = [];
+    const stale = await connect(
+      f,
+      device.key,
+      "browser",
+      (frame) => oldDispatches.push(frame),
+      undefined,
+      false,
+    );
+    const echo = (nonce: Buffer) => stale.socket.pong(nonce);
+    stale.socket.on("ping", echo);
+    const oldSession = (await open()).value;
+    const inFlight = await f.control.execute(
+      agent.agentConnection,
+      oldSession.id,
+      "browser_open",
+      { url: "https://fixture.invalid/" },
+      "old-navigation",
+      false,
+    );
+    stale.socket.off("ping", echo);
+
+    const challenged = once(stale.socket, "ping");
+    const retired = once(stale.socket, "close");
+    const opening = open();
+    assert.equal(
+      await Promise.race([challenged.then(() => "challenged"), opening.then(() => "opened")]),
+      "challenged",
+    );
+    const [nonce] = await challenged;
+    const wrongNonce = Buffer.from(nonce);
+    wrongNonce[0] ^= 1;
+    stale.socket.pong(wrongNonce);
+    await retired;
+    assert.equal(f.store.session(oldSession.id)?.status, "connection_lost");
+    assert.equal(f.store.operation(inFlight.operation_id)?.status, "outcome_unknown");
+    assert.equal(oldDispatches.length, 1);
+    assert.equal(oldDispatches[0]!.operation_id, inFlight.operation_id);
+    assert.deepEqual(f.store.sessions(device.device.id), []);
+    const offlineOpening = f.control.openSession(agent.agentConnection, device.device.id, ["browser"]);
+    assert.equal(await Promise.race([offlineOpening.then(() => "opened"), delay(50, "waiting")]), "waiting");
+
+    const dispatches: JsonObject[] = [];
+    const fresh = await connect(f, device.key, "browser", (frame, socket) => {
+      dispatches.push(frame);
+      socket.send(
+        JSON.stringify({
+          type: "result",
+          operation_id: frame.operation_id,
+          connection_epoch: frame.connection_epoch,
+          status: "executed",
+          result: { text: "fresh browser" },
+        }),
+      );
+    });
+    const opened = await opening;
+    assert.equal(opened.isError, undefined);
+    assert.notEqual(opened.value.id, oldSession.id);
+    const offlineOpened = await offlineOpening;
+    assert.notEqual(offlineOpened.id, oldSession.id);
+    assert.notEqual(offlineOpened.id, opened.value.id);
+    assert.equal(offlineOpened.device_id, device.device.id);
+    assert.ok(fresh.welcome.connection_epoch > stale.welcome.connection_epoch);
+    await assert.rejects(f.control.execute(agent.agentConnection, oldSession.id, "browser_read", {}), {
+      code: "session_connection_lost",
+    });
+    const read = () =>
+      rpc(f.url, agent.key, "browser_read", { session_id: opened.value.id, operation_id: "fresh-read" });
+    const receipts = await Promise.all([read(), read()]);
+    const receipt = receipts.find(({ value }) => value.status === "executed");
+    assert.ok(receipt);
+    assert.equal(receipt.value.status, "executed");
+    assert.equal(receipt.value.result.text, "fresh browser");
+    assert.equal(receipts[0]!.value.operation_id, receipts[1]!.value.operation_id);
+    assert.equal(dispatches.length, 1);
+    assert.equal(dispatches[0]!.connection_epoch, fresh.welcome.connection_epoch);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("browser session waiting offline rechecks the device key and Agent connection", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.store.createUser("offline-browser", "synthetic-fixture-password");
+    const { device } = f.store.createDevice(owner.id, "Browser", ["browser"], "browser");
+    const policy = { mode: "all" as const, capabilities: ["browser" as const], overrides: [] };
+    const revoked = f.store.createAgentConnection(owner.id, "Revoked", policy);
+    const active = f.store.createAgentConnection(owner.id, "Active", policy);
+    const mustReject = async (opening: Promise<unknown>, code: string) => {
+      await assert.rejects(opening, { code });
+      assert.deepEqual(f.store.sessions(device.id), []);
+    };
+    const revokedWait = mustReject(
+      f.control.openSession(revoked.agentConnection, device.id, ["browser"]),
+      "unauthorized",
+    );
+    f.store.revokeAgentConnection(revoked.agentConnection.id);
+    await revokedWait;
+    const rotatedWait = mustReject(
+      f.control.openSession(active.agentConnection, device.id, ["browser"]),
+      "device_offline",
+    );
+    f.store.rotateDevice(device.id);
+    await rotatedWait;
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("browser session opening respects a local pause after its socket closes", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.store.createUser("paused-offline-browser", "synthetic-fixture-password");
+    const { device, key } = f.store.createDevice(owner.id, "Browser", ["browser"], "browser");
+    const agent = f.store.createAgentConnection(owner.id, "Fixture", {
+      mode: "all",
+      capabilities: ["browser"],
+      overrides: [],
+    });
+    const { socket, welcome } = await connect(f, key, "browser");
+    const message = once(socket, "message");
+    socket.send(
+      JSON.stringify({ type: "heartbeat", paused: true, connection_epoch: welcome.connection_epoch }),
+    );
+    assert.equal(JSON.parse((await message)[0].toString()).type, "stop");
+    const closed = once(socket, "close");
+    socket.close();
+    await closed;
+    const deadline = Date.now() + 5000;
+    while (f.control.deviceView(device).status !== "offline" && Date.now() < deadline) await delay(10);
+    assert.equal(f.control.deviceView(device).status, "offline");
+    await assert.rejects(f.control.openSession(agent.agentConnection, device.id, ["browser"]), {
+      code: "device_paused",
+    });
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("a browser transport without liveness confirmation cannot create a session", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.store.createUser("unverified-browser", "synthetic-fixture-password");
+    const device = f.store.createDevice(owner.id, "Browser", ["browser"], "browser");
+    const agent = f.store.createAgentConnection(owner.id, "Fixture", {
+      mode: "all",
+      capabilities: ["browser"],
+      overrides: [],
+    });
+    await f.control.attachConnection(
+      device.key,
+      "browser",
+      { capabilities: { browser: true } },
+      {
+        async send() {},
+        async close() {},
+      },
+    );
+    const refused = await rpc(f.url, agent.key, "session_open", {
+      device_id: device.device.id,
+      capabilities: ["browser"],
+    });
+    assert.equal(refused.value.error.code, "device_offline");
+    assert.deepEqual(f.store.sessions(device.device.id), []);
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("browser dispatch rechecks authorization after its WebSocket challenge", async () => {
+  const f = await fixture();
+  try {
+    const user = await f.store.createUser("revoked-browser", "synthetic-fixture-password");
+    const device = f.store.createDevice(user.id, "Browser", ["browser"], "browser");
+    const agent = f.store.createAgentConnection(user.id, "Fixture", {
+      mode: "all",
+      capabilities: ["browser"],
+      overrides: [],
+    });
+    const dispatches: JsonObject[] = [];
+    const { socket } = await connect(
+      f,
+      device.key,
+      "browser",
+      (frame) => dispatches.push(frame),
+      undefined,
+      false,
+    );
+    const echo = (nonce: Buffer) => socket.pong(nonce);
+    socket.on("ping", echo);
+    const session = await f.control.openSession(agent.agentConnection, device.device.id, ["browser"]);
+    socket.off("ping", echo);
+
+    const challenged = once(socket, "ping");
+    const execution = f.control.execute(
+      agent.agentConnection,
+      session.id,
+      "browser_read",
+      {},
+      undefined,
+      false,
+    );
+    assert.equal(
+      await Promise.race([challenged.then(() => "challenged"), execution.then(() => "dispatched")]),
+      "challenged",
+    );
+    f.store.revokeAgentConnection(agent.agentConnection.id);
+    socket.pong((await challenged)[0]);
+    await assert.rejects(execution, { code: "unauthorized" });
+    assert.deepEqual(dispatches, []);
+  } finally {
+    await f.dispose();
+  }
+});
+
+for (const tool of ["session_open", "browser_read", "browser_exec"] as const) {
+  test(`closing the MCP HTTP request prevents ${tool} admission during a browser challenge`, async (t) => {
+    const f = await fixture();
+    try {
+      const user = await f.store.createUser("cancelled-browser", "synthetic-fixture-password");
+      const device = f.store.createDevice(user.id, "Browser", ["browser"], "browser");
+      const agent = f.store.createAgentConnection(user.id, "Fixture", {
+        mode: "all",
+        capabilities: ["browser"],
+        overrides: [],
+      });
+      const dispatches: JsonObject[] = [];
+      const collect = (frame: JsonObject) => dispatches.push(frame);
+      const { socket, welcome } = await connect(f, device.key, "browser", collect, undefined, false);
+      const openSession = t.mock.method(f.control, "openSession");
+      const execute = t.mock.method(f.control, "execute");
+      const echo = (nonce: Buffer) => socket.pong(nonce);
+      const operationId = "fixture-cancel";
+      let sessionId: string | undefined;
+      let args: JsonObject = { device_id: device.device.id, capabilities: ["browser"] };
+      if (tool !== "session_open") {
+        socket.on("ping", echo);
+        const session = await f.control.openSession(agent.agentConnection, device.device.id, ["browser"]);
+        socket.off("ping", echo);
+        sessionId = session.id;
+        args = {
+          session_id: sessionId,
+          operation_id: operationId,
+          ...(tool === "browser_exec" ? { code: "return await page.read();" } : {}),
+        };
+      }
+
+      const caller = new AbortController();
+      const disconnected = new Promise<void>((resolve) => {
+        f.app.server.once("request", (_request, response) => response.once("close", () => resolve()));
+      });
+      const challenge = once(socket, "ping");
+      const requested = rpc(f.url, agent.key, tool, args, caller.signal);
+      assert.equal(
+        await Promise.race([challenge.then(() => "challenged"), requested.then(() => "accepted")]),
+        "challenged",
+      );
+      const surviving =
+        tool === "session_open"
+          ? f.control.openSession(agent.agentConnection, device.device.id, ["browser"])
+          : undefined;
+      caller.abort();
+      await assert.rejects(requested, { name: "AbortError" });
+      await disconnected;
+      const admission = (tool === "session_open" ? openSession : execute).mock.calls[0]?.result;
+      assert.ok(admission);
+      assert.equal(
+        await Promise.race([
+          assert.rejects(admission, /aborted|connection closed/i).then(() => "cancelled"),
+          delay(1000, "waiting"),
+        ]),
+        "cancelled",
+        "the request should be released before the shared probe times out",
+      );
+
+      if (sessionId) {
+        const [nonce] = await challenge;
+        const acknowledgement = once(socket, "message");
+        socket.pong(nonce);
+        socket.send(JSON.stringify({ type: "heartbeat", connection_epoch: welcome.connection_epoch }));
+        assert.equal(JSON.parse((await acknowledgement)[0].toString()).type, "heartbeat_ack");
+        const keyHash = createHash("sha256")
+          .update(JSON.stringify([agent.agentConnection.id, sessionId, operationId]))
+          .digest("base64url");
+        assert.equal(f.store.operationForKey(keyHash), undefined);
+      } else {
+        assert.deepEqual(f.store.sessions(device.device.id), []);
+        const [nonce] = await challenge;
+        socket.pong(nonce);
+        const session = await surviving;
+        assert.ok(session);
+        assert.deepEqual(
+          f.store.sessions(device.device.id).map(({ id }) => id),
+          [session.id],
+        );
+      }
+      assert.deepEqual(dispatches, []);
+    } finally {
+      await f.dispose();
+    }
+  });
+}
+
 test("MCP input occupancy exposes only this connection's recoverable sessions", async () => {
   const f = await fixture();
   try {
@@ -553,7 +872,7 @@ test("browser is an independent device; revocation during wait blocks result acc
     const { socket } = await connect(f, device.key, "browser", (frame) => {
       dispatch = frame;
     });
-    const session = f.control.openSession(g.agentConnection, device.device.id, ["browser"]);
+    const session = await f.control.openSession(g.agentConnection, device.device.id, ["browser"]);
     const pending = f.control.execute(g.agentConnection, session.id, "browser_open", {
       url: "https://example.com",
     });
@@ -569,7 +888,10 @@ test("browser is an independent device; revocation during wait blocks result acc
       }),
     );
     await assert.rejects(pending, (error) => error instanceof BridgeError && error.code === "unauthorized");
-    assert.throws(() => f.control.openSession(g.agentConnection, device.device.id, ["shell"]), BridgeError);
+    await assert.rejects(
+      () => f.control.openSession(g.agentConnection, device.device.id, ["shell"]),
+      BridgeError,
+    );
     socket.close();
   } finally {
     await f.dispose();
@@ -699,6 +1021,62 @@ test("Device Token verification returns only its identity, rejects other credent
       401,
     );
   } finally {
+    await f.dispose();
+  }
+});
+
+test("browser socket distinguishes invalidated Device Keys from protocol errors", async () => {
+  const f = await fixture();
+  let online: WebSocket | undefined;
+  async function rejectedHello(deviceKey: string, code: number, protocol = "abridge/1") {
+    const socket = new WebSocket(f.url.replace("http:", "ws:") + "/ws/browser", {
+      origin: "chrome-extension://" + "a".repeat(32),
+    });
+    let received = 0;
+    socket.on("message", () => received++);
+    try {
+      await once(socket, "open", { signal: AbortSignal.timeout(3000) });
+      const closed = once(socket, "close", { signal: AbortSignal.timeout(3000) });
+      socket.send(
+        JSON.stringify({
+          type: "hello",
+          protocol,
+          platform: "Browser extension",
+          version: "0.5.0",
+          paused: false,
+          instance_id: "server-test-instance",
+          device_key: deviceKey,
+          capabilities: { browser: true },
+        }),
+      );
+      assert.equal((await closed)[0], code);
+      assert.equal(received, 0);
+    } finally {
+      socket.terminate();
+    }
+  }
+  try {
+    const owner = await f.store.createUser("browser-owner", "fixture-password-123");
+    const { device, key } = f.store.createDevice(owner.id, "Fixture Browser", ["browser"], "browser");
+    const session = await f.store.login(owner.username, "fixture-password-123");
+    const headers = { cookie: "abridge_session=" + session!.token };
+    const path = f.url + "/api/devices/" + device.id;
+    const rotation = await fetch(path + "/credentials", { method: "POST", headers });
+    assert.equal(rotation.status, 200);
+    const freshKey = (await rotation.json()).key as string;
+    await rejectedHello(key, 4401);
+    await rejectedHello(freshKey, 4400, "abridge/unknown");
+    const connected = await connect(f, freshKey, "browser");
+    online = connected.socket;
+    assert.equal(connected.welcome.device_id, device.id);
+
+    const closed = once(online, "close", { signal: AbortSignal.timeout(3000) });
+    assert.equal((await fetch(path + "/revoke", { method: "POST", headers })).status, 200);
+    assert.equal((await closed)[0], 4403);
+    await rejectedHello(freshKey, 4401);
+    assert.ok(f.store.device(device.id)?.revoked_at);
+  } finally {
+    online?.terminate();
     await f.dispose();
   }
 });

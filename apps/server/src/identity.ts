@@ -1,5 +1,16 @@
 import * as oidc from "openid-client";
-import { createRemoteJWKSet, jwtVerify, customFetch as jwksFetch, errors as joseErrors } from "jose";
+import {
+  createRemoteJWKSet,
+  jwtVerify,
+  customFetch as jwksFetch,
+  errors as joseErrors,
+  type JWTPayload,
+} from "jose";
+import {
+  managedBrowserBindingSchema,
+  managedBrowserClaimsSchema,
+  type BrowserEnrollmentScope,
+} from "@abridge/protocol";
 import { digest, Store } from "./store.js";
 import { BridgeError, type AgentConnection } from "./types.js";
 
@@ -9,6 +20,7 @@ export interface IdentityConfig {
   clientName?: string;
   clientSecret?: string;
   delegationEnabled?: boolean;
+  managedBrowserEnabled?: boolean;
   backchannelOrigin?: string;
   allowInsecureHttp?: boolean;
 }
@@ -83,9 +95,12 @@ export function validateIdentityConfig(config: IdentityConfig, origin: string | 
       config.clientName ||
       config.clientSecret ||
       config.delegationEnabled ||
+      config.managedBrowserEnabled ||
       config.backchannelOrigin)
   )
     throw new Error("OIDC issuer is required");
+  if (config.managedBrowserEnabled && !config.delegationEnabled)
+    throw new Error("Managed browsers require OIDC platform delegation");
   if (config.backchannelOrigin) {
     const backchannel = new URL(config.backchannelOrigin);
     if (!/^https?:$/.test(backchannel.protocol) || backchannel.origin !== config.backchannelOrigin)
@@ -213,8 +228,12 @@ export class Identity {
     );
     return { token: this.store.createLogin(user.id), returnTo: pending.returnTo };
   }
-  /** 委托只接受特定受众、用途和客户端的短期签名令牌。 */
-  async authenticate(token: string): Promise<AgentConnection | undefined> {
+  get managedBrowserEnabled(): boolean {
+    return this.config.managedBrowserEnabled === true;
+  }
+
+  /** 委托只接受特定受众和客户端的短期签名令牌。调用方另行约束用途。 */
+  private async verifyPlatformToken(token: string, path: string) {
     if (!this.config.delegationEnabled || !token || token.length > 16384) return undefined;
     const config = await this.getConfiguration();
     if (!this.keys)
@@ -226,7 +245,7 @@ export class Identity {
     try {
       ({ payload } = await jwtVerify(token, this.keys, {
         issuer: this.config.issuer!,
-        audience: this.origin + "/mcp",
+        audience: this.origin + path,
         algorithms: ["RS256"],
         requiredClaims: ["sub", "iat", "exp"],
         maxTokenAge: 60,
@@ -246,7 +265,6 @@ export class Identity {
     }
     const now = Date.now() / 1000;
     if (
-      payload.purpose !== "abridge-delegation" ||
       payload.client_id !== this.config.clientId ||
       typeof payload.iat !== "number" ||
       typeof payload.exp !== "number" ||
@@ -255,7 +273,46 @@ export class Identity {
       !payload.sub
     )
       return undefined;
-    return this.store.delegatedAgentConnection(this.config.issuer!, payload.sub, this.config.clientId!);
+    return payload;
+  }
+
+  private browserIdentity(payload: JWTPayload | undefined) {
+    if (!payload || typeof payload.aud !== "string") return undefined;
+    const result = managedBrowserClaimsSchema.safeParse(payload);
+    if (!result.success) return undefined;
+    return {
+      ...result.data,
+      issuer: this.config.issuer!,
+      client_id: this.config.clientId!,
+    };
+  }
+
+  /** 个人登记与工作负载登记各自使用专用受众与用途。 */
+  async authenticateBrowserEnrollment(
+    token: string,
+    scope: BrowserEnrollmentScope,
+    action: "status" | "provision" | "stop",
+  ) {
+    if (action === "provision" && !this.managedBrowserEnabled)
+      throw new BridgeError("managed_browser_disabled", "Managed browsers are not enabled", 404);
+    const payload = await this.verifyPlatformToken(token, `/api/${scope}-browsers/${action}`);
+    const grant = this.browserIdentity(payload);
+    if (!grant || payload?.purpose !== `abridge-${scope}-browser-${action}`)
+      throw new BridgeError("unauthorized", "A browser enrollment grant is required", 401);
+    return { grant, payload };
+  }
+
+  async authenticate(token: string): Promise<AgentConnection | undefined> {
+    const payload = await this.verifyPlatformToken(token, "/mcp");
+    if (payload?.purpose !== "abridge-delegation") return undefined;
+    if (payload.installation_id !== undefined || payload.revision !== undefined) {
+      const grant = this.browserIdentity(payload);
+      const binding = managedBrowserBindingSchema.safeParse(payload);
+      if (this.managedBrowserEnabled && grant && binding.success)
+        return this.store.managedBrowserConnection(grant, binding.data);
+      return undefined;
+    }
+    return this.store.delegatedAgentConnection(this.config.issuer!, payload.sub!, this.config.clientId!);
   }
   private getConfiguration(): Promise<oidc.Configuration> {
     if (!this.enabled) throw new BridgeError("oidc_disabled", "External login is not configured", 404);

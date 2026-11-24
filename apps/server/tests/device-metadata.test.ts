@@ -280,8 +280,8 @@ test("Android interaction state gates UI capabilities independently of connectiv
   const f = await fixture("computer", ["screen", "input", "files"]);
   try {
     const ticket = await f.attach({ platform: "android", interaction_state: "ready" });
-    const ui = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
-    const files = f.control.openSession(f.agentConnection, f.device.id, ["files"]);
+    const ui = await f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    const files = await f.control.openSession(f.agentConnection, f.device.id, ["files"]);
     const report = (interaction_state: "locked" | "screen_off" | "ready") =>
       f.control.receive(ticket, {
         type: "heartbeat",
@@ -298,13 +298,14 @@ test("Android interaction state gates UI capabilities independently of connectiv
       assert.equal(view.status, "online");
       assert.equal(view.interaction_state, state);
       assert.deepEqual(view.available, { screen: false, input: false, files: true });
-      assert.throws(() => f.control.openSession(f.agentConnection, f.device.id, ["screen"]), { code });
+      await assert.rejects(f.control.openSession(f.agentConnection, f.device.id, ["screen"]), { code });
       assert.equal(f.store.session(ui.id)?.status, "stopped");
       assert.equal(f.store.session(files.id)?.status, "active");
     }
     await report("ready");
     assert.equal(f.view().interaction_state, "ready");
-    assert.notEqual(f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]).id, ui.id);
+    const resumed = await f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    assert.notEqual(resumed.id, ui.id);
     f.control.dropConnection(ticket);
     assert.equal(f.view().status, "offline");
     assert.equal(f.view().interaction_state, undefined);

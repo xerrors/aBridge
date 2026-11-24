@@ -1,13 +1,49 @@
+import { randomBytes } from "node:crypto";
 import { WebSocket } from "ws";
 import type { DeviceTransport, JsonObject } from "./types.js";
 
 /** Every send and close has an absolute budget, including a peer that never drains. */
 export class WebSocketTransport implements DeviceTransport {
+  private pendingProbe: Promise<boolean> | undefined;
+
   constructor(
     private readonly socket: WebSocket,
     private readonly sendTimeoutMs = 5000,
     private readonly closeTimeoutMs = 1000,
   ) {}
+  probe(): Promise<boolean> {
+    if (this.pendingProbe) return this.pendingProbe;
+    this.pendingProbe = this.probeOnce().finally(() => {
+      this.pendingProbe = undefined;
+    });
+    return this.pendingProbe;
+  }
+  private probeOnce(): Promise<boolean> {
+    if (this.socket.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+    const nonce = randomBytes(16);
+    return new Promise((resolve) => {
+      const finish = (alive: boolean) => {
+        clearTimeout(timer);
+        this.socket.off("pong", pong);
+        this.socket.off("close", closed);
+        resolve(alive);
+      };
+      const pong = (data: Buffer) => {
+        if (nonce.equals(data)) finish(true);
+      };
+      const closed = () => finish(false);
+      const timer = setTimeout(closed, 2000);
+      this.socket.on("pong", pong);
+      this.socket.once("close", closed);
+      try {
+        this.socket.ping(nonce, false, (error) => {
+          if (error) finish(false);
+        });
+      } catch {
+        finish(false);
+      }
+    });
+  }
   send(frame: JsonObject): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket.readyState !== WebSocket.OPEN || this.socket.bufferedAmount > 16 * 1024 * 1024) {

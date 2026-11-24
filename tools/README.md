@@ -75,5 +75,13 @@
 
 `test:browser:live` 使用自有本机 HTTP 页面，核对三条批量提交的服务端记录、数字/邮箱替换与清空、跨调用状态、条件等待、长文快照分页、表格提取、键盘、滚动和同源 iframe 输入。测试直接运行实际 BrowserBridge 与 QuickJS，通过薄 Chrome API 适配器调用真实 CDP；它不替代已安装扩展的绑定、WebSocket 重连或商店包验收。标准 `check` 保持无需真实浏览器；服务端与扩展 worker 的线缆集成由自动测试单独覆盖。
 
+Linux 浏览器换绑验收使用解包后的客户端、启用沙盒的 Chromium、真实 Server 和测试 OIDC。先按[部署文档](../docs/deployment.md#无头-linux-浏览器客户端)准备发行包和依赖，再运行：
+
+```sh
+ABRIDGE_BROWSER_TEST_LAUNCHER=/absolute/path/to/abridge-client-browser \
+ABRIDGE_BROWSER_TEST_PYTHON=/absolute/path/to/.venv/bin/python \
+node --import tsx --test --test-name-pattern='packaged browser restores' apps/server/tests/identity.test.ts
+```
+
 `npm run test:browser:reliability:live` 使用独立真实 Chrome 和自有页面验证通用输入与恢复。`benchmark:miniwob -- --model-catalog /absolute/path/to/models.json` 固定实际模型元数据并记录其摘要，`--holdout` 单独运行额外 seed=2（非盲测）。[对照方法与边界](../docs/benchmarks/browser-reliability-v2.md)。
 原生回归覆盖电脑执行、WebSocket/Shell 生命周期、共享契约、授权和原生更新器。`npm run test:desktop` 在 Apple Silicon macOS 构建完整 App，运行 `apps/desktop/tests/` 下的测试以及 `tools/tests/` 下的原生和安装器测试。macOS 上的 `npm run check` 也会构建完整 App 并运行全部测试。

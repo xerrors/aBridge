@@ -1,4 +1,4 @@
-import { createHash, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -10,6 +10,11 @@ import {
   type DeviceKind,
   type DeviceMetadata,
   type ConnectionPolicy,
+  type BrowserEnrollmentScope,
+  type ManagedBrowserBinding,
+  type ManagedBrowserClaims,
+  type ManagedBrowserProvision,
+  type PersonalBrowserProvision,
 } from "@abridge/protocol";
 import { validatePolicy } from "./policy.js";
 import {
@@ -43,26 +48,100 @@ const SCHEMA = [
   "CREATE INDEX operation_owner ON operations(owner_id,created_at); CREATE INDEX audit_owner ON audit(owner_id,created_at); PRAGMA user_version=6;",
 ].join("\n");
 
+const MANAGED_BROWSER_SCHEMA = `CREATE TABLE IF NOT EXISTS managed_browsers(
+  issuer TEXT NOT NULL, subject TEXT NOT NULL, client_id TEXT NOT NULL,
+  installation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  device_id TEXT UNIQUE NOT NULL REFERENCES devices(id),
+  agent_connection_id TEXT UNIQUE NOT NULL REFERENCES agent_connections(id),
+  bootstrap_nonce TEXT, bootstrap_expires_at REAL, key_issued INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(issuer,subject,client_id),
+  FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject)
+);`;
+
+const PERSONAL_BROWSER_SCHEMA = `CREATE TABLE IF NOT EXISTS personal_browsers(
+  issuer TEXT NOT NULL, subject TEXT NOT NULL, client_id TEXT NOT NULL,
+  installation_id TEXT NOT NULL, revision INTEGER NOT NULL,
+  device_id TEXT UNIQUE NOT NULL REFERENCES devices(id),
+  bootstrap_nonce TEXT, bootstrap_expires_at REAL, key_issued INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(issuer,subject,client_id),
+  FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject)
+);`;
+
+const BROWSER_REPLACEMENT_SCHEMA = `CREATE TABLE IF NOT EXISTS browser_replacements(
+  device_id TEXT PRIMARY KEY REFERENCES devices(id),
+  scope TEXT NOT NULL CHECK(scope IN ('managed','personal')),
+  installation_id TEXT NOT NULL, revision INTEGER NOT NULL, credential_version INTEGER NOT NULL,
+  expires_at REAL NOT NULL, bootstrap_nonce TEXT, bootstrap_expires_at REAL, key_digest TEXT UNIQUE
+);`;
+const BROWSER_REPLACEMENT_SECONDS = 300;
+const BROWSER_LOCAL_ACCESS_SCHEMA = `CREATE TABLE IF NOT EXISTS browser_local_access(
+  device_id TEXT PRIMARY KEY REFERENCES devices(id), paused INTEGER NOT NULL, enabled INTEGER NOT NULL
+);`;
+
+export type BrowserEnrollmentIdentity = ManagedBrowserClaims & {
+  issuer: string;
+  client_id: string;
+};
+
+interface BrowserEnrollment extends ManagedBrowserBinding {
+  device_id: string;
+  bootstrap_nonce: string | null;
+  bootstrap_expires_at: number | null;
+  key_issued: number;
+}
+
+interface ManagedBrowser extends BrowserEnrollment {
+  agent_connection_id: string;
+}
+
+interface BrowserReplacement extends ManagedBrowserBinding {
+  device_id: string;
+  scope: BrowserEnrollmentScope;
+  credential_version: number;
+  expires_at: number;
+  bootstrap_nonce: string | null;
+  bootstrap_expires_at: number | null;
+  key_digest: string | null;
+}
+
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
 export class Store {
   private readonly db: DatabaseSync;
+  private readonly bootstrapKey = randomBytes(32);
   readonly path: string;
   constructor(path: string) {
     this.path = resolve(path);
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(this.path);
     chmodSync(this.path, 0o600);
-    this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
-    const version = Number(this.one<{ user_version: number }>("PRAGMA user_version")?.user_version ?? 0);
-    if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
-    else if (version !== 6) {
+    try {
+      this.db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
+      const version = this.one<{ user_version: number }>("PRAGMA user_version")!.user_version;
+      if (version === 0) this.transaction(() => this.db.exec(SCHEMA));
+      else if (version !== 6)
+        throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
+
+      this.db.exec(MANAGED_BROWSER_SCHEMA);
+      const columns = new Set(
+        this.all<{ name: string }>("PRAGMA table_info(managed_browsers)").map(({ name }) => name),
+      );
+      if (!["installation_id", "revision", "key_issued"].every((column) => columns.has(column)))
+        throw new BridgeError(
+          "managed_browser_schema_mismatch",
+          "Convert legacy managed browser bindings offline before starting the server",
+          500,
+        );
+      this.db.exec(PERSONAL_BROWSER_SCHEMA);
+      this.db.exec(BROWSER_REPLACEMENT_SCHEMA);
+      this.db.exec(BROWSER_LOCAL_ACCESS_SCHEMA);
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS active_session_device ON control_sessions(device_id) WHERE status='active'; " +
+          "CREATE INDEX IF NOT EXISTS active_session_agent_connection ON control_sessions(agent_connection_id) WHERE status='active';",
+      );
+    } catch (error) {
       this.db.close();
-      throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
+      throw error;
     }
-    this.db.exec(
-      "CREATE INDEX IF NOT EXISTS active_session_device ON control_sessions(device_id) WHERE status='active'; " +
-        "CREATE INDEX IF NOT EXISTS active_session_agent_connection ON control_sessions(agent_connection_id) WHERE status='active';",
-    );
   }
   close(): void {
     this.db.close();
@@ -161,45 +240,422 @@ export class Store {
   }
   /** 以签发方和稳定主体首次开户，绝不按显示名称合并。 */
   externalUser(issuer: string, subject: string, label: string, clientId?: string, clientName?: string): User {
+    return this.transaction(() => this.ensureLoginUser(issuer, subject, label, clientId, clientName));
+  }
+  private ensureLoginUser(
+    issuer: string,
+    subject: string,
+    label: string,
+    clientId?: string,
+    clientName?: string,
+  ): User {
+    if (this.one("SELECT 1 FROM managed_browsers WHERE issuer=? AND subject=?", issuer, subject))
+      throw new BridgeError("managed_identity", "Workload identities cannot log in", 403);
+    const user = this.ensureExternalUser(issuer, subject, label);
+    if (clientId)
+      this.ensurePlatformConnection(user.id, issuer, subject, clientId, clientName, {
+        mode: "all",
+        capabilities: [...CAPABILITIES],
+        overrides: [],
+      });
+    return user;
+  }
+  private ensurePlatformConnection(
+    owner: string,
+    issuer: string,
+    subject: string,
+    clientId: string,
+    clientName: string | undefined,
+    policy: ConnectionPolicy,
+  ): void {
+    const linked = this.one(
+      "SELECT 1 FROM platform_connections WHERE issuer=? AND subject=? AND client_id=?",
+      issuer,
+      subject,
+      clientId,
+    );
+    if (linked) return;
+    const connection = this.insertPlatformConnection(owner, (clientName ?? clientId) + " 平台连接", policy);
+    this.run("INSERT INTO platform_connections VALUES(?,?,?,?)", issuer, subject, clientId, connection);
+  }
+  private insertPlatformConnection(owner: string, name: string, policy: ConnectionPolicy): string {
+    const id = identifier("agt");
+    this.run(
+      "INSERT INTO agent_connections VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
+      id,
+      owner,
+      name,
+      JSON.stringify(policy),
+      nowSeconds(),
+    );
+    return id;
+  }
+  private ensureExternalUser(issuer: string, subject: string, label: string): User {
+    const existing = this.one<{ user_id: string }>(
+      "SELECT user_id FROM external_identities WHERE issuer=? AND subject=?",
+      issuer,
+      subject,
+    );
+    if (existing) return this.user(existing.user_id)!;
+    const id = identifier("usr");
+    const username = label.slice(0, 50) + " · " + id.slice(4);
+    this.run("INSERT INTO users VALUES(?,?,NULL,NULL,?)", id, username, nowSeconds());
+    this.run("INSERT INTO external_identities VALUES(?,?,?)", issuer, subject, id);
+    return { id, username };
+  }
+
+  managedBrowser(grant: BrowserEnrollmentIdentity): ManagedBrowser | undefined {
+    return this.one(
+      "SELECT * FROM managed_browsers WHERE issuer=? AND subject=? AND client_id=?",
+      grant.issuer,
+      grant.sub,
+      grant.client_id,
+    );
+  }
+
+  provisionManagedBrowser(grant: BrowserEnrollmentIdentity, binding: ManagedBrowserProvision) {
     return this.transaction(() => {
-      const existing = this.one<{ user_id: string }>(
-        "SELECT user_id FROM external_identities WHERE issuer=? AND subject=?",
-        issuer,
-        subject,
-      );
-      const user = existing ? this.user(existing.user_id)! : { id: identifier("usr"), username: "" };
-      if (!existing) {
-        user.username = label.slice(0, 50) + " · " + user.id.slice(4);
-        this.run("INSERT INTO users VALUES(?,?,NULL,NULL,?)", user.id, user.username, nowSeconds());
-        this.run("INSERT INTO external_identities VALUES(?,?,?)", issuer, subject, user.id);
+      const existing = this.managedBrowser(grant);
+      if (binding.revision !== (existing?.revision ?? 0))
+        throw new BridgeError("stale_binding", "The browser binding changed", 409);
+      if (existing) {
+        const device = this.device(existing.device_id)!;
+        const connection = this.agentConnection(existing.agent_connection_id)!;
+        if (device.revoked_at !== null || connection.revoked_at !== null)
+          throw new BridgeError("managed_browser_revoked", "Managed browser access was revoked", 403);
+        if (!binding.replace) {
+          if (existing.installation_id !== binding.installation_id)
+            throw new BridgeError("stale_binding", "Browser reinstall requires replacement", 409);
+          return { row: existing, replacement: undefined };
+        }
+        return { row: existing, replacement: this.stageBrowserReplacement("managed", existing, binding) };
       }
-      if (!clientId) return user;
-      const linked = this.one<{ agent_connection_id: string }>(
-        "SELECT agent_connection_id FROM platform_connections WHERE issuer=? AND subject=? AND client_id=?",
-        issuer,
-        subject,
-        clientId,
+
+      if (this.one("SELECT 1 FROM external_identities WHERE issuer=? AND subject=?", grant.issuer, grant.sub))
+        throw new BridgeError("managed_identity", "An existing login cannot be enrolled as a workload", 403);
+      const user = this.ensureExternalUser(grant.issuer, grant.sub, grant.sub);
+      const name = "托管浏览器";
+      const device = this.insertDevice(user.id, name, ["browser"], "browser", secretKey("device"));
+      const connectionId = this.insertPlatformConnection(user.id, name, {
+        mode: "selected",
+        devices: [{ device_id: device.id, capabilities: ["browser"] }],
+      });
+      this.run(
+        "INSERT INTO managed_browsers(issuer,subject,client_id,installation_id,revision,device_id,agent_connection_id) VALUES(?,?,?,?,1,?,?)",
+        grant.issuer,
+        grant.sub,
+        grant.client_id,
+        binding.installation_id,
+        device.id,
+        connectionId,
       );
-      if (!linked) {
-        const agentConnectionId = identifier("agt");
-        this.run(
-          "INSERT INTO agent_connections VALUES(?,?,?,?,NULL,NULL,NULL,?,NULL)",
-          agentConnectionId,
-          user.id,
-          (clientName ?? clientId) + " 平台连接",
-          JSON.stringify({ mode: "all", capabilities: [...CAPABILITIES], overrides: [] }),
-          nowSeconds(),
-        );
-        this.run(
-          "INSERT INTO platform_connections VALUES(?,?,?,?)",
-          issuer,
-          subject,
-          clientId,
-          agentConnectionId,
-        );
-      }
-      return user;
+      return { row: this.managedBrowser(grant)!, replacement: undefined };
     });
+  }
+
+  /** 查询本人浏览器登记，不开户或更改授权。 */
+  personalBrowser(grant: BrowserEnrollmentIdentity): BrowserEnrollment | undefined {
+    return this.one(
+      "SELECT * FROM personal_browsers WHERE issuer=? AND subject=? AND client_id=?",
+      grant.issuer,
+      grant.sub,
+      grant.client_id,
+    );
+  }
+
+  /** 本人浏览器属于正常登录账户，重新绑定只轮换设备凭据。 */
+  provisionPersonalBrowser(
+    grant: BrowserEnrollmentIdentity,
+    binding: PersonalBrowserProvision,
+    clientName?: string,
+  ) {
+    return this.transaction(() => {
+      const existing = this.personalBrowser(grant);
+      if (binding.revision !== (existing?.revision ?? 0))
+        throw new BridgeError("stale_binding", "The browser binding changed", 409);
+      if (existing) {
+        if (this.device(existing.device_id)?.revoked_at !== null)
+          throw new BridgeError("managed_browser_revoked", "Browser access was revoked", 403);
+        if (!binding.replace) {
+          if (existing.installation_id !== binding.installation_id)
+            throw new BridgeError("stale_binding", "Browser reinstall requires replacement", 409);
+          return { row: existing, replacement: undefined };
+        }
+        return { row: existing, replacement: this.stageBrowserReplacement("personal", existing, binding) };
+      }
+      const user = this.ensureLoginUser(
+        grant.issuer,
+        grant.sub,
+        binding.name ?? "外部用户",
+        grant.client_id,
+        clientName,
+      );
+      const device = this.insertDevice(user.id, "沙盒浏览器", ["browser"], "browser", secretKey("device"));
+      this.run(
+        "INSERT INTO personal_browsers(issuer,subject,client_id,installation_id,revision,device_id) VALUES(?,?,?,?,1,?)",
+        grant.issuer,
+        grant.sub,
+        grant.client_id,
+        binding.installation_id,
+        device.id,
+      );
+      return { row: this.personalBrowser(grant)!, replacement: undefined };
+    });
+  }
+
+  /** 保留同一设备，推进安装版本并作废该设备未兑换的票据。 */
+  private advancePersonalBrowserBinding(deviceId: string): void {
+    this.run(
+      "UPDATE personal_browsers SET revision=revision+1,bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=0 WHERE device_id=?",
+      deviceId,
+    );
+  }
+
+  private stageBrowserReplacement(
+    scope: BrowserEnrollmentScope,
+    active: BrowserEnrollment,
+    binding: ManagedBrowserBinding,
+  ): BrowserReplacement {
+    const current = this.browserReplacement(active.device_id);
+    if (current) {
+      if (current.installation_id !== binding.installation_id)
+        throw new BridgeError("replacement_pending", "Another browser installation is being prepared", 409);
+      return current;
+    }
+    this.run("DELETE FROM browser_replacements WHERE device_id=?", active.device_id);
+    this.run(
+      "INSERT INTO browser_replacements(device_id,scope,installation_id,revision,credential_version,expires_at) VALUES(?,?,?,?,?,?)",
+      active.device_id,
+      scope,
+      binding.installation_id,
+      active.revision + 1,
+      this.device(active.device_id)!.credential_version,
+      nowSeconds() + BROWSER_REPLACEMENT_SECONDS,
+    );
+    return this.browserReplacement(active.device_id)!;
+  }
+
+  browserReplacement(deviceId: string): BrowserReplacement | undefined {
+    const row = this.one<BrowserReplacement>(
+      "SELECT * FROM browser_replacements WHERE device_id=?",
+      deviceId,
+    );
+    return this.validBrowserReplacement(row) ? row : undefined;
+  }
+
+  browserEnrollmentRevision(deviceId: string): number | undefined {
+    return this.one<{ revision: number }>(
+      "SELECT revision FROM managed_browsers WHERE device_id=? UNION ALL SELECT revision FROM personal_browsers WHERE device_id=?",
+      deviceId,
+      deviceId,
+    )?.revision;
+  }
+
+  browserLocalAccess(deviceId: string): { paused: boolean; capabilities: { browser: boolean } } | undefined {
+    const row = this.one<{ paused: number; enabled: number }>(
+      "SELECT paused,enabled FROM browser_local_access WHERE device_id=?",
+      deviceId,
+    );
+    return row && { paused: !!row.paused, capabilities: { browser: !!row.enabled } };
+  }
+
+  recordBrowserLocalAccess(deviceId: string, paused: boolean, enabled: boolean): void {
+    if (paused || !enabled)
+      this.run(
+        "INSERT INTO browser_local_access VALUES(?,?,?) ON CONFLICT(device_id) DO UPDATE SET paused=excluded.paused,enabled=excluded.enabled",
+        deviceId,
+        Number(paused),
+        Number(enabled),
+      );
+    else this.run("DELETE FROM browser_local_access WHERE device_id=?", deviceId);
+  }
+
+  private validBrowserReplacement(row: BrowserReplacement | undefined): Device | undefined {
+    if (!row || row.expires_at <= nowSeconds()) return undefined;
+    const device = this.device(row.device_id);
+    if (!device || device.revoked_at !== null || device.credential_version !== row.credential_version)
+      return undefined;
+    if (row.scope === "managed") {
+      const active = this.one<ManagedBrowser>("SELECT * FROM managed_browsers WHERE device_id=?", device.id);
+      if (!active || this.agentConnection(active.agent_connection_id)?.revoked_at !== null) return undefined;
+    }
+    return device;
+  }
+
+  private browserReplacementByKey(key: string): BrowserReplacement | undefined {
+    return key.startsWith("abr_device_")
+      ? this.one<BrowserReplacement>("SELECT * FROM browser_replacements WHERE key_digest=?", digest(key))
+      : undefined;
+  }
+
+  /** Staged keys may verify device identity and attempt a cutover, but cannot operate as active keys. */
+  browserReplacementDevice(key: string): Device | undefined {
+    return this.validBrowserReplacement(this.browserReplacementByKey(key));
+  }
+
+  abandonBrowserReplacement(key: string): "abandoned" | "active" | "invalid" {
+    return this.transaction(() => {
+      const row = this.browserReplacementByKey(key);
+      if (row) {
+        this.run("DELETE FROM browser_replacements WHERE device_id=?", row.device_id);
+        return "abandoned";
+      }
+      return this.authenticateDevice(key)?.kind === "browser" ? "active" : "invalid";
+    });
+  }
+
+  activateBrowserReplacement(key: string, expectedEpoch: number): Device | undefined {
+    return this.transaction(() => {
+      const row = this.browserReplacementByKey(key);
+      const device = this.validBrowserReplacement(row);
+      if (!row || !device || device.epoch + 1 !== expectedEpoch) return undefined;
+      if (row.scope === "managed") {
+        const active = this.one<ManagedBrowser>(
+          "SELECT * FROM managed_browsers WHERE device_id=?",
+          device.id,
+        )!;
+        const connection = this.agentConnection(active.agent_connection_id)!;
+        this.revokeAgentConnection(connection.id);
+        const next = this.insertPlatformConnection(device.owner_id, connection.name, connection.policy);
+        this.run("UPDATE managed_browsers SET agent_connection_id=? WHERE device_id=?", next, device.id);
+      }
+      this.run(
+        `UPDATE ${row.scope}_browsers SET installation_id=?,revision=?,bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=1 WHERE device_id=?`,
+        row.installation_id,
+        row.revision,
+        device.id,
+      );
+      this.run(
+        "UPDATE devices SET token_digest=?,credential_version=credential_version+1,epoch=?,last_seen=? WHERE id=?",
+        digest(key),
+        expectedEpoch,
+        nowSeconds(),
+        device.id,
+      );
+      this.run("DELETE FROM browser_replacements WHERE device_id=?", device.id);
+      return this.device(device.id)!;
+    });
+  }
+
+  private bootstrapToken(deviceId: string, nonce: string): string {
+    return createHmac("sha256", this.bootstrapKey)
+      .update(deviceId + ":" + nonce)
+      .digest("base64url");
+  }
+
+  /** 两种登记均使用设备绑定的一次性票据。 */
+  issueBrowserBootstrap(row: BrowserEnrollment, scope: BrowserEnrollmentScope): string | undefined {
+    if (row.key_issued) return undefined;
+    if (row.bootstrap_nonce && row.bootstrap_expires_at! > nowSeconds())
+      return this.bootstrapToken(row.device_id, row.bootstrap_nonce);
+    const nonce = randomBytes(24).toString("base64url");
+    this.run(
+      `UPDATE ${scope}_browsers SET bootstrap_nonce=?,bootstrap_expires_at=? WHERE device_id=?`,
+      nonce,
+      nowSeconds() + 60,
+      row.device_id,
+    );
+    return this.bootstrapToken(row.device_id, nonce);
+  }
+
+  issueReplacementBootstrap(row: BrowserReplacement): string {
+    if (row.bootstrap_nonce && row.bootstrap_expires_at! > nowSeconds())
+      return this.bootstrapToken(row.device_id, row.bootstrap_nonce);
+    const nonce = randomBytes(24).toString("base64url");
+    this.run(
+      "UPDATE browser_replacements SET bootstrap_nonce=?,bootstrap_expires_at=?,key_digest=NULL WHERE device_id=?",
+      nonce,
+      Math.min(row.expires_at, nowSeconds() + 60),
+      row.device_id,
+    );
+    return this.bootstrapToken(row.device_id, nonce);
+  }
+
+  private matchesBrowserBootstrap(
+    row: Pick<BrowserEnrollment, "bootstrap_nonce" | "bootstrap_expires_at" | "device_id">,
+    token: string,
+  ): boolean {
+    return (
+      !!row.bootstrap_nonce &&
+      row.bootstrap_expires_at! > nowSeconds() &&
+      timingSafeEqual(
+        Buffer.from(digest(token)),
+        Buffer.from(digest(this.bootstrapToken(row.device_id, row.bootstrap_nonce))),
+      )
+    );
+  }
+
+  redeemManagedBrowser(
+    deviceId: string,
+    token: string,
+    localAccessBlocked: boolean,
+  ): { device: Device; key: string; pending: boolean; revision: number } {
+    return this.transaction(() => {
+      const replacement = this.browserReplacement(deviceId);
+      if (replacement && !localAccessBlocked && this.matchesBrowserBootstrap(replacement, token)) {
+        const device = this.device(deviceId)!;
+        const key = secretKey("device");
+        this.run(
+          "UPDATE browser_replacements SET bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_digest=? WHERE device_id=?",
+          digest(key),
+          deviceId,
+        );
+        return { device, key, pending: true, revision: replacement.revision };
+      }
+      const managed = this.one<ManagedBrowser>("SELECT * FROM managed_browsers WHERE device_id=?", deviceId);
+      const row =
+        managed ?? this.one<BrowserEnrollment>("SELECT * FROM personal_browsers WHERE device_id=?", deviceId);
+      const device = row && this.device(deviceId);
+      const connection = managed && this.agentConnection(managed.agent_connection_id);
+      if (
+        !row ||
+        row.key_issued ||
+        !device ||
+        device.revoked_at !== null ||
+        (managed && connection?.revoked_at !== null) ||
+        localAccessBlocked ||
+        !this.matchesBrowserBootstrap(row, token)
+      )
+        throw new BridgeError("invalid_grant", "Browser bootstrap credential is invalid or expired", 400);
+      const scope = managed ? "managed" : "personal";
+      this.run(
+        `UPDATE ${scope}_browsers SET bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=1 WHERE device_id=?`,
+        deviceId,
+      );
+      return { device, key: this.rotateDevice(deviceId), pending: false, revision: row.revision };
+    });
+  }
+
+  managedBrowserConnection(
+    grant: BrowserEnrollmentIdentity,
+    binding: ManagedBrowserBinding,
+  ): AgentConnection | undefined {
+    const row = this.managedBrowser(grant);
+    if (!row || row.revision !== binding.revision || row.installation_id !== binding.installation_id)
+      return undefined;
+    const connection = this.agentConnection(row.agent_connection_id);
+    if (!connection || connection.revoked_at !== null || this.device(row.device_id)?.revoked_at !== null)
+      return undefined;
+    return connection;
+  }
+
+  stopManagedBrowser(grant: BrowserEnrollmentIdentity, binding: ManagedBrowserBinding): ManagedBrowser {
+    return this.transaction(() => {
+      const row = this.managedBrowser(grant);
+      if (!row || row.revision !== binding.revision || row.installation_id !== binding.installation_id)
+        throw new BridgeError("stale_binding", "The browser binding changed", 409);
+      if (this.device(row.device_id)!.revoked_at === null) this.revokeDevice(row.device_id);
+      this.revokeAgentConnection(row.agent_connection_id);
+      this.run(
+        "UPDATE managed_browsers SET bootstrap_nonce=NULL,bootstrap_expires_at=NULL WHERE device_id=?",
+        row.device_id,
+      );
+      return row;
+    });
+  }
+
+  isManagedBrowserConnection(id: string): boolean {
+    return !!this.one("SELECT 1 FROM managed_browsers WHERE agent_connection_id=?", id);
   }
   /** 仅解析已登录建立且尚有效的外部平台授权。 */
   delegatedAgentConnection(issuer: string, subject: string, clientId: string): AgentConnection | undefined {
@@ -280,32 +736,47 @@ export class Store {
     capabilities: Capability[],
     kind: DeviceKind = "computer",
   ): { device: Device; key: string } {
+    const key = secretKey("device");
+    return { device: this.transaction(() => this.insertDevice(owner, name, capabilities, kind, key)), key };
+  }
+  private insertDevice(
+    owner: string,
+    name: string,
+    capabilities: Capability[],
+    kind: DeviceKind,
+    key: string,
+  ): Device {
     if (!capabilities.length || capabilities.some((cap) => !deviceCapabilities(kind).includes(cap)))
       throw new BridgeError("invalid_capabilities", "Capabilities do not match device kind", 422);
     let id: string;
     do {
       id = randomBytes(9).toString("base64url");
     } while (this.device(id));
-    const key = secretKey("device");
-    this.transaction(() => {
-      this.run(
-        "INSERT INTO devices(id,owner_id,name,capabilities,token_digest,credential_version,epoch,created_at,kind) VALUES(?,?,?,?,?,1,0,?,?)",
-        id,
-        owner,
-        name,
-        JSON.stringify(capabilities),
-        digest(key),
-        nowSeconds(),
-        kind,
-      );
-      this.audit(owner, id, null, null, "device_create", "changed");
-    });
-    return { device: this.device(id)!, key };
+    this.run(
+      "INSERT INTO devices(id,owner_id,name,capabilities,token_digest,credential_version,epoch,created_at,kind) VALUES(?,?,?,?,?,1,0,?,?)",
+      id,
+      owner,
+      name,
+      JSON.stringify(capabilities),
+      digest(key),
+      nowSeconds(),
+      kind,
+    );
+    this.audit(owner, id, null, null, "device_create", "changed");
+    return this.device(id)!;
   }
   renameDevice(id: string, name: string): void {
     this.transaction(() => {
       this.run("UPDATE devices SET name=? WHERE id=?", name, id);
       this.audit(this.device(id)!.owner_id, id, null, null, "device_rename", "changed");
+    });
+  }
+  /** 管理台签发新凭据时，当前个人浏览器安装也需要重新领票。 */
+  rotateDeviceCredentials(id: string): string {
+    return this.transaction(() => {
+      const key = this.rotateDevice(id);
+      this.advancePersonalBrowserBinding(id);
+      return key;
     });
   }
   rotateDevice(id: string): string {
@@ -315,6 +786,7 @@ export class Store {
       digest(key),
       id,
     );
+    this.run("DELETE FROM browser_replacements WHERE device_id=?", id);
     return key;
   }
   revokeDevice(id: string): void {
@@ -323,6 +795,8 @@ export class Store {
       nowSeconds(),
       id,
     );
+    this.run("DELETE FROM browser_replacements WHERE device_id=?", id);
+    this.run("DELETE FROM browser_local_access WHERE device_id=?", id);
   }
   authenticateDevice(key: string): Device | undefined {
     return key.startsWith("abr_device_")
@@ -386,6 +860,12 @@ export class Store {
     const agentConnection = this.agentConnection(id);
     if (!agentConnection || agentConnection.revoked_at !== null)
       throw new BridgeError("not_found", "Connection not found", 404);
+    if (this.isManagedBrowserConnection(id))
+      throw new BridgeError(
+        "managed_connection",
+        "Managed browser connections have a fixed device policy",
+        409,
+      );
     const validated = validatePolicy(agentConnection.owner_id, policy, (deviceId) => this.device(deviceId));
     this.transaction(() => {
       this.run(

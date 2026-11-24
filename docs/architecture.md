@@ -67,7 +67,7 @@ Server 使用 Fastify 5 和官方 MCP TypeScript SDK v2。MCP HTTP transport 按
 
 样式通过 `src/styles/index.css` 有序汇入基础、公共控件、布局和各功能样式，构建后仍输出单个 `/static/app.css`；`public/` 只维护 HTML、字体与图片等静态资产。
 
-持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。当前开发数据库为 schema 6，Agent 连接使用 `agent_connections` / `platform_connections` 表，以及 `agent_connection_id` 引用字段；旧开发数据库须显式调整为当前结构，Server 不自动迁移或清空。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
+持久化使用 Node 内置 `node:sqlite` 的 `DatabaseSync`，其调用同步占用事件循环。最低运行版本 Node 22.13.0 已取消该模块的启动 flag 要求，但该版本仍将其标为实验 API。数据库基线为 schema 6，Agent 连接使用 `agent_connections` / `platform_connections` 表。托管浏览器在启动时补齐独立登记表 `managed_browsers`。已有旧形状的托管登记需要离线转换。当前限制单个数据库由一个 Server 实例持有，内存连接与结果缓存不支持多 worker 或横向部署。[Node 22.13.0 发布说明](https://nodejs.org/en/blog/release/v22.13.0)
 
 ## Linux CLI 客户端
 
@@ -142,6 +142,8 @@ Windows 壳消息和平台动作契约维护在 `packages/protocol/src/windows-s
 `session_open` 保留顶层会话字段和 `server_time`，并在 `device` 中附带与 `devices_list` 一致的设备摘要，包含名称、类型、平台、连接状态和可用的系统与浏览器版本信息。管理台及已授权 Agent 的 `device_get` 可读取完整详情，包括主机名、型号、运行用户和归属账户。
 
 Android 的 hello 和心跳可上报 `interaction_state`（`ready`、`screen_off`、`locked`）。在线时设备摘要包含该状态。熄屏或锁屏暂停屏幕和输入能力并终止受影响的会话，文件能力继续按独立授权判断。亮屏且退出锁屏界面后，任务打开新会话并重新观察。
+
+浏览器设备的列表状态反映最近的心跳。打开新会话前，Server 用 WebSocket Ping/Pong 确认设备仍能应答。休眠或网络中断后，新会话可以短暂等待同一设备重连，包括原连接已被清理的情况。等待期间持续复核凭据、授权、本机暂停和调用方取消。Server 会持久记录浏览器已上报的暂停和能力关闭，重启后仍阻止新会话和候选换绑，直到有效设备连接上报恢复。已有会话绑定原连接代次。派发新操作前也会确认该连接，已经发出但未取得结果的操作保留 `outcome_unknown`，不会自动重放。
 
 `devices_list` 与 `session_open` 通过 `available_tools` 公布默认参数下可用的设备工具。会话清单还受本次请求的能力约束。Server 按同一平台清单拒绝未实现的工具。桌面输入被拒绝后，`error.recovery.action` 可提示重新观察或请求用户接管。重新观察后应核对目标，并且只重试一次明确未执行的操作。
 
