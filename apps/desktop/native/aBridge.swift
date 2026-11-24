@@ -834,7 +834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         authorizationServer = address
         authorizationURL = nil
         authorizationCommitting = false
-        authorizationLabel.stringValue = tokenMode ? "正在验证设备 Token…" : "正在打开浏览器授权…"
+        authorizationLabel.stringValue = tokenMode ? "正在验证设备 Token…" : "正在获取授权链接…"
         authorizationLabel.isHidden = false
         do {
             try process.run()

@@ -51,6 +51,7 @@ test(
           "NativeDriver",
           "Computer",
           "Executor",
+          "DeviceServerSession",
           "Client",
         ].map((name) => join(runtime, name + ".swift")),
         join(root, "tools/fixtures/native-admission.swift"),

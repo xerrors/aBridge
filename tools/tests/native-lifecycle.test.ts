@@ -28,8 +28,8 @@ test(
         "-swift-version",
         "6",
         "-parse-as-library",
-        ...["JSON", "Contract", "Storage", "LocalControl", "Authorization"].map((name) =>
-          join(root, `apps/desktop/native/runtime/${name}.swift`),
+        ...["JSON", "Contract", "Storage", "LocalControl", "DeviceServerSession", "Authorization"].map(
+          (name) => join(root, `apps/desktop/native/runtime/${name}.swift`),
         ),
         join(root, "tools/fixtures/native-lifecycle.swift"),
         "-lsqlite3",
@@ -51,6 +51,10 @@ test(
         "invalid-token",
         "wrong-kind",
         "redirect",
+        "connection-refused",
+        "server-refused",
+        "malformed-token",
+        "token-timeout",
       ] as const) {
         await t.test(scenario, async () => {
           const directory = await mkdtemp(join(work, "state-"));
@@ -90,12 +94,17 @@ test(
               );
             } else if (incoming.url === "/api/device-authorizations" && incoming.method === "POST") {
               request = body;
+              if (scenario === "server-refused") {
+                response.writeHead(401).end("{}");
+                return;
+              }
               response.end(
                 JSON.stringify({
                   id: "a".repeat(43),
                   authorization_url:
                     scenario === "cross-origin" ? "https://other.invalid/authorize" : origin + "/authorize",
-                  expires_at: Date.now() / 1000 + (scenario === "expired" ? -1 : 60),
+                  expires_at:
+                    Date.now() / 1000 + (scenario === "expired" ? -1 : scenario === "token-timeout" ? 5 : 60),
                 }),
               );
             } else if (incoming.url === "/api/device-authorizations/token") {
@@ -105,6 +114,14 @@ test(
                 request.code_challenge,
               );
               assert.equal(body.redirect_uri, request.redirect_uri);
+              if (scenario === "malformed-token") {
+                response.end('{"key":"abr_device_fixture_secret"');
+                return;
+              }
+              if (scenario === "token-timeout") {
+                response.flushHeaders();
+                return;
+              }
               response.end(
                 JSON.stringify({
                   device_id: "fixture-device",
@@ -123,6 +140,8 @@ test(
           const address = server.address();
           assert.ok(address && typeof address !== "string");
           const origin = `http://127.0.0.1:${address.port}`;
+          if (scenario === "connection-refused")
+            await new Promise<void>((resolve) => server.close(() => resolve()));
           const manual = ["manual", "invalid-token", "wrong-kind", "redirect"].includes(scenario);
           const child = spawn(executable, ["authorize", directory], {
             stdio: ["pipe", "pipe", "pipe"],
@@ -134,6 +153,7 @@ test(
           const exited = once(child, "exit");
           const output: string[] = [];
           let completed = false;
+          let authorizationError: unknown;
           let stderr = "";
           child.stderr.on("data", (chunk: Buffer) => {
             stderr += chunk.toString();
@@ -165,9 +185,16 @@ test(
                     200,
                   );
                 else {
-                  assert.equal(scenario, "pkce");
-                  assert.equal((await callback({ state: "wrong-state", code: "c".repeat(43) })).status, 400);
-                  assert.equal(exchange, undefined);
+                  assert.ok(
+                    scenario === "pkce" || scenario === "malformed-token" || scenario === "token-timeout",
+                  );
+                  if (scenario === "pkce") {
+                    assert.equal(
+                      (await callback({ state: "wrong-state", code: "c".repeat(43) })).status,
+                      400,
+                    );
+                    assert.equal(exchange, undefined);
+                  }
                   assert.equal(
                     (await callback({ state: String(request.state), code: "c".repeat(43) })).status,
                     200,
@@ -185,13 +212,32 @@ test(
               } else if (event.event === "complete") {
                 completed = true;
                 child.stdin.end();
-              } else assert.equal(event.event, "error");
+              } else {
+                assert.equal(event.event, "error");
+                authorizationError = event.error;
+              }
             }
             const success = scenario === "pkce" || scenario === "manual";
             assert.equal((await exited)[0], success ? 0 : 1, stderr);
             assert.equal(completed, success);
             assert.ok(!output.join("").includes("abr_device_new"));
             if (exchange) assert.ok(!output.join("").includes(String(exchange.code_verifier)));
+            if (scenario === "connection-refused") {
+              assert.match(String(authorizationError), /^发起浏览器授权失败。无法连接 Server/);
+            } else if (scenario === "server-refused") {
+              assert.match(String(authorizationError), /^发起浏览器授权失败。Server 拒绝了请求（HTTP 401）$/);
+              assert.equal(cancellations, 0);
+            } else if (scenario === "invalid-token") {
+              assert.match(
+                String(authorizationError),
+                /^验证设备凭证失败。设备凭证无效或已撤销（HTTP 401）$/,
+              );
+            } else if (scenario === "malformed-token") {
+              assert.match(String(authorizationError), /^兑换设备凭证失败。Server 返回了无效的 JSON 响应/);
+              assert.ok(!output.join("").includes("abr_device_fixture_secret"));
+            } else if (scenario === "token-timeout") {
+              assert.match(String(authorizationError), /^兑换设备凭证失败。连接 Server 超时/);
+            }
             const config = JSON.parse(
               await readFile(join(directory, "config.json"), "utf8"),
             ) as typeof previous;
@@ -205,7 +251,7 @@ test(
               assert.deepEqual(config, previous);
               assert.deepEqual(credential, oldCredential);
             }
-            if (!manual && scenario !== "parent") {
+            if (!manual && !["parent", "connection-refused", "server-refused"].includes(scenario)) {
               assert.equal(cancellations, success ? 0 : 1);
               await assert.rejects(fetch(String(request.redirect_uri)));
             }

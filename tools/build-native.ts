@@ -108,6 +108,7 @@ export async function nativeBuildInputs(
     .sort();
   const files = [
     "apps/desktop/native/aBridge.swift",
+    "apps/desktop/native/runtime/Info.plist",
     ...nativeSources.map((name) => "apps/desktop/native/runtime/" + name),
     "dist/desktop/desktop-contract.json",
     "docs/third-party-notices.md",
@@ -214,6 +215,14 @@ export async function buildNative(
       "-L",
       frameworks,
       "-lcua_driver_sdk",
+      "-Xlinker",
+      "-sectcreate",
+      "-Xlinker",
+      "__TEXT",
+      "-Xlinker",
+      "__info_plist",
+      "-Xlinker",
+      join(root, "apps/desktop/native/runtime/Info.plist"),
       "-Xlinker",
       "-rpath",
       "-Xlinker",

@@ -8,14 +8,16 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, chmod, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
+  DESKTOP_AUTH_CALLBACK_PATH,
   VERSION,
   deviceAuthorizationCancelSchema,
   deviceAuthorizationRequestSchema,
+  deviceAuthorizationTokenRequestSchema,
   deviceDetailsSchema,
   deviceHelloSchema,
 } from "@abridge/protocol";
@@ -26,8 +28,10 @@ const binary = resolve(
 );
 const native = process.platform === "darwin" && process.arch === "arm64";
 const deviceKey = "abr_device_fixture";
+const browserDeviceKey = "abr_device_browser_fixture";
 const authorizationPath = "/api/device-authorizations";
 const authorizationId = "a".repeat(43);
+const authorizationCode = "c".repeat(43);
 type Frame = Record<string, unknown>;
 async function until<T>(
   check: () => T | Promise<T>,
@@ -51,7 +55,8 @@ async function fixture({
   await chmod(directory, 0o700);
   let name = "Fixture Mac",
     responseId = "fixture",
-    reject = false;
+    reject = false,
+    socketKey = deviceKey;
   const requests: {
     method: string | undefined;
     path: string | undefined;
@@ -83,6 +88,19 @@ async function fixture({
       response.writeHead(204).end();
       return;
     }
+    if (request.method === "POST" && request.url === `${authorizationPath}/token`) {
+      socketKey = browserDeviceKey;
+      response.end(
+        JSON.stringify({
+          device_id: responseId,
+          key: browserDeviceKey,
+          name,
+          kind: "computer",
+          capabilities: ["files"],
+        }),
+      );
+      return;
+    }
     assert.equal(request.url, "/api/device");
     assert.equal(request.headers.authorization, `Bearer ${deviceKey}`);
     if (request.method === "PATCH") name = (body as { name: string }).name;
@@ -106,7 +124,7 @@ async function fixture({
       return;
     }
     assert.equal(request.url, "/ws/device");
-    assert.equal(request.headers.authorization, `Bearer ${deviceKey}`);
+    assert.equal(request.headers.authorization, `Bearer ${socketKey}`);
     server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws));
   });
   let peer: WebSocket | undefined,
@@ -259,8 +277,9 @@ async function fixture({
   };
 }
 
-async function authorize(directory: string, input: Frame) {
-  const child = spawn(binary, ["authorize", "--stdin", "--state-dir", directory], {
+async function authorize(directory: string, input: Frame, approveInBrowser?: () => Promise<void>) {
+  const child = spawn(binary, ["--state-dir", directory, "authorize", "--stdin"], {
+    cwd: dirname(binary),
     env: { ...process.env, ABRIDGE_PARENT_PID: String(process.pid) },
     stdio: "pipe",
   });
@@ -274,7 +293,10 @@ async function authorize(directory: string, input: Frame) {
     for await (const line of createInterface({ input: child.stdout })) {
       const event = JSON.parse(line) as Frame;
       events.push(event);
-      if (event.event === "authorization") child.stdin.end();
+      if (event.event === "authorization") {
+        if (approveInBrowser) await approveInBrowser();
+        else child.stdin.end();
+      }
       if (event.event === "ready")
         child.stdin.write(JSON.stringify({ command: "commit", capabilities: { files: true } }) + "\n");
     }
@@ -374,20 +396,43 @@ function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) 
         );
         assert.deepEqual(await readdir(f.directory), []);
 
-        const token = await authorize(f.directory, { ...input, device_key: deviceKey });
-        assert.equal(token.code, 0, JSON.stringify(token.events));
+        const approvalOffset = f.requests.length;
+        const approval = await authorize(f.directory, input, async () => {
+          const start = deviceAuthorizationRequestSchema.parse(f.requests[approvalOffset]?.body);
+          const callback = new URL(start.redirect_uri);
+          assert.equal(callback.protocol, "http:");
+          assert.equal(callback.hostname, "127.0.0.1");
+          assert.equal(callback.pathname, DESKTOP_AUTH_CALLBACK_PATH);
+          callback.searchParams.set("state", start.state);
+          callback.searchParams.set("code", authorizationCode);
+          const response = await fetch(callback, { redirect: "error", signal: AbortSignal.timeout(5000) });
+          assert.equal(response.status, 200);
+          await response.text();
+        });
+        assert.equal(approval.code, 0, JSON.stringify(approval.events));
         assert.deepEqual(
-          token.events.map((event) => event.event),
-          ["ready", "complete"],
+          approval.events.map((event) => event.event),
+          ["authorization", "ready", "complete"],
         );
-        assert.deepEqual(f.requests.slice(2), [
-          { method: "GET", path: "/api/device", authorization: `Bearer ${deviceKey}`, body: null },
-        ]);
-        const config = JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")) as Frame;
-        assert.equal(config.http_confirmed_origin, f.url);
+        const approvalRequests = f.requests.slice(approvalOffset);
+        assert.deepEqual(
+          approvalRequests.map(({ method, path }) => [method, path]),
+          [
+            ["POST", authorizationPath],
+            ["POST", `${authorizationPath}/token`],
+          ],
+        );
+        const start = deviceAuthorizationRequestSchema.parse(approvalRequests[0]?.body);
+        const exchange = deviceAuthorizationTokenRequestSchema.parse(approvalRequests[1]?.body);
+        assert.equal(exchange.code, authorizationCode);
+        assert.equal(exchange.redirect_uri, start.redirect_uri);
+        assert.equal(
+          createHash("sha256").update(exchange.code_verifier).digest("base64url"),
+          start.code_challenge,
+        );
         assert.deepEqual(JSON.parse(await readFile(join(f.directory, "credentials/device.json"), "utf8")), {
           server_url: f.url,
-          device_key: deviceKey,
+          device_key: browserDeviceKey,
         });
         await f.start();
         f.peer.terminate();
@@ -396,6 +441,24 @@ function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) 
           "Expected HTTP WebSocket reconnect",
         );
         await until(async () => (await f.cli("status")).connection === "online");
+        await f.stop();
+
+        const tokenOffset = f.requests.length;
+        const token = await authorize(f.directory, { ...input, device_key: deviceKey });
+        assert.equal(token.code, 0, JSON.stringify(token.events));
+        assert.deepEqual(
+          token.events.map((event) => event.event),
+          ["ready", "complete"],
+        );
+        assert.deepEqual(f.requests.slice(tokenOffset), [
+          { method: "GET", path: "/api/device", authorization: `Bearer ${deviceKey}`, body: null },
+        ]);
+        const config = JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")) as Frame;
+        assert.equal(config.http_confirmed_origin, f.url);
+        assert.deepEqual(JSON.parse(await readFile(join(f.directory, "credentials/device.json"), "utf8")), {
+          server_url: f.url,
+          device_key: deviceKey,
+        });
       } finally {
         await f.close();
       }

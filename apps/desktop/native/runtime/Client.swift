@@ -31,11 +31,6 @@ private func systemDetails() -> JSONObject {
     }
 }
 
-/// Credentials never follow HTTP or WebSocket redirects to another endpoint.
-final class DeviceNetworkDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
-}
-
 actor DeviceClient {
     private enum CancellationSource { case caller, stop }
     private struct Admission {
@@ -134,9 +129,7 @@ actor DeviceClient {
         components.path += "/ws/device"
         var request = URLRequest(url: components.url!); request.timeoutInterval = 10
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.httpShouldSetCookies = false; sessionConfig.urlCredentialStorage = nil
-        let session = URLSession(configuration: sessionConfig, delegate: DeviceNetworkDelegate(), delegateQueue: nil)
+        let session = deviceServerSession()
         let ws = session.webSocketTask(with: request)
         ws.maximumMessageSize = Int(contract.limit("messageBytes"))
         let identity = UUID(); connection = identity; socket = ws; status = "connecting"
@@ -349,8 +342,7 @@ actor DeviceClient {
             guard status == "online", !key.isEmpty, !deviceId.isEmpty, config.revoked != true else { throw DesktopError(code: "device_offline", message: "请连接 Server 后再修改设备名称") }
             var request = URLRequest(url: URL(string: config.url + "/api/device")!); request.httpMethod = "PATCH"; request.timeoutInterval = 10
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization"); request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try body.encoded()
-            let configuration = URLSessionConfiguration.ephemeral; configuration.httpShouldSetCookies = false; configuration.urlCredentialStorage = nil
-            let session = URLSession(configuration: configuration, delegate: DeviceNetworkDelegate(), delegateQueue: nil); defer { session.invalidateAndCancel() }
+            let session = deviceServerSession(); defer { session.invalidateAndCancel() }
             let (stream, response) = try await session.bytes(for: request)
             var bytes = Data()
             for try await byte in stream { guard bytes.count < 65536 else { throw DesktopError(code: "invalid_response", message: "Server response exceeds limit") }; bytes.append(byte) }

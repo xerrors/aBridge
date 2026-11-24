@@ -230,4 +230,6 @@ macOS App 包含 AppKit 主程序、Swift 设备客户端、更新器、共享�
 
 设备凭据的手动签发与浏览器 PKCE 授权共享同一设备身份。`GET /api/device` 是设备凭据验证入口，电脑/浏览器客户端在绑定提交前校验设备类型；管理员 Token 和 Agent Key 不作为设备凭据。macOS 继续使用先验证、再停止旧运行时、最后提交的私有双阶段管道；扩展在验证期间保持旧绑定，提交前显式退役旧连接，避免迟到的撤销/关闭消息改变新绑定。
 
-公网 HTTP 由用户显式确认具体 Origin；共享协议包负责地址规范化和确认匹配。确认写入成功绑定的本机配置，连接恢复时再次校验，浏览器 PKCE 状态与回调校验保持不变。HTTP 风险确认不代替 Server Host/Origin 访问校验，OIDC 的公网 HTTP 另由部署管理员通过 `--allow-insecure-http` / `ABRIDGE_ALLOW_INSECURE_HTTP=true` 显式开启；默认 HTTPS 策略和身份校验保持不变。
+公网 HTTP 由用户显式确认具体 Origin；共享协议包负责地址规范化和确认匹配。确认写入成功绑定的本机配置，连接恢复时再次校验，浏览器 PKCE 状态与回调校验保持不变。HTTP 风险确认不代替 Server Host/Origin 访问校验，OIDC 的公网 HTTP 另由部署管理员通过 `--allow-insecure-http` / `ABRIDGE_ALLOW_INSECURE_HTTP=true` 显式开启。
+
+macOS 的设备进程使用系统 URLSession 连接用户指定的 Server。在此进程中允许明文传输，HTTP 和 WS 受上述 Origin 确认约束。HTTPS 和 WSS 要求 TLS 1.2 或更高版本，并使用系统证书和主机名校验。此配置会放宽设备进程的 ATS 附加限制，例如前向保密要求。更新器在独立进程中使用系统默认的 ATS 策略。

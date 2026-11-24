@@ -3,10 +3,6 @@ import CryptoKit
 import Security
 import Darwin
 
-private final class AuthorizationHTTPDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
-}
-
 private actor AuthorizationInput {
     private var lines: [JSONObject] = []
     private var failure: Error?
@@ -67,7 +63,13 @@ private struct AuthorizationCallback: Sendable {
             var length = socklen_t(MemoryLayout<sockaddr_in>.size)
             guard withUnsafeMutablePointer(to: &address, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }) == 0 else { throw posixFailure("Read authorization listener") }
             return AuthorizationCallback(fd: fd, redirect: "http://127.0.0.1:\(UInt16(bigEndian: address.sin_port))/abridge/callback")
-        } catch { if fd >= 0 { Darwin.close(fd) }; throw error }
+        } catch {
+            if fd >= 0 { Darwin.close(fd) }
+            let failure = error as NSError
+            guard failure.domain == NSPOSIXErrorDomain else { throw error }
+            let reason = String(cString: strerror(Int32(failure.code)))
+            throw DesktopError(code: "authorization_failed", message: "无法开启本机授权回调（\(reason)），请重试")
+        }
     }
     func receive(state: String, expires: Double) async throws -> String {
         guard let expected = URLComponents(string: redirect), let expectedHost = expected.host, let expectedPort = expected.port else { throw DesktopError(code: "authorization_failed", message: "授权回调地址无效") }
@@ -129,37 +131,52 @@ private func randomAuthorizationValue() throws -> String {
 }
 
 enum NativeAuthorization {
-    private static func fetch(_ url: String, method: String = "GET", body: JSONObject? = nil, key: String? = nil, timeout: Double = 10) async throws -> JSONObject {
+    private static func fetch(_ url: String, stage: String, method: String = "GET", body: JSONObject? = nil, key: String? = nil, timeout: Double = 10) async throws -> JSONObject {
         guard let url = URL(string: url) else { throw DesktopError(code: "invalid_url", message: "Server 地址无效") }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let key { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         if let body { request.httpBody = try body.encoded(); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpShouldSetCookies = false
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: configuration, delegate: AuthorizationHTTPDelegate(), delegateQueue: nil)
+        let session = deviceServerSession(timeout: timeout)
         defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse else { throw DesktopError(code: "authorization_failed", message: "Server 返回无效响应") }
-        guard (200..<300).contains(response.statusCode) else {
-            throw DesktopError(code: "authorization_failed", message: response.statusCode == 401 ? "Device Key 无效或已撤销" : "Server 拒绝了设备授权请求（\(response.statusCode)）")
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let response = response as? HTTPURLResponse else { throw DesktopError(code: "authorization_failed", message: "Server 返回无效响应") }
+            guard (200..<300).contains(response.statusCode) else {
+                let reason = response.statusCode == 401 && key != nil ? "设备凭证无效或已撤销" : "Server 拒绝了请求"
+                throw DesktopError(code: "authorization_failed", message: "\(stage)失败。\(reason)（HTTP \(response.statusCode)）")
+            }
+            var data = Data()
+            for try await byte in bytes {
+                guard data.count < 65536 else { throw DesktopError(code: "authorization_failed", message: "Server 响应过大") }
+                data.append(byte)
+            }
+            if method == "DELETE", data.isEmpty { return [:] }
+            guard let object = (try? JSONValue.decode(data))?.object else {
+                throw DesktopError(code: "authorization_failed", message: "\(stage)失败。Server 返回了无效的 JSON 响应，请检查 Server 地址和版本")
+            }
+            return object
+        } catch let error as URLError {
+            let message: String
+            switch error.code {
+            case .cancelled: throw CancellationError()
+            case .cannotConnectToHost: message = "无法连接 Server，请检查地址、端口及 Server 是否运行"
+            case .cannotFindHost, .dnsLookupFailed: message = "无法解析 Server 域名，请检查地址和 DNS 设置"
+            case .timedOut: message = "连接 Server 超时，请检查网络后重试"
+            case .appTransportSecurityRequiresSecureConnection: message = "macOS 的传输安全策略拒绝了连接（-1022）"
+            case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                 .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid:
+                message = "无法建立 Server 的 HTTPS 连接，请检查证书和 TLS 配置"
+            default: message = "与 Server 通信失败（网络错误 \(error.code.rawValue)），请检查网络后重试"
+            }
+            throw DesktopError(code: "authorization_failed", message: "\(stage)失败。\(message)")
         }
-        var data = Data()
-        for try await byte in bytes {
-            guard data.count < 65536 else { throw DesktopError(code: "authorization_failed", message: "Server 响应过大") }
-            data.append(byte)
-        }
-        if method == "DELETE", data.isEmpty { return [:] }
-        guard let object = try JSONValue.decode(data).object else { throw DesktopError(code: "authorization_failed", message: "Server 返回无效响应") }
-        return object
     }
     static func verifyToken(server: String, key: String, confirmedHttpOrigin: String? = nil) async throws -> JSONObject {
         let normalized = try normalizeServerURL(server, confirmedHttpOrigin: confirmedHttpOrigin)
         guard key.hasPrefix("abr_device_"), key.utf8.count <= 4096 else { throw DesktopError(code: "invalid_arguments", message: "请输入 Device Key") }
-        let value = try await fetch(normalized + "/api/device", key: key)
+        let value = try await fetch(normalized + "/api/device", stage: "验证设备凭证", key: key)
         let identity = try NativeContract.load().validate("deviceIdentity", value)
         guard identity.string("kind") == "computer" else { throw DesktopError(code: "authorization_failed", message: "此 Device Key 不属于电脑客户端") }
         return identity
@@ -171,7 +188,7 @@ enum NativeAuthorization {
         defer { Darwin.close(callback.fd) }
         let challenge = base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
         let name = String((Host.current().localizedName ?? ProcessInfo.processInfo.hostName).trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
-        let start = try contract.validate("deviceAuthorizationStart", await fetch(server + "/api/device-authorizations", method: "POST", body: ["kind": .string("computer"), "name": .string(name.isEmpty ? "Computer" : name), "capabilities": .array(["screen", "input", "shell", "files"].map(JSONValue.string)), "redirect_uri": .string(callback.redirect), "code_challenge": .string(challenge), "code_challenge_method": .string("S256"), "state": .string(state)]))
+        let start = try contract.validate("deviceAuthorizationStart", await fetch(server + "/api/device-authorizations", stage: "发起浏览器授权", method: "POST", body: ["kind": .string("computer"), "name": .string(name.isEmpty ? "Computer" : name), "capabilities": .array(["screen", "input", "shell", "files"].map(JSONValue.string)), "redirect_uri": .string(callback.redirect), "code_challenge": .string(challenge), "code_challenge_method": .string("S256"), "state": .string(state)]))
         guard let id = start.string("id") else { throw DesktopError(code: "authorization_failed", message: "Server 返回无效授权") }
         do {
             guard let authorization = start.string("authorization_url"), let url = URL(string: authorization), let selected = URL(string: server), serverOrigin(url) == serverOrigin(selected), url.user == nil, url.password == nil, url.fragment == nil,
@@ -180,13 +197,13 @@ enum NativeAuthorization {
             let deadline = min(expires, epochSeconds() + 300)
             let code = try await callback.receive(state: state, expires: deadline)
             guard epochSeconds() < deadline else { throw DesktopError(code: "authorization_expired", message: "授权已过期，请重新发起") }
-            let token = try contract.validate("deviceAuthorizationToken", await fetch(server + "/api/device-authorizations/token", method: "POST", body: ["code": .string(code), "code_verifier": .string(verifier), "redirect_uri": .string(callback.redirect)], timeout: min(10, max(0.1, deadline - epochSeconds()))))
+            let token = try contract.validate("deviceAuthorizationToken", await fetch(server + "/api/device-authorizations/token", stage: "兑换设备凭证", method: "POST", body: ["code": .string(code), "code_verifier": .string(verifier), "redirect_uri": .string(callback.redirect)], timeout: min(10, max(0.1, deadline - epochSeconds()))))
             guard token.string("kind") == "computer", let key = token.string("key"), let capabilities = token.array("capabilities"), capabilities.allSatisfy({ ["screen", "input", "shell", "files"].contains($0.string ?? "") }) else { throw DesktopError(code: "authorization_failed", message: "Server 返回的设备类型无效") }
             guard epochSeconds() < deadline else { throw DesktopError(code: "authorization_expired", message: "授权已过期，请重新发起") }
             return key
         } catch {
             // A detached bounded cancellation also runs when the command task was cancelled.
-            let cleanup = Task.detached { _ = try? await fetch(server + "/api/device-authorizations/\(id)", method: "DELETE", body: ["code_verifier": .string(verifier)], timeout: 1) }
+            let cleanup = Task.detached { _ = try? await fetch(server + "/api/device-authorizations/\(id)", stage: "取消浏览器授权", method: "DELETE", body: ["code_verifier": .string(verifier)], timeout: 1) }
             await cleanup.value
             throw error
         }
@@ -214,7 +231,16 @@ enum NativeAuthorization {
                 emitJSON(["event": .string("complete"), "ok": .bool(true), "url": .string(url)])
                 return 0
             } catch {
-                emitJSON(["event": .string("error"), "error": .string(Task.isCancelled ? "授权已取消或过期，请重新发起" : (error as? DesktopError)?.message ?? "设备授权失败")])
+                let message: String
+                if Task.isCancelled || error is CancellationError {
+                    message = "授权已取消或过期，请重新发起"
+                } else if let failure = error as? DesktopError {
+                    message = failure.message
+                } else {
+                    let failure = error as NSError
+                    message = "设备授权失败（\(failure.domain) \(failure.code)）"
+                }
+                emitJSON(["event": .string("error"), "error": .string(message)])
                 return 1
             }
         }
