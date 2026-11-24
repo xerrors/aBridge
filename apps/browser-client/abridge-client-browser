@@ -56,7 +56,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         """让携带凭据的重定向请求失败。"""
-        return None
+        return
 
 
 def device_request(origin: str, path: str, *, body=None, key=None) -> dict:
@@ -126,69 +126,93 @@ def open_browser(playwright, home: Path, origin: str):
     )
 
 
-def bind(context, origin: str, device_id: str, device_key: str) -> None:
+def extension_request(page, message: dict, timeout: float = 1):
+    """只从扩展的内部连接页发送请求。"""
+    return page.evaluate(
+        """([message, timeout]) => Promise.race([
+            chrome.runtime.sendMessage(message),
+            new Promise(resolve => setTimeout(resolve, timeout, null))
+        ])""",
+        [message, int(timeout * 1000)],
+    )
+
+
+def bind(page, binding: dict, device_key: str) -> None:
     """通过原版扩展的内部页面发起绑定。"""
-    with connection_page(context) as page:
-        # 首次消息等待扩展 worker 完成存储和标签页初始化。
-        accepted = page.evaluate(
-            """([server, device_key, http_confirmed_origin]) => Promise.race([
-                chrome.runtime.sendMessage({
-                    type: 'bind_token', server, device_key,
-                    ...(http_confirmed_origin ? {http_confirmed_origin} : {})
-                }).then(r => r?.ok),
-                new Promise(resolve => setTimeout(() => resolve(false), 12000))
-            ])""",
-            [origin, device_key, origin if origin.startswith("http://") else None],
-        )
-        if not accepted:
-            raise ValueError("binding rejected")
-        verify_binding(page, origin, device_id)
+    origin = binding["browser_origin"]
+    message = {"type": "bind_token", "server": origin, "device_key": device_key}
+    if origin.startswith("http://"):
+        message["http_confirmed_origin"] = origin
+    if binding["revision"]:
+        message["platform_revision"] = binding["revision"]
+    accepted = extension_request(page, message, timeout=5)
+    if not accepted or not accepted.get("ok"):
+        raise ValueError("binding rejected")
 
 
-def verify_binding(page, origin: str, device_id: str, *, timeout: float = 7) -> bool:
-    """核对扩展保存的绑定，并返回扩展实际报告的连接状态。"""
+def profile_status(page, timeout: float = 5) -> dict:
+    """等待扩展完成本地存储和标签页恢复。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        status = page.evaluate(
-            """() => Promise.race([
-                chrome.runtime.sendMessage({type: 'status'}),
-                new Promise(resolve => setTimeout(resolve, 500, null)),
-            ])"""
-        )
+        status = extension_request(page, {"type": "status"}, timeout=0.5)
+        if status and status.get("ok"):
+            return status
+        time.sleep(0.1)
+    raise TimeoutError("browser status could not be read")
+
+
+def matches_binding(status: dict, binding: dict, *, legacy: bool = False) -> bool:
+    revision = status.get("platform_revision")
+    return (
+        status.get("configured")
+        and status.get("device_id") == binding["device_id"]
+        and status.get("server") == binding["browser_origin"]
+        and (revision == binding["revision"] or revision is None and (legacy or not binding["revision"]))
+    )
+
+
+def verify_binding(page, binding: dict, *, timeout: float = 7, connected: bool = False) -> None:
+    """等待指定版本落盘。平台代理交接还须确认 WebSocket 与 Server 提交成功。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = extension_request(page, {"type": "status"}, timeout=0.5)
         if status and status.get("authorization_error"):
             raise ValueError("binding failed")
         if status and status.get("ok") and not status.get("authorizing"):
-            if (
-                status.get("configured")
-                and not status.get("revoked")
-                and status.get("device_id") == device_id
-                and status.get("server") == origin
-            ):
-                return status.get("connected") is True
-            raise BindingMissing("expected browser binding is missing")
+            if not matches_binding(status, binding) or status.get("revoked"):
+                raise BindingMissing("expected browser binding is missing")
+            if not connected:
+                return
+            if status.get("connected"):
+                if not status.get("replacement_pending"):
+                    return
+                state = resolve_binding(page, "confirm", binding["revision"])
+                if state == "active":
+                    return
+                if state == "invalid":
+                    raise BindingMissing("candidate binding is no longer valid")
         time.sleep(0.1)
     raise TimeoutError("browser binding did not complete")
 
 
-def activate(playwright, home: Path, binding: dict, key: str | None = None):
-    """沿用原 Profile 并核对扩展保存的设备身份。"""
-    origin = binding["browser_origin"]
-    context = open_browser(playwright, home, origin)
-    try:
-        if key is not None:
-            bind(context, origin, binding["device_id"], key)
-            save_binding(home, binding)
-        else:
-            with connection_page(context) as page:
-                try:
-                    verify_binding(page, origin, binding["device_id"])
-                except BindingMissing:
-                    (home / "binding.json").unlink(missing_ok=True)
-                    raise
-        return context
-    except (Error, OSError, ValueError, KeyError):
-        context.close()
-        raise
+def resolve_binding(page, action: str, revision: int) -> str:
+    reply = extension_request(
+        page,
+        {"type": "platform_binding", "action": action, "revision": revision},
+        timeout=12,
+    )
+    if not reply or not reply.get("ok"):
+        raise ValueError("binding resolution failed")
+    return reply["state"]
+
+
+def published_binding(status: dict) -> dict:
+    """读取扩展保存的已提交版本。"""
+    return {
+        "browser_origin": status["server"],
+        "device_id": status["device_id"],
+        "revision": status["platform_revision"],
+    }
 
 
 @contextmanager
@@ -202,19 +226,26 @@ def profile_lock(home: Path):
 def describe(home: Path, context=None) -> dict:
     """运行中从扩展回读绑定，只有明确丢失才清理已确认的记录。"""
     binding = binding_for(home)
-    if binding is None:
-        return {"status": "unbound"}
     if context is None:
-        return {**binding, "status": "bound"}
+        return {**binding, "status": "bound"} if binding else {"status": "unbound"}
     try:
         with connection_page(context) as page:
-            connected = verify_binding(page, binding["browser_origin"], binding["device_id"], timeout=1)
-    except BindingMissing:
-        (home / "binding.json").unlink(missing_ok=True)
-        return {"status": "unbound"}
+            status = profile_status(page, timeout=1)
     except Error as exc:
         raise TimeoutError("browser binding could not be read") from exc
-    return {**binding, "status": "running", "connected": connected}
+    if status.get("replacement_pending"):
+        return {**binding, "status": "running", "connected": False} if binding else {"status": "unbound"}
+    if status.get("configured") and not status.get("revoked"):
+        if status.get("platform_revision") is not None and status.get("connected"):
+            current = published_binding(status)
+            if binding != current:
+                save_binding(home, current)
+                binding = current
+        if binding and matches_binding(status, binding, legacy=True):
+            return {**binding, "status": "running", "connected": status.get("connected") is True}
+    if binding and not status.get("authorizing"):
+        (home / "binding.json").unlink(missing_ok=True)
+    return {"status": "unbound"}
 
 
 def platform_binding(data: dict) -> dict:
@@ -226,24 +257,90 @@ def platform_binding(data: dict) -> dict:
     return {"browser_origin": origin, "device_id": device_id, "revision": revision}
 
 
-def prepare_binding(home: Path, data: dict) -> tuple[dict, str | None]:
-    """沿用已确认的绑定，或为新版本兑换设备凭据。"""
-    requested = platform_binding(data)
-    prior = binding_for(home)
-    if prior == requested:
-        return requested, None
-    if prior and (prior["browser_origin"] != requested["browser_origin"] or prior["revision"] >= requested["revision"]):
-        raise ValueError("binding version or origin changed")
-    token = data["bootstrap_token"]
+def redeem_binding(binding: dict, token) -> dict:
+    """为候选版本兑换设备凭据。"""
     if not isinstance(token, str) or not token:
         raise ValueError("browser ticket required")
     device = device_request(
-        requested["browser_origin"], "/api/managed-browsers/redeem",
-        body={"device_id": requested["device_id"], "bootstrap_token": token},
+        binding["browser_origin"], "/api/managed-browsers/redeem",
+        body={"device_id": binding["device_id"], "bootstrap_token": token},
     )
-    if device["device_id"] != requested["device_id"]:
+    if device["device_id"] != binding["device_id"] or device.get("revision") != binding["revision"]:
         raise ValueError("unexpected browser identity")
-    return requested, device["key"]
+    return device
+
+
+def settle_interrupted_binding(page, home: Path, binding: dict, status: dict, token) -> dict:
+    """恢复上一轮交接。即使上一次提交回执丢失，也以 Server 生效版本为准。"""
+    candidate_revision = status.get("platform_revision")
+    if status.get("replacement_pending"):
+        if matches_binding(status, binding) and not status.get("revoked"):
+            if resolve_binding(page, "resume", candidate_revision) != "invalid":
+                return profile_status(page)
+            if not token:
+                raise ValueError("candidate could not be verified; a fresh ticket is required")
+        if resolve_binding(page, "abort", candidate_revision) == "active":
+            save_binding(home, published_binding(status))
+            if candidate_revision > binding["revision"]:
+                raise ValueError("a newer browser binding is already active")
+        return profile_status(page)
+    if type(candidate_revision) is int and candidate_revision > binding["revision"]:
+        if status.get("connected"):
+            save_binding(home, published_binding(status))
+        raise ValueError("a newer browser binding already exists")
+    return status
+
+
+def platform_start(page, home: Path, binding: dict, token) -> None:
+    """只在候选登记已经生效后更新本机发布版本。"""
+    status = settle_interrupted_binding(page, home, binding, profile_status(page), token)
+    prior = binding_for(home)
+    matches = matches_binding(status, binding, legacy=prior == binding) and not status.get("revoked")
+    if matches and not status.get("replacement_pending") and prior == binding:
+        if status.get("platform_revision") is None:
+            resolve_binding(page, "resume", binding["revision"])
+        return
+    key = None if matches else redeem_binding(binding, token)["key"]
+    try:
+        if key is not None:
+            bind(page, binding, key)
+        verify_binding(page, binding, timeout=12, connected=True)
+    except (Error, OSError, ValueError, KeyError):
+        status = profile_status(page)
+        if status.get("authorizing"):
+            extension_request(page, {"type": "authorize_cancel"}, timeout=3)
+        if (
+            status.get("replacement_pending")
+            and matches_binding(status, binding)
+            and resolve_binding(page, "abort", binding["revision"]) == "active"
+        ):
+            save_binding(home, binding)
+            return
+        raise
+    save_binding(home, binding)
+
+
+def activate(playwright, home: Path, binding: dict, *, context=None, token=None, key=None):
+    """沿用原 Profile。只有新启动的 Chromium 由本次失败关闭。"""
+    current = context or open_browser(playwright, home, binding["browser_origin"])
+    try:
+        with connection_page(current) as page:
+            if key is not None:
+                bind(page, binding, key)
+                verify_binding(page, binding)
+                save_binding(home, binding)
+            elif binding["revision"]:
+                platform_start(page, home, binding, token)
+            else:
+                status = profile_status(page)
+                if not matches_binding(status, binding) or status.get("revoked"):
+                    (home / "binding.json").unlink(missing_ok=True)
+                    raise BindingMissing("expected browser binding is missing")
+        return current
+    except (Error, OSError, ValueError, KeyError, TypeError):
+        if context is None:
+            current.close()
+        raise
 
 
 def serve(home: Path, foreground: bool) -> None:
@@ -276,12 +373,19 @@ def serve(home: Path, foreground: bool) -> None:
                             message = json.loads(stream.readline(MAX_MESSAGE + 1))
                             match message["action"]:
                                 case "start" if not foreground:
-                                    binding, key = prepare_binding(home, message["handoff"])
-                                    if context is None or key is not None:
-                                        previous, context = context, None
-                                        if previous is not None:
-                                            previous.close()
-                                        context = activate(playwright, home, binding, key)
+                                    handoff = message["handoff"]
+                                    binding = platform_binding(handoff)
+                                    prior = binding_for(home)
+                                    if prior and (
+                                        prior["browser_origin"] != binding["browser_origin"]
+                                        or prior["device_id"] != binding["device_id"]
+                                        or prior["revision"] > binding["revision"]
+                                    ):
+                                        raise ValueError("binding version or origin changed")
+                                    context = activate(
+                                        playwright, home, binding, context=context,
+                                        token=handoff.get("bootstrap_token"),
+                                    )
                                 case "stop":
                                     if context is not None:
                                         context.close()
@@ -318,7 +422,7 @@ def request_service(home: Path, action: str) -> dict:
     if len(payload) > MAX_MESSAGE:
         raise ValueError("control request too large")
     with socket.socket(socket.AF_UNIX) as client:
-        client.settimeout(44 if action == "start" else 7)
+        client.settimeout(65 if action == "start" else 7)
         endpoint = str(home / "control.sock")
         try:
             client.connect(endpoint)
@@ -377,7 +481,7 @@ def main() -> None:
                 raise ValueError("existing binding belongs to another origin or platform")
             device = device_request(origin, "/api/device", key=key)
             result = {"device_id": device["id"], "browser_origin": origin, "revision": 0}
-            activate(playwright, home, result, key).close()
+            activate(playwright, home, result, key=key).close()
             print(json.dumps(describe(home)))
     elif args.action in {"run", "_serve"}:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

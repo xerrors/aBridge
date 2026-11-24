@@ -191,7 +191,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   );
   register(
     "session_open",
-    "Open a capability-scoped session on an explicit online device. Use available_tools for this session and obtain a new observation after opening it. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
+    "Open a capability-scoped session on an explicit device. A browser may reconnect within 15 seconds. Use available_tools for this session and obtain a new observation after opening it. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
     z.object({ device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) }).strict(),
     async (a, signal) => {
       const session = await control.openSession(agentConnection, a.device_id, a.capabilities, signal);

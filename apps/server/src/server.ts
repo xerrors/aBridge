@@ -148,6 +148,7 @@ export async function createServer(config: ServerConfig) {
     const extensionAuthorization =
       (pathname === "/api/device-authorizations" && request.method === "POST") ||
       (pathname === "/api/device-authorizations/token" && request.method === "POST") ||
+      (pathname === "/api/managed-browsers/abandon" && request.method === "POST") ||
       (pathname === "/api/device" && ["GET", "PATCH"].includes(request.method)) ||
       (/^\/api\/device-authorizations\/[^/]+$/.test(pathname) && request.method === "DELETE");
     if (pathname === "/ws/browser" || (extensionAuthorization && browserOrigin.test(origin))) {
@@ -369,9 +370,25 @@ export async function createServer(config: ServerConfig) {
     return control.deviceView(store.device(device.id)!);
   });
   app.get("/api/device", async (request) => {
-    const device = store.authenticateDevice(bearer(request));
+    const key = bearer(request);
+    const active = store.authenticateDevice(key);
+    const device =
+      active ?? (identity.managedBrowserEnabled ? store.browserReplacementDevice(key) : undefined);
     if (!device) throw new BridgeError("unauthorized", "设备 Token 无效或已撤销", 401);
-    return { id: device.id, name: device.name, kind: device.kind, capabilities: device.capabilities };
+    const revision =
+      device.kind === "browser"
+        ? active
+          ? store.browserEnrollmentRevision(device.id)
+          : store.browserReplacement(device.id)?.revision
+        : undefined;
+    return {
+      id: device.id,
+      name: device.name,
+      kind: device.kind,
+      capabilities: device.capabilities,
+      ...(revision !== undefined && { revision }),
+      ...(!active && { pending: true }),
+    };
   });
   app.patch("/api/device", async (request) => {
     const device = store.authenticateDevice(bearer(request));
@@ -522,6 +539,18 @@ export async function createServer(config: ServerConfig) {
     };
   }
 
+  function browserReplacementView(row: NonNullable<ReturnType<Store["browserReplacement"]>>) {
+    return {
+      installation_id: row.installation_id,
+      revision: row.revision,
+      device_id: row.device_id,
+      key_issued: row.key_digest !== null,
+      status: "offline",
+      pending: true,
+      expires_at: row.expires_at,
+    };
+  }
+
   for (const scope of ["managed", "personal"] as const) {
     const path = `/api/${scope}-browsers`;
     const registration = (grant: BrowserEnrollmentIdentity) =>
@@ -529,12 +558,14 @@ export async function createServer(config: ServerConfig) {
     app.get(path + "/status", async (request, reply) => {
       const { grant } = await identity.authenticateBrowserEnrollment(bearer(request), scope, "status");
       const row = registration(grant);
+      const replacement = row && store.browserReplacement(row.device_id);
       reply.header("Cache-Control", "no-store");
       return {
         version: 2,
         enabled: identity.managedBrowserEnabled,
         browser_origin: publicOrigin!.origin,
         binding: row ? browserBindingView(row) : null,
+        ...(replacement && { replacement: browserReplacementView(replacement) }),
       };
     });
     app.post(path + "/provision", async (request, reply) => {
@@ -546,7 +577,7 @@ export async function createServer(config: ServerConfig) {
       const existing = registration(grant);
       if (existing && browserBindingView(existing).status === "paused")
         throw new BridgeError("device_paused", "Resume the browser's local access before provisioning", 409);
-      const { row, replaced } =
+      const { row, replacement } =
         scope === "managed"
           ? store.provisionManagedBrowser(grant, managedBrowserProvisionSchema.parse(payload))
           : store.provisionPersonalBrowser(
@@ -554,17 +585,19 @@ export async function createServer(config: ServerConfig) {
               personalBrowserProvisionSchema.parse(payload),
               config.identity?.clientName?.trim(),
             );
-      if (replaced) await control.invalidateDevice(row.device_id);
-      const current = registration(grant);
-      if (!current || current.revision !== row.revision)
-        throw new BridgeError("stale_binding", "The browser binding changed", 409);
-      const view = browserBindingView(current);
+      const view = browserBindingView(row);
       if (view.status === "revoked")
         throw new BridgeError("managed_browser_revoked", "Browser access was revoked", 403);
       reply.header("Cache-Control", "no-store");
+      if (replacement)
+        return {
+          ...browserReplacementView(replacement),
+          key_issued: false,
+          bootstrap_token: store.issueReplacementBootstrap(replacement),
+        };
       return {
         ...view,
-        bootstrap_token: store.issueBrowserBootstrap(current, scope),
+        bootstrap_token: store.issueBrowserBootstrap(row, scope),
       };
     });
   }
@@ -573,22 +606,30 @@ export async function createServer(config: ServerConfig) {
       throw new BridgeError("managed_browser_disabled", "Managed browsers are not enabled", 404);
     rateLimit(request, "managed-browser-redeem", 120);
     const body = managedBrowserRedeemSchema.parse(request.body);
-    const { device, key } = store.redeemManagedBrowser(
+    const { device, key, pending, revision } = store.redeemManagedBrowser(
       body.device_id,
       body.bootstrap_token,
       control.isLocalCapabilityBlocked(body.device_id, "browser"),
     );
-    await control.invalidateDevice(device.id);
-    if (!store.authenticateDevice(key))
-      throw new BridgeError("stale_binding", "The browser binding changed", 409);
+    if (!pending) {
+      await control.invalidateDevice(device.id);
+      if (!store.authenticateDevice(key))
+        throw new BridgeError("stale_binding", "The browser binding changed", 409);
+    }
     reply.header("Cache-Control", "no-store");
     return {
       device_id: device.id,
       key,
+      pending,
+      revision,
       kind: device.kind,
       name: device.name,
       capabilities: device.capabilities,
     };
+  });
+  app.post("/api/managed-browsers/abandon", async (request) => {
+    rateLimit(request, "browser-replacement-abandon", 120);
+    return { status: store.abandonBrowserReplacement(bearer(request)) };
   });
   app.post("/api/managed-browsers/stop", async (request, reply) => {
     const { grant, payload } = await identity.authenticateBrowserEnrollment(
@@ -691,7 +732,14 @@ export async function createServer(config: ServerConfig) {
                 const key = kind === "browser" ? hello.device_key : bearer(request);
                 if (typeof key !== "string")
                   throw new BridgeError("unauthorized", "Device key is required", 401);
-                ticket = await control.attachConnection(key, kind, hello, transport);
+                ticket = await control.attachConnection(
+                  key,
+                  kind,
+                  hello,
+                  transport,
+                  identity.managedBrowserEnabled,
+                  () => !closed && socket.readyState === socket.OPEN,
+                );
                 clearTimeout(timer);
                 if (closed) {
                   control.dropConnection(ticket);

@@ -234,15 +234,17 @@ python3 -m venv .venv
 
 ### 可选平台托管浏览器
 
-Server 启用平台委托并设置 `ABRIDGE_MANAGED_BROWSER_ENABLED=true` 后，受信平台可为工作负载登记浏览器。平台向 `GET /api/managed-browsers/status` 提交只读 JWT。首次安装、替换安装或确认丢失本地绑定时，平台用当前登记版本签发 `POST /api/managed-browsers/provision` 的 JWT。Server 按发行方、客户端与主体登记专属浏览器设备，并维护递增的绑定版本。
+Server 启用平台委托并设置 `ABRIDGE_MANAGED_BROWSER_ENABLED=true` 后，受信平台可为工作负载登记浏览器。平台向 `GET /api/managed-browsers/status` 提交只读 JWT。首次安装、计划换绑或确认丢失本地绑定时，平台用当前登记版本签发 `POST /api/managed-browsers/provision` 的 JWT。Server 按发行方、客户端与主体登记专属浏览器设备，并维护递增的绑定版本。
 
 平台通过私有 stdin 将 `browser_origin`、`device_id`、`revision` 与首次绑定需要的 `bootstrap_token` 交给浏览器客户端的 `start`。客户端从同一公开 Origin 的 `/api/managed-browsers/redeem` 换取 Browser Device Key。客户端从已确认的 Profile 恢复时，交接只需要 Origin、设备 ID 和版本。来宾须能访问公开 Origin 的 HTTPS 与 WebSocket。HTTP 部署须在 Server 显式打开相应配置，并在交接中提供与 Origin 一致的 `http_confirmed_origin`。
 
-客户端运行时通过 `status` 返回扩展自己的 `connected`。平台核对此值和同一版本的在线登记，再将浏览器标为就绪。
+计划换绑使用 `replace: true`。换绑响应提供候选版本和票据，状态接口的 `binding` 继续报告当前安装，`replacement` 报告候选版本及其有效期。候选票据兑换出的 Key 可用于验证设备身份。新 Profile 保存凭据并通过 WebSocket 往返确认后，Server 才启用候选 Key、推进版本并结束旧会话。候选启动失败时，旧登记继续有效。有效期内可用当前版本及同一候选安装标识重新领票，新票据签发时上一轮候选 Key 即失效。
 
-工作负载的通用 `abridge-delegation` 委托还须携带当前 `installation_id` 与 `revision`。aBridge 只允许它控制本次登记的浏览器。替换会轮换设备凭据并废止旧会话。平台撤权使用 `POST /api/managed-browsers/stop`，按版本撤销设备 Key、该工作负载的 MCP 连接和未兑换票据。客户端本地 `stop` 关闭浏览器进程，保留绑定。已有关闭状态可由受信平台查询，即使该部署随后关闭了新登记。
+客户端运行时通过 `status` 返回扩展自己的 `connected`。平台应核对此值及 Server `binding` 的同一版本已在线，再将浏览器标为就绪。
 
-平台也可以在登录用户明确授权后，用该用户的 OIDC `sub` 登记其个人运行环境。`GET /api/personal-browsers/status` 和 `POST /api/personal-browsers/provision` 沿用上述状态和版本协议，分别校验 `abridge-personal-browser-status` 和 `abridge-personal-browser-provision` 用途及对应端点的受众。个人浏览器使用同一票据兑换接口。它是用户账户下的普通浏览器设备，受现有平台连接的设备、能力和撤销策略约束。用户可以在管理台查看和撤销设备。
+工作负载的通用 `abridge-delegation` 委托还须携带当前 `installation_id` 与 `revision`。aBridge 只允许它控制本次登记的浏览器。新版本启用时，Server 同时撤销旧版 MCP 连接。若旧 Key 已泄露或需立即取消访问，平台使用 `POST /api/managed-browsers/stop`，按当前版本撤销设备 Key、该工作负载的 MCP 连接和全部候选凭据。客户端本地 `stop` 关闭浏览器进程并保留绑定。已有关闭状态可由受信平台查询，即使该部署随后关闭了新登记。
+
+平台也可以在登录用户明确授权后，用该用户的 OIDC `sub` 登记其个人运行环境。`GET /api/personal-browsers/status` 和 `POST /api/personal-browsers/provision` 沿用上述状态和版本协议，分别校验 `abridge-personal-browser-status` 和 `abridge-personal-browser-provision` 用途及对应端点的受众，并使用同一票据兑换接口。个人登记使用账户级平台授权。首次登记时，若该账户尚无此平台连接，Server 会建立覆盖账户全部设备和能力的连接。已有连接沿用用户设定的设备、能力和撤销策略。用户可以在管理台管理平台连接和设备。
 
 在管理台为个人浏览器重新生成凭据时，当前安装需要重新连接。管理台签发的 Device Key 可以照常绑定，直到用户在平台重新连接并兑换新凭据。
 

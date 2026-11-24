@@ -1250,6 +1250,139 @@ test("cancelling in-flight Token verification cannot commit a late reply", async
   assert.equal(local.device?.key, undefined);
 });
 
+for (const outcome of ["abandoned", "active", "invalid"]) {
+  test(`worker restart reconciles a candidate reported as ${outcome}`, async (t) => {
+    const server = "https://abridge.example";
+    const candidateKey = "abr_device_candidate";
+    const originalKey = "abr_device_original";
+    const originalJournal = { write: { status: "executed", request_hash: "fixture" } };
+    const identity = { id: "browser-device", name: "Browser", kind: "browser", capabilities: ["browser"] };
+    const local = {
+      device: { server, key: originalKey, device_id: identity.id, paused: true, platform_revision: 1 },
+      operation_journal: structuredClone(originalJournal),
+    };
+    const bind = {
+      type: "bind_token",
+      server,
+      device_key: candidateKey,
+      platform_revision: 2,
+    };
+    const fromConnection = (h, message) => h.fromPage(message, "connection.html");
+    const resolve = (h, action) => fromConnection(h, { type: "platform_binding", action, revision: 2 });
+    const waitConnected = async (h) => {
+      for (let i = 0; i < 50; i++) {
+        const status = await fromConnection(h, { type: "status" });
+        if (status.connected) return status;
+        await delay(5);
+      }
+      assert.fail("worker did not connect");
+    };
+
+    const first = harness(t, local);
+    first.environment.fetch = async (url, init) => {
+      assert.equal(url, `${server}/api/device`);
+      assert.equal(init.headers.Authorization, `Bearer ${candidateKey}`);
+      assert.equal(init.redirect, "error");
+      return Response.json({ ...identity, pending: true, revision: 2 });
+    };
+    await first.start();
+    await waitConnected(first);
+    assert.equal((await fromConnection(first, bind)).ok, true);
+    for (let i = 0; i < 50; i++) {
+      const status = await fromConnection(first, { type: "status" });
+      if (status.connected && status.platform_revision === 2) break;
+      await delay(5);
+    }
+    assert.equal(local.device.key, candidateKey);
+    assert.equal(local.binding_replacement.device.key, originalKey);
+    assert.deepEqual(await resolve(first, "confirm"), { ok: true, state: "pending" });
+    await first.client.close();
+
+    const resumed = harness(t, local);
+    resumed.environment.fetch = async (url, init) => {
+      if (url.endsWith("/abandon")) {
+        assert.equal(init.method, "POST");
+        assert.equal(init.headers.Authorization, `Bearer ${candidateKey}`);
+        assert.equal(init.redirect, "error");
+        return Response.json({ status: outcome });
+      }
+      assert.equal(url, `${server}/api/device`);
+      if (init.headers.Authorization === `Bearer ${originalKey}`)
+        assert.fail("an HTTP error on the previous key must not block restoration or mark it revoked");
+      if (outcome === "invalid" && init.headers.Authorization === `Bearer ${candidateKey}`)
+        return new Response(null, { status: 401 });
+      assert.equal(init.headers.Authorization, "Bearer abr_device_fresh");
+      return Response.json({ ...identity, pending: true, revision: 2 });
+    };
+    await resumed.start();
+    resumed.chrome.runtime.onStartup.emit();
+    await delay(10);
+    assert.equal(resumed.sockets.length, 0, "restart must not activate an unresolved candidate");
+    if (outcome === "invalid") {
+      assert.deepEqual(await resolve(resumed, "resume"), { ok: true, state: "invalid" });
+      assert.equal(resumed.sockets.length, 0, "a superseded candidate must not reconnect");
+    }
+    const activated = outcome === "active";
+    const state = activated ? "active" : "restored";
+    assert.deepEqual(await resolve(resumed, "abort"), { ok: true, state });
+    const connected = await waitConnected(resumed);
+    assert.equal(connected.platform_revision, activated ? 2 : 1);
+    assert.equal(connected.paused, true);
+    assert.equal(local.device.key, activated ? candidateKey : originalKey);
+    assert.deepEqual(local.operation_journal, activated ? {} : originalJournal);
+    assert.equal(local.binding_replacement, null);
+    if (outcome === "invalid") {
+      assert.equal((await fromConnection(resumed, { ...bind, device_key: "abr_device_fresh" })).ok, true);
+      for (let i = 0; i < 50 && local.device.key !== "abr_device_fresh"; i++) await delay(5);
+      assert.equal(local.device.key, "abr_device_fresh");
+      assert.equal(local.binding_replacement.device.key, originalKey);
+    }
+  });
+}
+
+test("a failed candidate storage write reconnects the still-valid prior profile", async (t) => {
+  const server = "https://abridge.example";
+  const local = {
+    device: { server, key: "abr_device_original", device_id: "browser-device", platform_revision: 1 },
+  };
+  const h = harness(t, local);
+  h.environment.fetch = async () =>
+    Response.json({
+      id: local.device.device_id,
+      name: "Candidate",
+      kind: "browser",
+      capabilities: ["browser"],
+      pending: true,
+      revision: 2,
+    });
+  const save = h.chrome.storage.local.set;
+  h.chrome.storage.local.set = async (values) => {
+    if (values.binding_replacement) throw new Error("fixture storage failure");
+    await save(values);
+  };
+  await h.start();
+  for (let i = 0; i < 50 && !(await h.popup({ type: "status" })).connected; i++) await delay(5);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(
+    (
+      await h.fromPage(
+        { type: "bind_token", server, device_key: "abr_device_candidate", platform_revision: 2 },
+        "connection.html",
+      )
+    ).ok,
+    true,
+  );
+  for (let i = 0; i < 50 && h.sockets.length < 2; i++) await delay(5);
+  const status = await h.popup({ type: "status" });
+  assert.equal(status.connected, true);
+  assert.equal(status.platform_revision, 1);
+  assert.equal(local.binding_replacement, undefined);
+  assert.deepEqual(
+    h.messages.filter(({ type }) => type === "hello").map(({ device_key }) => device_key),
+    ["abr_device_original", "abr_device_original"],
+  );
+});
+
 test("late close and revoke from a replaced browser binding cannot revoke the new Token", async (t) => {
   const local = {
     device: {

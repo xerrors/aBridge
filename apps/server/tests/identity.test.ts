@@ -7,11 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { on, once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { WebSocket } from "ws";
 import { createServer } from "../src/server.js";
 import { Identity, validateIdentityConfig } from "../src/identity.js";
 import { Store } from "../src/store.js";
+import { BridgeError } from "../src/types.js";
 
 /** 使用真实 HTTP OIDC 替身，保留真实签名与本地数据库。 */
 async function fixture(
@@ -112,14 +116,15 @@ async function fixture(
     allowInsecureHttp: options.allowInsecureHttp,
     ...(options.backchannel ? { backchannelOrigin } : {}),
   };
-  const server = await createServer({
+  const serverConfig = {
     dbPath: join(dir, "server.db"),
     publicOrigin: origin,
     identity: config,
     port: 0,
-  });
-  const serverUrl = await server.start();
-  const identity = new Identity(config, origin, server.store);
+  };
+  let server = await createServer(serverConfig);
+  let serverUrl = await server.start();
+  let identity = new Identity(config, origin, server.store);
   async function login(subject = "user-a", returnTo = "/#authorize=fixture") {
     sub = subject;
     const start = await server.app.inject({
@@ -175,9 +180,15 @@ async function fixture(
     });
   }
   return {
-    server,
-    serverUrl,
-    identity,
+    get server() {
+      return server;
+    },
+    get serverUrl() {
+      return serverUrl;
+    },
+    get identity() {
+      return identity;
+    },
     login,
     token,
     personalBrowserRequest,
@@ -190,6 +201,12 @@ async function fixture(
       unavailable = true;
     },
     calls: () => ({ tokenCalls, stolenCalls }),
+    async restart() {
+      await server.close();
+      server = await createServer(serverConfig);
+      serverUrl = await server.start();
+      identity = new Identity(config, origin, server.store);
+    },
     async close() {
       await server.close();
       await provider.close();
@@ -310,13 +327,15 @@ test("managed browser enrollment fences tickets, device keys and MCP access by b
     });
   }
   const sockets: WebSocket[] = [];
-  async function connect(device_key: string) {
+  async function connect(device_key: string, autoPong = true) {
     const socket = new WebSocket(f.serverUrl.replace("http:", "ws:") + "/ws/browser", {
       origin: "chrome-extension://" + "a".repeat(32),
+      autoPong,
     });
     sockets.push(socket);
-    await once(socket, "open");
-    const welcome = once(socket, "message");
+    await once(socket, "open", { signal: AbortSignal.timeout(3000) });
+    const welcome = once(socket, "message", { signal: AbortSignal.timeout(3000) });
+    const ping = autoPong ? undefined : once(socket, "ping", { signal: AbortSignal.timeout(3000) });
     socket.send(
       JSON.stringify({
         type: "hello",
@@ -332,7 +351,29 @@ test("managed browser enrollment fences tickets, device keys and MCP access by b
     const [frame] = await welcome;
     const connected = JSON.parse(frame.toString());
     assert.equal(connected.type, "welcome");
-    return { socket, epoch: connected.connection_epoch };
+    return { socket, epoch: connected.connection_epoch, ping };
+  }
+  function deviceAPI(key: string, method: "GET" | "PATCH" = "GET") {
+    return f.server.app.inject({
+      method,
+      url: "/api/device",
+      headers: { authorization: "Bearer " + key },
+      ...(method === "PATCH" && { payload: { name: "Candidate" } }),
+    });
+  }
+  function abandon(key: string) {
+    return f.server.app.inject({
+      method: "POST",
+      url: root + "abandon",
+      headers: { authorization: "Bearer " + key, origin: "chrome-extension://" + "a".repeat(32) },
+    });
+  }
+  async function waitForActivation(key: string) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (f.server.store.authenticateDevice(key)) return;
+      await delay(20);
+    }
+    assert.fail("The browser never became active");
   }
   try {
     assert.deepEqual((await request("status")).json(), {
@@ -391,6 +432,7 @@ test("managed browser enrollment fences tickets, device keys and MCP access by b
     assert.equal(redeemed.statusCode, 200, redeemed.body);
     const key = redeemed.json().key;
     const { socket, epoch } = await connect(key);
+    await waitForActivation(key);
     assert.equal((await request("status")).json().binding.status, "online");
     assert.equal((await request("provision", binding(2, "install-b"))).statusCode, 409);
     for (const local of [
@@ -445,13 +487,66 @@ test("managed browser enrollment fences tickets, device keys and MCP access by b
     );
     const session = await f.server.control.openSession(connection, first.device_id, ["browser"]);
 
-    const oldClose = once(socket, "close");
     const replaced = await request("provision", { ...binding(2, "install-b"), replace: true });
     assert.equal(replaced.statusCode, 200, replaced.body);
     const third = replaced.json();
     assert.equal(third.device_id, first.device_id);
     assert.equal(third.revision, 3);
+    assert.equal(third.pending, true);
+    const during = (await request("status")).json();
+    assert.equal(during.binding.revision, 2);
+    assert.equal(during.binding.status, "online");
+    assert.equal(during.replacement.revision, 3);
+    assert.equal(f.server.store.session(session.id)?.status, "active");
+    assert.equal((await deviceAPI(key)).statusCode, 200);
+    assert.equal((await f.identity.authenticate(token))?.id, connection.id);
+    const current = binding(3, "install-b");
+    assert.equal(await f.identity.authenticate(await f.token(uid, current)), undefined);
+    assert.equal((await request("provision", { ...binding(2, "install-c"), replace: true })).statusCode, 409);
+    assert.equal((await request("stop", current)).statusCode, 409);
+
+    const candidate = await redeem(first.device_id, third.bootstrap_token);
+    assert.equal(candidate.statusCode, 200, candidate.body);
+    assert.equal(candidate.json().pending, true);
+    const candidateKey = candidate.json().key;
+    assert.equal((await deviceAPI(candidateKey)).json().pending, true);
+    assert.equal((await deviceAPI(candidateKey, "PATCH")).statusCode, 401);
+    assert.equal((await redeem(first.device_id, third.bootstrap_token)).statusCode, 400);
+    const failed = await connect(candidateKey, false);
+    await failed.ping;
+    await once(failed.socket, "close", { signal: AbortSignal.timeout(4000) });
+    assert.equal((await deviceAPI(key)).statusCode, 200);
+    assert.equal((await f.identity.authenticate(token))?.id, connection.id);
+    assert.equal(f.server.store.session(session.id)?.status, "active");
+    assert.equal((await request("status")).json().binding.status, "online");
+    assert.equal((await abandon(candidateKey)).json().status, "abandoned");
+    assert.equal((await deviceAPI(candidateKey)).statusCode, 401);
+    assert.equal((await request("status")).json().replacement, undefined);
+
+    const retried = await request("provision", { ...binding(2, "install-b"), replace: true });
+    assert.equal(retried.statusCode, 200, retried.body);
+    const previousAttemptKey = (await redeem(first.device_id, retried.json().bootstrap_token)).json().key;
+    const previousAttempt = await connect(previousAttemptKey, false);
+    const [challenge] = (await previousAttempt.ping)!;
+    const superseded = await request("provision", { ...binding(2, "install-b"), replace: true });
+    assert.equal(superseded.statusCode, 200, superseded.body);
+    assert.equal(superseded.json().key_issued, false);
+    assert.equal((await deviceAPI(previousAttemptKey)).statusCode, 401);
+    assert.equal((await abandon(previousAttemptKey)).json().status, "invalid");
+    const previousAttemptClosed = once(previousAttempt.socket, "close", {
+      signal: AbortSignal.timeout(3000),
+    });
+    previousAttempt.socket.pong(challenge);
+    assert.equal((await previousAttemptClosed)[0], 4401);
+    assert.equal((await f.identity.authenticate(token))?.id, connection.id);
+    assert.equal(f.server.store.session(session.id)?.status, "active");
+    const newKey = (await redeem(first.device_id, superseded.json().bootstrap_token)).json().key;
+    const oldClose = once(socket, "close", { signal: AbortSignal.timeout(3000) });
+    const { socket: currentSocket } = await connect(newKey);
     assert.deepEqual((await oldClose).slice(0, 1), [4403]);
+    assert.equal((await deviceAPI(newKey)).json().pending, undefined);
+    assert.equal((await abandon(newKey)).json().status, "active");
+    assert.equal((await request("status")).json().replacement, undefined);
     assert.equal(f.server.store.authenticateDevice(key), undefined);
     assert.notEqual(f.server.store.session(session.id)?.status, "active");
     assert.equal(await f.identity.authenticate(token), undefined);
@@ -459,18 +554,148 @@ test("managed browser enrollment fences tickets, device keys and MCP access by b
     assert.equal((await request("provision", { ...binding(2), replace: true })).statusCode, 409);
     assert.equal((await request("stop", binding(2))).statusCode, 409);
 
-    const newKey = (await redeem(first.device_id, third.bootstrap_token)).json().key;
-    const { socket: currentSocket } = await connect(newKey);
     const currentClose = once(currentSocket, "close");
-    const current = binding(3, "install-b");
+    const beforeStop = await request("provision", { ...binding(3, "install-c"), replace: true });
+    assert.equal(beforeStop.json().pending, true);
     const stopped = await request("stop", current);
     assert.equal(stopped.json().status, "revoked");
     assert.deepEqual((await currentClose).slice(0, 1), [4403]);
     assert.equal(f.server.store.authenticateDevice(newKey), undefined);
     assert.equal(await f.identity.authenticate(await f.token(uid, current)), undefined);
     assert.equal((await request("status")).json().binding.status, "revoked");
+    assert.equal((await redeem(first.device_id, beforeStop.json().bootstrap_token)).statusCode, 400);
     assert.equal((await request("provision", { ...current, replace: true })).statusCode, 403);
     assert.equal((await request("stop", current)).json().status, "revoked");
+  } finally {
+    sockets.forEach((socket) => socket.terminate());
+    await f.close();
+  }
+});
+
+const liveBrowserLauncher = process.env.ABRIDGE_BROWSER_TEST_LAUNCHER;
+const liveBrowserPython = process.env.ABRIDGE_BROWSER_TEST_PYTHON || "python3";
+test(
+  "packaged browser restores an online binding after a failed cutover against a real Server",
+  { skip: !liveBrowserLauncher, timeout: 100_000 },
+  async (t) => {
+    const f = await fixture({ managedBrowserEnabled: true });
+    const state = await mkdtemp(join(tmpdir(), "abridge-cutover-"));
+    const run = promisify(execFile);
+    type Handoff = { device_id: string; revision: number; bootstrap_token?: string };
+    async function cli(action: "start" | "stop" | "status", handoff?: Handoff) {
+      const command = run(liveBrowserPython, ["-I", liveBrowserLauncher!, action], {
+        env: { ...process.env, ABRIDGE_BROWSER_HOME: state },
+        timeout: 48_000,
+      });
+      command.child.stdin?.end(handoff && JSON.stringify({ ...handoff, browser_origin: f.serverUrl }));
+      return JSON.parse((await command).stdout) as { connected?: boolean; revision?: number };
+    }
+    async function provision(revision: number, replace = false): Promise<Handoff> {
+      const reply = await f.personalBrowserRequest("provision", { revision, replace });
+      assert.equal(reply.status, 200);
+      return reply.json();
+    }
+    async function expectOnline(revision: number) {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const local = await cli("status");
+        if (local.connected) {
+          assert.equal(local.revision, revision);
+          const response = await f.personalBrowserRequest("status");
+          const { binding } = await response.json();
+          assert.equal(binding.revision, revision);
+          assert.equal(binding.status, "online");
+          return;
+        }
+        await delay(250);
+      }
+      assert.fail("The browser never reached the requested online revision");
+    }
+    let blocked = true;
+    let failedAttempts = 0;
+    const attach = f.server.control.attachConnection.bind(f.server.control);
+    t.mock.method(f.server.control, "attachConnection", async (...args: Parameters<typeof attach>) => {
+      if (blocked && f.server.store.browserReplacementDevice(args[0])) {
+        failedAttempts++;
+        throw new BridgeError("device_offline", "Fixture rejects candidate connection", 503);
+      }
+      return attach(...args);
+    });
+    try {
+      const original = await provision(0);
+      await cli("start", original);
+      await expectOnline(original.revision);
+
+      const rejected = await provision(original.revision, true);
+      await assert.rejects(cli("start", rejected), { code: 1 });
+      assert.ok(failedAttempts > 0);
+      await cli("start", { device_id: original.device_id, revision: original.revision });
+      await expectOnline(original.revision);
+
+      blocked = false;
+      const retry = await provision(original.revision, true);
+      await cli("start", retry);
+      await expectOnline(retry.revision);
+      await cli("stop");
+      await cli("start", { device_id: retry.device_id, revision: retry.revision });
+      await expectOnline(retry.revision);
+    } finally {
+      await cli("stop").catch(() => {});
+      await f.close();
+      await rm(state, { recursive: true, force: true });
+    }
+  },
+);
+
+test("a locally paused enrollment survives Server restart and blocks prepared candidates", async () => {
+  const f = await fixture({ managedBrowserEnabled: true });
+  const { personalBrowserRequest: request, redeemBrowser: redeem } = f;
+  const sockets: WebSocket[] = [];
+  async function begin(device_key: string) {
+    const socket = new WebSocket(f.serverUrl.replace("http:", "ws:") + "/ws/browser", {
+      origin: "chrome-extension://" + "a".repeat(32),
+    });
+    sockets.push(socket);
+    await once(socket, "open", { signal: AbortSignal.timeout(3000) });
+    socket.send(
+      JSON.stringify({
+        type: "hello",
+        protocol: "abridge/1",
+        platform: "Browser extension",
+        version: "0.5.1",
+        paused: false,
+        instance_id: "pause-restart",
+        device_key,
+        capabilities: { browser: true },
+      }),
+    );
+    return socket;
+  }
+  try {
+    const first = await (await request("provision")).json();
+    const priorKey = (await (await redeem(first.device_id, first.bootstrap_token)).json()).key;
+    const original = await begin(priorKey);
+    const [frame] = await once(original, "message", { signal: AbortSignal.timeout(3000) });
+    const { connection_epoch } = JSON.parse(frame.toString());
+    const staged = await (await request("provision", { revision: first.revision, replace: true })).json();
+    const stagedKey = (await (await redeem(first.device_id, staged.bootstrap_token)).json()).key;
+    const updates = on(original, "message", { signal: AbortSignal.timeout(3000) });
+    original.send(JSON.stringify({ type: "capabilities", connection_epoch, paused: true }));
+    for await (const [update] of updates) if (JSON.parse(update.toString()).type === "heartbeat_ack") break;
+    assert.equal((await (await request("status")).json()).binding.status, "paused");
+    await f.restart();
+    assert.equal((await (await request("status")).json()).binding.status, "paused");
+    assert.equal((await request("provision", { revision: first.revision, replace: true })).status, 409);
+    const candidate = await begin(stagedKey);
+    await once(candidate, "close", { signal: AbortSignal.timeout(4000) });
+    assert.equal(f.server.store.authenticateDevice(stagedKey), undefined);
+    assert.equal(f.server.store.authenticateDevice(priorKey)?.id, first.device_id);
+    assert.equal((await (await request("status")).json()).binding.status, "paused");
+    await begin(priorKey);
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if ((await (await request("status")).json()).binding.status === "online") return;
+      await delay(25);
+    }
+    assert.fail("The enrolled browser did not clear the persisted block on explicit local resume");
   } finally {
     sockets.forEach((socket) => socket.terminate());
     await f.close();
@@ -565,6 +790,8 @@ test("personal enrollment gives the normal OIDC account an ordinary browser", as
     assert.equal((await redeem(device_id, bootstrap_token)).status, 400);
     const connection = (await f.identity.authenticate(await f.token()))!;
     assert.equal(connection.name, "Yuxi 平台连接");
+    assert.equal(connection.policy.mode, "all");
+    assert.ok(connection.policy.capabilities.includes("shell"));
     assert.equal(f.server.store.authenticateDevice(key)?.owner_id, connection.owner_id);
     assert.equal((await (await request("status", {}, "user-b")).json()).binding, null);
     assert.equal(
@@ -641,7 +868,8 @@ test("personal enrollment gives the normal OIDC account an ordinary browser", as
     const current = await replaced.json();
     assert.equal(current.device_id, device_id);
     assert.equal(current.revision, revision + 1);
-    assert.equal(f.server.store.authenticateDevice(key), undefined);
+    assert.equal(current.pending, true);
+    assert.equal(f.server.store.authenticateDevice(key)?.id, device_id);
     assert.equal((await mcp("devices_list")).status, 401);
     const revoke = await fetch(f.serverUrl + "/api/devices/" + device_id + "/revoke", {
       method: "POST",
@@ -649,7 +877,7 @@ test("personal enrollment gives the normal OIDC account an ordinary browser", as
     });
     assert.equal(revoke.status, 200);
     assert.equal((await redeem(device_id, current.bootstrap_token)).status, 400);
-    assert.equal((await request("provision", { revision: current.revision, replace: true })).status, 403);
+    assert.equal((await request("provision", { revision, replace: true })).status, 403);
     assert.equal((await (await request("status")).json()).binding.status, "revoked");
   } finally {
     socket?.terminate();

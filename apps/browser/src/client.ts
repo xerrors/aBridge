@@ -44,22 +44,27 @@ const incomingSchema = z
     device_name: deviceRenameSchema.shape.name.optional(),
   })
   .passthrough();
+const profileSchema = z.object({
+  key: z.string().optional(),
+  http_confirmed_origin: z.string().optional(),
+  revoked: z.boolean().optional(),
+  paused: z.boolean().optional(),
+  instance_id: z.string().optional(),
+  server: z.string().optional(),
+  device_id: z.string().optional(),
+  label: z.string().optional(),
+  platform_revision: z.number().int().positive().optional(),
+});
+const journalSchema = z.record(z.string(), z.object({ status: z.string(), request_hash: z.string() }));
+const replacementSchema = z.object({ device: profileSchema, operation_journal: journalSchema });
+const bindingIdentitySchema = deviceIdentitySchema.extend({
+  pending: z.literal(true).optional(),
+  revision: z.number().int().positive().optional(),
+});
 const storedLocalSchema = z.object({
-  device: z
-    .object({
-      key: z.string().optional(),
-      http_confirmed_origin: z.string().optional(),
-      revoked: z.boolean().optional(),
-      paused: z.boolean().optional(),
-      instance_id: z.string().optional(),
-      server: z.string().optional(),
-      device_id: z.string().optional(),
-      label: z.string().optional(),
-    })
-    .optional(),
-  operation_journal: z
-    .record(z.string(), z.object({ status: z.string(), request_hash: z.string() }))
-    .optional(),
+  device: profileSchema.optional(),
+  operation_journal: journalSchema.optional(),
+  binding_replacement: replacementSchema.nullish(),
   connection_history: z
     .object({
       worker_started_at: z.number().optional(),
@@ -201,6 +206,8 @@ export class BrowserDeviceClient {
   private bridge!: BrowserBridge;
   private socket: WebSocket | undefined;
   private profile: BrowserProfile = {};
+  private replacement: z.infer<typeof replacementSchema> | undefined;
+  private replacementConnecting = false;
   private connecting: Promise<void> | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -320,7 +327,7 @@ export class BrowserDeviceClient {
   }
   private async syncRecoveryAlarm() {
     if (this.disposed) return;
-    if (!this.profile?.key || this.profile.revoked) {
+    if (!this.canConnect()) {
       await this.chrome.alarms.clear(RECOVERY_ALARM);
       return;
     }
@@ -350,10 +357,13 @@ export class BrowserDeviceClient {
   }
   private scheduleReconnect() {
     this.timers.clearTimeout(this.timer);
-    if (!this.disposed && this.profile?.key && !this.profile.revoked && !this.cleanupError)
+    if (!this.disposed && this.canConnect() && !this.cleanupError)
       this.timer = this.timers.setTimeout(() => {
         void this.connect().catch(() => {});
       }, 2000);
+  }
+  private canConnect(): boolean {
+    return !!this.profile.key && !this.profile.revoked && (!this.replacement || this.replacementConnecting);
   }
   private result(
     connection: WebSocket,
@@ -405,7 +415,8 @@ export class BrowserDeviceClient {
   }
   private async dispatch(connection: WebSocket, message: DeviceDispatchEnvelope) {
     const id = message.operation_id,
-      startedGeneration = this.generation;
+      startedGeneration = this.generation,
+      journal = this.journal;
     let tracked = false,
       intentWritten = false;
     try {
@@ -468,22 +479,24 @@ export class BrowserDeviceClient {
       const requestHash = [...new Uint8Array(digest)]
         .map((value) => value.toString(16).padStart(2, "0"))
         .join("");
-      if (this.journal[id]) {
-        if (this.journal[id].request_hash !== requestHash)
+      if (journal !== this.journal || startedGeneration !== this.generation || connection !== this.socket)
+        throw fail("session_closed", "任务已停止");
+      if (journal[id]) {
+        if (journal[id].request_hash !== requestHash)
           throw fail("operation_conflict", "相同操作标识的参数不能改变");
         this.result(
           connection,
           id,
-          this.journal[id].status === "executing" ? "outcome_unknown" : this.journal[id].status,
+          journal[id].status === "executing" ? "outcome_unknown" : journal[id].status,
           {
             deduplicated: true,
           },
         );
         return;
       }
-      if (Object.keys(this.journal).length >= OPERATION_JOURNAL_LIMIT)
+      if (Object.keys(journal).length >= OPERATION_JOURNAL_LIMIT)
         throw fail("journal_full", "操作记录已满，请重新绑定浏览器设备");
-      this.journal[id] = { status: "executing", request_hash: requestHash };
+      journal[id] = { status: "executing", request_hash: requestHash };
       intentWritten = true;
       await this.saveJournal(); // Persist intent before any page side effect.
       if (
@@ -511,16 +524,21 @@ export class BrowserDeviceClient {
       });
       if (this.cancelledOperations.has(id) && !response.error && response.result?.executed !== true)
         throw fail("operation_cancelled", "操作已取消，结果未知；不会重放");
+      if (journal !== this.journal) return;
       const status = response.status;
-      this.journal[id].status = status;
+      journal[id].status = status;
       const receiptError = await this.saveTerminalJournal(response.error);
       if (this.cancelledOperations.has(id) && !response.error && response.result?.executed !== true)
         throw fail("operation_cancelled", "操作已取消，结果未知；不会重放");
       this.result(connection, id, status, response.result || {}, receiptError);
     } catch (caught) {
       const error = errorDetails(caught);
-      if (intentWritten && (this.journal[id]?.status === "executing" || this.cancelledOperations.has(id))) {
-        this.journal[id].status = "outcome_unknown";
+      if (
+        intentWritten &&
+        journal === this.journal &&
+        (journal[id]?.status === "executing" || this.cancelledOperations.has(id))
+      ) {
+        journal[id].status = "outcome_unknown";
         const cause = operationErrorSchema.shape.cause.safeParse(error.cause);
         const receiptError = await this.saveTerminalJournal({
           ...error,
@@ -547,7 +565,7 @@ export class BrowserDeviceClient {
     await this.cleanup;
     if (this.disposed) return;
     if (this.cleanupError) throw this.cleanupError;
-    if (!this.profile.key || this.profile.revoked || this.authorization) return;
+    if (!this.canConnect() || this.authorization) return;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
       if (this.socket) {
@@ -583,7 +601,7 @@ export class BrowserDeviceClient {
         await this.cleanup;
       }
       // Binding may have started while retiring the previous connection.
-      if (this.disposed || this.authorization || !this.profile.key || this.profile.revoked) return;
+      if (this.disposed || this.authorization || !this.canConnect()) return;
       const server = serverURL(this.profile.server!, this.profile.http_confirmed_origin);
       const url = new URL(server + "/ws/browser");
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -731,6 +749,11 @@ export class BrowserDeviceClient {
             this.authenticated = false;
             this.timers.clearInterval(this.heartbeat);
             this.recordConnection({ last_disconnected_at: this.now(), last_close_code: event.code || 0 });
+            if (this.replacement) {
+              // A staged credential is retried deliberately by the launcher.
+              this.replacementConnecting = false;
+              void this.track(this.syncRecoveryAlarm());
+            }
             if ([4401, 4403].includes(event.code)) {
               this.profile.revoked = true;
               void this.track(this.chrome.storage.local.set({ device: this.profile }));
@@ -767,10 +790,16 @@ export class BrowserDeviceClient {
   }
   private async initialize(): Promise<void> {
     const saved = storedLocalSchema.parse(
-      await this.chrome.storage.local.get(["device", "operation_journal", "connection_history"]),
+      await this.chrome.storage.local.get([
+        "device",
+        "operation_journal",
+        "binding_replacement",
+        "connection_history",
+      ]),
     );
     this.assertRunning();
     this.profile = saved.device || {};
+    this.replacement = saved.binding_replacement ?? undefined;
     this.journal = saved.operation_journal || {};
     this.connectionHistory = saved.connection_history || {};
     for (const id in this.journal)
@@ -787,6 +816,117 @@ export class BrowserDeviceClient {
     await this.bridge.stop();
     this.assertRunning();
     await this.syncRecoveryAlarm();
+  }
+
+  private verifyDevice(server: string, key: string, signal: AbortSignal) {
+    return requestBinding(
+      this.fetch,
+      server + "/api/device",
+      {
+        headers: { Authorization: `Bearer ${key}` },
+        signal,
+      },
+      bindingIdentitySchema,
+      true,
+    );
+  }
+
+  private async retireBindingConnection() {
+    // Retire callbacks first so asynchronous close/revoke cannot alter the restored binding.
+    const retired = this.socket;
+    this.socket = undefined;
+    this.authenticated = false;
+    this.timers.clearInterval(this.heartbeat);
+    this.timers.clearTimeout(this.timer);
+    retired?.close();
+    await this.connecting?.catch(() => {});
+    await this.stop();
+    this.bridge.resetRequests();
+  }
+
+  private async resolvePlatformBinding(action: "resume" | "confirm" | "abort", revision: number) {
+    const { key, server, device_id, http_confirmed_origin, platform_revision } = this.profile;
+    if (this.authorization || !key || !server) throw fail("binding_changed", "当前登记版本与请求不符");
+    const origin = serverURL(server, http_confirmed_origin);
+    const original = this.replacement;
+    if (!original && action === "resume" && platform_revision === undefined) {
+      const device = await this.verifyDevice(origin, key, this.lifetime.signal);
+      if (
+        device.pending ||
+        device.kind !== "browser" ||
+        device.id !== device_id ||
+        device.revision !== revision
+      )
+        throw fail("binding_changed", "当前登记版本与请求不符");
+      const next = { ...this.profile, platform_revision: revision };
+      await this.chrome.storage.local.set({ device: next });
+      this.profile = next;
+      return { ok: true, state: "active" };
+    }
+    if (platform_revision !== revision) throw fail("binding_changed", "当前登记版本与请求不符");
+    if (!original) return { ok: true, state: "active" };
+    if (action !== "abort") {
+      let device: z.infer<typeof bindingIdentitySchema>;
+      if (this.profile.revoked) return { ok: true, state: "invalid" };
+      try {
+        device = await this.verifyDevice(origin, key, this.lifetime.signal);
+      } catch (error) {
+        if (errorDetails(error).code === "invalid_token") return { ok: true, state: "invalid" };
+        throw error;
+      }
+      if (device.kind !== "browser" || device.id !== device_id || device.revision !== revision)
+        throw fail("device_mismatch", "Server 返回的设备不匹配");
+      if (device.pending) {
+        if (action === "resume") {
+          this.replacementConnecting = true;
+          void this.connect().catch(() => {});
+        }
+        return { ok: true, state: "pending" };
+      }
+    } else {
+      this.replacementConnecting = false;
+      let status: "abandoned" | "invalid" | "active";
+      try {
+        ({ status } = await requestBinding(
+          this.fetch,
+          origin + "/api/managed-browsers/abandon",
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${key}` },
+            signal: this.lifetime.signal,
+          },
+          z.object({ status: z.enum(["abandoned", "invalid", "active"]) }),
+        ));
+      } catch (error) {
+        await this.retireBindingConnection();
+        throw error;
+      }
+      if (status !== "active") {
+        await this.retireBindingConnection();
+        // Only the device WS can distinguish explicit revocation from a proxy's HTTP denial.
+        const previous = { ...original.device, paused: !!(this.profile.paused || original.device.paused) };
+        await this.chrome.storage.local.set({
+          device: previous,
+          operation_journal: original.operation_journal,
+          binding_replacement: null,
+        });
+        this.profile = previous;
+        this.journal = original.operation_journal;
+        this.replacement = undefined;
+        await this.syncRecoveryAlarm();
+        void this.connect().catch(() => {});
+        this.notify();
+        return { ok: true, state: "restored" };
+      }
+    }
+    // A response lost after cutover can be reconciled without republishing the prior key.
+    await this.chrome.storage.local.set({ binding_replacement: null });
+    this.replacement = undefined;
+    this.replacementConnecting = false;
+    await this.syncRecoveryAlarm();
+    void this.connect().catch(() => {});
+    this.notify();
+    return { ok: true, state: "active" };
   }
   private onMessage: Parameters<typeof chrome.runtime.onMessage.addListener>[0] = (
     raw: unknown,
@@ -813,8 +953,22 @@ export class BrowserDeviceClient {
     }
     const message = parsed.data;
     if (
+      (message.type === "platform_binding" ||
+        (message.type === "bind_token" && message.platform_revision !== undefined)) &&
+      !connectionPage
+    )
+      return false;
+    if (
       connectionPage &&
-      !["status", "authorize", "bind_token", "authorize_cancel", "rename", "unbind"].includes(message.type)
+      ![
+        "status",
+        "authorize",
+        "bind_token",
+        "platform_binding",
+        "authorize_cancel",
+        "rename",
+        "unbind",
+      ].includes(message.type)
     )
       return false;
     if (message.type === "rename") {
@@ -851,7 +1005,11 @@ export class BrowserDeviceClient {
             binding_method: this.authorization?.method,
             authorization_expires_at: this.authorization?.expiresAt,
             authorization_error: this.authorizationError,
+            platform_revision: this.profile.platform_revision,
+            replacement_pending: !!this.replacement,
           };
+        if (message.type === "platform_binding")
+          return this.resolvePlatformBinding(message.action, message.revision);
         if (message.type === "authorize_cancel") {
           this.authorization?.controller.abort();
           this.authorization = undefined;
@@ -860,7 +1018,8 @@ export class BrowserDeviceClient {
           return { ok: true };
         }
         if (message.type === "bind_token") {
-          if (this.authorization) throw fail("authorization_pending", "请先完成或取消当前授权");
+          if (this.authorization || this.replacement)
+            throw fail("authorization_pending", "请先完成或取消当前授权");
           const server = serverURL(message.server, message.http_confirmed_origin);
           const pending = {
             method: "token" as const,
@@ -871,20 +1030,21 @@ export class BrowserDeviceClient {
           };
           this.authorization = pending;
           this.authorizationError = undefined;
+          let reconnectPrevious: BrowserProfile | undefined;
           void (async () => {
-            const device = await requestBinding(
-              this.fetch,
-              server + "/api/device",
-              {
-                headers: { Authorization: `Bearer ${message.device_key}` },
-                signal: pending.controller.signal,
-              },
-              deviceIdentitySchema,
-              true,
-            );
+            const device = await this.verifyDevice(server, message.device_key, pending.controller.signal);
             if (this.disposed || this.authorization !== pending || pending.controller.signal.aborted) return;
             if (device.kind !== "browser")
               throw fail("wrong_device_kind", "请使用浏览器设备的 Token，不能使用电脑、Agent 或管理员 Token");
+            if (
+              device.pending &&
+              (message.platform_revision === undefined ||
+                (this.profile.key &&
+                  (this.profile.server !== server || this.profile.device_id !== device.id)))
+            )
+              throw fail("device_mismatch", "候选凭据只能用于同一设备的平台代理换绑");
+            if (message.platform_revision !== undefined && device.revision !== message.platform_revision)
+              throw fail("binding_changed", "当前登记版本与请求不符");
             this.configuration = this.configuration
               .catch(() => {})
               .then(async () => {
@@ -898,21 +1058,34 @@ export class BrowserDeviceClient {
                   label: device.name,
                   paused: !!this.profile.paused,
                   http_confirmed_origin: message.http_confirmed_origin,
+                  ...(message.platform_revision !== undefined && {
+                    platform_revision: message.platform_revision,
+                  }),
                 };
-                // Retire callbacks before awaiting cleanup: old close/revoke messages cannot alter the new binding.
-                const retired = this.socket;
-                this.socket = undefined;
-                this.authenticated = false;
-                this.timers.clearInterval(this.heartbeat);
-                retired?.close();
-                await this.connecting?.catch(() => {});
-                await this.stop();
+                await this.retireBindingConnection();
+                reconnectPrevious = this.profile;
                 if (this.disposed || this.authorization !== pending || pending.controller.signal.aborted)
                   return;
-                this.bridge.resetRequests();
-                await this.chrome.storage.local.set({ device: next, operation_journal: {} });
+                const original = device.pending
+                  ? {
+                      device: { ...this.profile },
+                      operation_journal: Object.fromEntries(
+                        Object.entries(this.journal).map(([id, entry]) => [
+                          id,
+                          entry.status === "executing" ? { ...entry, status: "outcome_unknown" } : entry,
+                        ]),
+                      ),
+                    }
+                  : undefined;
+                await this.chrome.storage.local.set({
+                  device: next,
+                  operation_journal: {},
+                  binding_replacement: original ?? null,
+                });
                 this.profile = next;
                 this.journal = {};
+                this.replacement = original;
+                this.replacementConnecting = !!original;
                 this.authorization = undefined;
                 this.authorizationError = undefined;
                 await this.syncRecoveryAlarm();
@@ -920,16 +1093,22 @@ export class BrowserDeviceClient {
                 this.notify();
               });
             await this.configuration;
-          })().catch((caught: unknown) => {
-            if (this.authorization !== pending) return;
-            this.authorization = undefined;
-            this.authorizationError = errorDetails(caught).message;
-            this.notify();
-          });
+          })()
+            .catch((caught: unknown) => {
+              if (this.authorization !== pending) return;
+              this.authorization = undefined;
+              this.authorizationError = errorDetails(caught).message;
+              this.notify();
+            })
+            .finally(() => {
+              if (reconnectPrevious && this.profile === reconnectPrevious)
+                void this.connect().catch(() => {});
+            });
           this.notify();
           return { ok: true };
         }
         if (message.type === "authorize") {
+          if (this.replacement) throw fail("authorization_pending", "请先完成或取消当前授权");
           if (this.profile.key && !this.profile.revoked)
             throw fail("already_registered", "当前浏览器已绑定，请先解除绑定");
           if (this.authorization) throw fail("authorization_pending", "请先完成或取消当前授权");

@@ -67,6 +67,17 @@ const PERSONAL_BROWSER_SCHEMA = `CREATE TABLE IF NOT EXISTS personal_browsers(
   FOREIGN KEY(issuer,subject) REFERENCES external_identities(issuer,subject)
 );`;
 
+const BROWSER_REPLACEMENT_SCHEMA = `CREATE TABLE IF NOT EXISTS browser_replacements(
+  device_id TEXT PRIMARY KEY REFERENCES devices(id),
+  scope TEXT NOT NULL CHECK(scope IN ('managed','personal')),
+  installation_id TEXT NOT NULL, revision INTEGER NOT NULL, credential_version INTEGER NOT NULL,
+  expires_at REAL NOT NULL, bootstrap_nonce TEXT, bootstrap_expires_at REAL, key_digest TEXT UNIQUE
+);`;
+const BROWSER_REPLACEMENT_SECONDS = 300;
+const BROWSER_LOCAL_ACCESS_SCHEMA = `CREATE TABLE IF NOT EXISTS browser_local_access(
+  device_id TEXT PRIMARY KEY REFERENCES devices(id), paused INTEGER NOT NULL, enabled INTEGER NOT NULL
+);`;
+
 export type BrowserEnrollmentIdentity = ManagedBrowserClaims & {
   issuer: string;
   client_id: string;
@@ -81,6 +92,16 @@ interface BrowserEnrollment extends ManagedBrowserBinding {
 
 interface ManagedBrowser extends BrowserEnrollment {
   agent_connection_id: string;
+}
+
+interface BrowserReplacement extends ManagedBrowserBinding {
+  device_id: string;
+  scope: BrowserEnrollmentScope;
+  credential_version: number;
+  expires_at: number;
+  bootstrap_nonce: string | null;
+  bootstrap_expires_at: number | null;
+  key_digest: string | null;
 }
 
 /** One SQL implementation. Compound state and audit mutations share a transaction. */
@@ -111,6 +132,8 @@ export class Store {
           500,
         );
       this.db.exec(PERSONAL_BROWSER_SCHEMA);
+      this.db.exec(BROWSER_REPLACEMENT_SCHEMA);
+      this.db.exec(BROWSER_LOCAL_ACCESS_SCHEMA);
       this.db.exec(
         "CREATE INDEX IF NOT EXISTS active_session_device ON control_sessions(device_id) WHERE status='active'; " +
           "CREATE INDEX IF NOT EXISTS active_session_agent_connection ON control_sessions(agent_connection_id) WHERE status='active';",
@@ -303,22 +326,9 @@ export class Store {
         if (!binding.replace) {
           if (existing.installation_id !== binding.installation_id)
             throw new BridgeError("stale_binding", "Browser reinstall requires replacement", 409);
-          return { row: existing, replaced: false };
+          return { row: existing, replacement: undefined };
         }
-        this.rotateDevice(device.id);
-        this.revokeAgentConnection(connection.id);
-        const connectionId = this.insertPlatformConnection(
-          device.owner_id,
-          connection.name,
-          connection.policy,
-        );
-        this.run(
-          "UPDATE managed_browsers SET installation_id=?,revision=revision+1,agent_connection_id=?,bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=0 WHERE device_id=?",
-          binding.installation_id,
-          connectionId,
-          device.id,
-        );
-        return { row: this.managedBrowser(grant)!, replaced: true };
+        return { row: existing, replacement: this.stageBrowserReplacement("managed", existing, binding) };
       }
 
       if (this.one("SELECT 1 FROM external_identities WHERE issuer=? AND subject=?", grant.issuer, grant.sub))
@@ -339,7 +349,7 @@ export class Store {
         device.id,
         connectionId,
       );
-      return { row: this.managedBrowser(grant)!, replaced: false };
+      return { row: this.managedBrowser(grant)!, replacement: undefined };
     });
   }
 
@@ -369,11 +379,9 @@ export class Store {
         if (!binding.replace) {
           if (existing.installation_id !== binding.installation_id)
             throw new BridgeError("stale_binding", "Browser reinstall requires replacement", 409);
-          return { row: existing, replaced: false };
+          return { row: existing, replacement: undefined };
         }
-        this.rotateDevice(existing.device_id);
-        this.advancePersonalBrowserBinding(existing.device_id, binding.installation_id);
-        return { row: this.personalBrowser(grant)!, replaced: true };
+        return { row: existing, replacement: this.stageBrowserReplacement("personal", existing, binding) };
       }
       const user = this.ensureLoginUser(
         grant.issuer,
@@ -391,17 +399,142 @@ export class Store {
         binding.installation_id,
         device.id,
       );
-      return { row: this.personalBrowser(grant)!, replaced: false };
+      return { row: this.personalBrowser(grant)!, replacement: undefined };
     });
   }
 
   /** 保留同一设备，推进安装版本并作废该设备未兑换的票据。 */
-  private advancePersonalBrowserBinding(deviceId: string, installationId?: string): void {
+  private advancePersonalBrowserBinding(deviceId: string): void {
     this.run(
-      "UPDATE personal_browsers SET installation_id=COALESCE(?,installation_id),revision=revision+1,bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=0 WHERE device_id=?",
-      installationId ?? null,
+      "UPDATE personal_browsers SET revision=revision+1,bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=0 WHERE device_id=?",
       deviceId,
     );
+  }
+
+  private stageBrowserReplacement(
+    scope: BrowserEnrollmentScope,
+    active: BrowserEnrollment,
+    binding: ManagedBrowserBinding,
+  ): BrowserReplacement {
+    const current = this.browserReplacement(active.device_id);
+    if (current) {
+      if (current.installation_id !== binding.installation_id)
+        throw new BridgeError("replacement_pending", "Another browser installation is being prepared", 409);
+      return current;
+    }
+    this.run("DELETE FROM browser_replacements WHERE device_id=?", active.device_id);
+    this.run(
+      "INSERT INTO browser_replacements(device_id,scope,installation_id,revision,credential_version,expires_at) VALUES(?,?,?,?,?,?)",
+      active.device_id,
+      scope,
+      binding.installation_id,
+      active.revision + 1,
+      this.device(active.device_id)!.credential_version,
+      nowSeconds() + BROWSER_REPLACEMENT_SECONDS,
+    );
+    return this.browserReplacement(active.device_id)!;
+  }
+
+  browserReplacement(deviceId: string): BrowserReplacement | undefined {
+    const row = this.one<BrowserReplacement>(
+      "SELECT * FROM browser_replacements WHERE device_id=?",
+      deviceId,
+    );
+    return this.validBrowserReplacement(row) ? row : undefined;
+  }
+
+  browserEnrollmentRevision(deviceId: string): number | undefined {
+    return this.one<{ revision: number }>(
+      "SELECT revision FROM managed_browsers WHERE device_id=? UNION ALL SELECT revision FROM personal_browsers WHERE device_id=?",
+      deviceId,
+      deviceId,
+    )?.revision;
+  }
+
+  browserLocalAccess(deviceId: string): { paused: boolean; capabilities: { browser: boolean } } | undefined {
+    const row = this.one<{ paused: number; enabled: number }>(
+      "SELECT paused,enabled FROM browser_local_access WHERE device_id=?",
+      deviceId,
+    );
+    return row && { paused: !!row.paused, capabilities: { browser: !!row.enabled } };
+  }
+
+  recordBrowserLocalAccess(deviceId: string, paused: boolean, enabled: boolean): void {
+    if (paused || !enabled)
+      this.run(
+        "INSERT INTO browser_local_access VALUES(?,?,?) ON CONFLICT(device_id) DO UPDATE SET paused=excluded.paused,enabled=excluded.enabled",
+        deviceId,
+        Number(paused),
+        Number(enabled),
+      );
+    else this.run("DELETE FROM browser_local_access WHERE device_id=?", deviceId);
+  }
+
+  private validBrowserReplacement(row: BrowserReplacement | undefined): Device | undefined {
+    if (!row || row.expires_at <= nowSeconds()) return undefined;
+    const device = this.device(row.device_id);
+    if (!device || device.revoked_at !== null || device.credential_version !== row.credential_version)
+      return undefined;
+    if (row.scope === "managed") {
+      const active = this.one<ManagedBrowser>("SELECT * FROM managed_browsers WHERE device_id=?", device.id);
+      if (!active || this.agentConnection(active.agent_connection_id)?.revoked_at !== null) return undefined;
+    }
+    return device;
+  }
+
+  private browserReplacementByKey(key: string): BrowserReplacement | undefined {
+    return key.startsWith("abr_device_")
+      ? this.one<BrowserReplacement>("SELECT * FROM browser_replacements WHERE key_digest=?", digest(key))
+      : undefined;
+  }
+
+  /** Staged keys may verify device identity and attempt a cutover, but cannot operate as active keys. */
+  browserReplacementDevice(key: string): Device | undefined {
+    return this.validBrowserReplacement(this.browserReplacementByKey(key));
+  }
+
+  abandonBrowserReplacement(key: string): "abandoned" | "active" | "invalid" {
+    return this.transaction(() => {
+      const row = this.browserReplacementByKey(key);
+      if (row) {
+        this.run("DELETE FROM browser_replacements WHERE device_id=?", row.device_id);
+        return "abandoned";
+      }
+      return this.authenticateDevice(key)?.kind === "browser" ? "active" : "invalid";
+    });
+  }
+
+  activateBrowserReplacement(key: string, expectedEpoch: number): Device | undefined {
+    return this.transaction(() => {
+      const row = this.browserReplacementByKey(key);
+      const device = this.validBrowserReplacement(row);
+      if (!row || !device || device.epoch + 1 !== expectedEpoch) return undefined;
+      if (row.scope === "managed") {
+        const active = this.one<ManagedBrowser>(
+          "SELECT * FROM managed_browsers WHERE device_id=?",
+          device.id,
+        )!;
+        const connection = this.agentConnection(active.agent_connection_id)!;
+        this.revokeAgentConnection(connection.id);
+        const next = this.insertPlatformConnection(device.owner_id, connection.name, connection.policy);
+        this.run("UPDATE managed_browsers SET agent_connection_id=? WHERE device_id=?", next, device.id);
+      }
+      this.run(
+        `UPDATE ${row.scope}_browsers SET installation_id=?,revision=?,bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=1 WHERE device_id=?`,
+        row.installation_id,
+        row.revision,
+        device.id,
+      );
+      this.run(
+        "UPDATE devices SET token_digest=?,credential_version=credential_version+1,epoch=?,last_seen=? WHERE id=?",
+        digest(key),
+        expectedEpoch,
+        nowSeconds(),
+        device.id,
+      );
+      this.run("DELETE FROM browser_replacements WHERE device_id=?", device.id);
+      return this.device(device.id)!;
+    });
   }
 
   private bootstrapToken(deviceId: string, nonce: string): string {
@@ -425,29 +558,63 @@ export class Store {
     return this.bootstrapToken(row.device_id, nonce);
   }
 
+  issueReplacementBootstrap(row: BrowserReplacement): string {
+    if (row.bootstrap_nonce && row.bootstrap_expires_at! > nowSeconds())
+      return this.bootstrapToken(row.device_id, row.bootstrap_nonce);
+    const nonce = randomBytes(24).toString("base64url");
+    this.run(
+      "UPDATE browser_replacements SET bootstrap_nonce=?,bootstrap_expires_at=?,key_digest=NULL WHERE device_id=?",
+      nonce,
+      Math.min(row.expires_at, nowSeconds() + 60),
+      row.device_id,
+    );
+    return this.bootstrapToken(row.device_id, nonce);
+  }
+
+  private matchesBrowserBootstrap(
+    row: Pick<BrowserEnrollment, "bootstrap_nonce" | "bootstrap_expires_at" | "device_id">,
+    token: string,
+  ): boolean {
+    return (
+      !!row.bootstrap_nonce &&
+      row.bootstrap_expires_at! > nowSeconds() &&
+      timingSafeEqual(
+        Buffer.from(digest(token)),
+        Buffer.from(digest(this.bootstrapToken(row.device_id, row.bootstrap_nonce))),
+      )
+    );
+  }
+
   redeemManagedBrowser(
     deviceId: string,
     token: string,
     localAccessBlocked: boolean,
-  ): { device: Device; key: string } {
+  ): { device: Device; key: string; pending: boolean; revision: number } {
     return this.transaction(() => {
+      const replacement = this.browserReplacement(deviceId);
+      if (replacement && !localAccessBlocked && this.matchesBrowserBootstrap(replacement, token)) {
+        const device = this.device(deviceId)!;
+        const key = secretKey("device");
+        this.run(
+          "UPDATE browser_replacements SET bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_digest=? WHERE device_id=?",
+          digest(key),
+          deviceId,
+        );
+        return { device, key, pending: true, revision: replacement.revision };
+      }
       const managed = this.one<ManagedBrowser>("SELECT * FROM managed_browsers WHERE device_id=?", deviceId);
       const row =
         managed ?? this.one<BrowserEnrollment>("SELECT * FROM personal_browsers WHERE device_id=?", deviceId);
       const device = row && this.device(deviceId);
       const connection = managed && this.agentConnection(managed.agent_connection_id);
       if (
-        !row?.bootstrap_nonce ||
+        !row ||
         row.key_issued ||
-        row.bootstrap_expires_at! <= nowSeconds() ||
         !device ||
         device.revoked_at !== null ||
         (managed && connection?.revoked_at !== null) ||
         localAccessBlocked ||
-        !timingSafeEqual(
-          Buffer.from(digest(token)),
-          Buffer.from(digest(this.bootstrapToken(deviceId, row.bootstrap_nonce))),
-        )
+        !this.matchesBrowserBootstrap(row, token)
       )
         throw new BridgeError("invalid_grant", "Browser bootstrap credential is invalid or expired", 400);
       const scope = managed ? "managed" : "personal";
@@ -455,7 +622,7 @@ export class Store {
         `UPDATE ${scope}_browsers SET bootstrap_nonce=NULL,bootstrap_expires_at=NULL,key_issued=1 WHERE device_id=?`,
         deviceId,
       );
-      return { device, key: this.rotateDevice(deviceId) };
+      return { device, key: this.rotateDevice(deviceId), pending: false, revision: row.revision };
     });
   }
 
@@ -619,6 +786,7 @@ export class Store {
       digest(key),
       id,
     );
+    this.run("DELETE FROM browser_replacements WHERE device_id=?", id);
     return key;
   }
   revokeDevice(id: string): void {
@@ -627,6 +795,8 @@ export class Store {
       nowSeconds(),
       id,
     );
+    this.run("DELETE FROM browser_replacements WHERE device_id=?", id);
+    this.run("DELETE FROM browser_local_access WHERE device_id=?", id);
   }
   authenticateDevice(key: string): Device | undefined {
     return key.startsWith("abr_device_")
