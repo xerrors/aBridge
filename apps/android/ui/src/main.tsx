@@ -1,6 +1,7 @@
 import "./webview-compat";
 import React, { useEffect, useState } from "react";
 import "./styles.css";
+import { capabilityStatus, type Capability, type CapabilityState, connectionLabel } from "./capability-state";
 import { createRoot } from "react-dom/client";
 import type { defaultConfig } from "@tamagui/config/v6";
 import { selectionStyles } from "@tamagui/config/v6-base";
@@ -38,9 +39,9 @@ function Dot({ color = blue }) {
 }
 
 const capabilities = [
-  { key: "screen", name: "屏幕观察", description: "允许查看当前屏幕" },
-  { key: "input", name: "触控与文本输入", description: "允许点按、滑动和输入" },
-  { key: "files", name: "文件读写", description: "仅限已授权的工作目录" },
+  { key: "screen", name: "屏幕观察" },
+  { key: "input", name: "触控与文本输入" },
+  { key: "files", name: "文件读写" },
 ] as const;
 
 function CapabilityRow({
@@ -91,22 +92,13 @@ function CapabilityRow({
   );
 }
 
-type Capability = (typeof capabilities)[number]["key"];
-type Connection =
-  "Online" | "Connecting" | "Offline" | "ServiceUnavailable" | "KeyRequired" | "Revoked" | "Unbound";
-type DeviceState = {
+type DeviceState = CapabilityState & {
   type: "state";
   bound: boolean;
   server: string;
-  connection: Connection;
-  agentAllowed: boolean;
   standbyEnabled: boolean;
   standbyActive: boolean;
   batteryUnrestricted: boolean;
-  interactionState: "ready" | "screen_off" | "locked";
-  enabledCapabilities: Capability[];
-  grantedCapabilities: Capability[];
-  directoryAuthorized: boolean;
   accessibilityActive: boolean;
   model: string;
   androidVersion: string;
@@ -156,16 +148,6 @@ function send(request: Request) {
   window.aBridgeNative?.postMessage(JSON.stringify(request));
 }
 
-const connectionLabel: Record<Connection, string> = {
-  Online: "已连接",
-  Connecting: "连接中",
-  Offline: "离线",
-  ServiceUnavailable: "无障碍未连接",
-  KeyRequired: "服务器未接受免 Key 连接",
-  Revoked: "Device Key 无效或已撤销",
-  Unbound: "尚未绑定",
-};
-
 type Panel = "permissions" | "unbind";
 
 function DeviceDialog({
@@ -210,23 +192,19 @@ function DeviceDialog({
           </Dialog.Title>
           <Dialog.Description color={secondary} fontSize={13}>
             {permissions
-              ? state.agentAllowed
-                ? "关闭开关可随时收回对应能力"
-                : "所选能力在允许 Agent 访问后生效"
+              ? "本机授权与生效状态"
               : "此设备将立即停止接收 aBridge 操作。离线时还需在 Server 管理台撤销旧设备。"}
           </Dialog.Description>
           {permissions ? (
             <YStack borderWidth={1} borderColor={line} borderRadius={12} overflow="hidden">
-              {capabilities.map(({ key, name, description }, index) => (
-                <React.Fragment key={key}>
-                  {index > 0 && <Separator borderColor={line} marginHorizontal={14} />}
-                  <CapabilityRow
-                    name={name}
-                    description={description}
-                    checked={state.enabledCapabilities.includes(key)}
-                    onChange={(enabled) => send({ type: "capability", name: key, enabled })}
-                  />
-                </React.Fragment>
+              {capabilities.map(({ key, name }) => (
+                <CapabilityRow
+                  key={key}
+                  name={name}
+                  description={capabilityStatus(state, key) ?? "已生效"}
+                  checked={state.enabledCapabilities.includes(key)}
+                  onChange={(enabled) => send({ type: "capability", name: key, enabled })}
+                />
               ))}
             </YStack>
           ) : (
@@ -449,19 +427,9 @@ function AccessScreen() {
   }, [panel, editing, settings, updatePage]);
 
   const allowed = state?.agentAllowed ?? false;
-  const effective =
-    allowed && state?.connection === "Online"
-      ? capabilities.filter(
-          ({ key }) =>
-            state.enabledCapabilities.includes(key) &&
-            state.grantedCapabilities.includes(key) &&
-            (key === "files" || state.interactionState === "ready") &&
-            (key !== "files" || state.directoryAuthorized),
-        )
-      : [];
+  const effective = state ? capabilities.filter(({ key }) => capabilityStatus(state, key) === null) : [];
   const needsKey = state?.connection === "KeyRequired";
   const needsRebind = state?.connection === "Revoked" || needsKey;
-  const blocked = needsRebind || state?.connection === "ServiceUnavailable";
   const action = needsRebind
     ? needsKey
       ? "填写 Device Key"
@@ -477,20 +445,6 @@ function AccessScreen() {
     else if (state?.connection === "ServiceUnavailable" && !allowed) send({ type: "accessibility" });
     else send({ type: "access", allowed: !allowed });
   }
-
-  const feedback = needsRebind
-    ? needsKey
-      ? "请填写该服务器签发的 Device Key"
-      : "重新绑定后可恢复访问"
-    : state?.connection === "ServiceUnavailable"
-      ? "请在系统设置中启用 aBridge 无障碍服务"
-      : state?.connection !== "Online"
-        ? "设备连接后才能接收 Agent 操作"
-        : !allowed
-          ? "手机仍在线，Agent 无法执行新操作"
-          : effective.length
-            ? "Agent 可使用本机已开启且获授权的能力"
-            : "请检查本机能力设置和服务器授权";
 
   return (
     <YStack
@@ -739,14 +693,12 @@ function AccessScreen() {
               操作权限
             </Text>
             <XStack alignItems="center" gap={8} minHeight={34}>
-              <Dot color={allowed && !blocked ? blue : "#718098"} />
+              <Dot color={allowed && state.connection === "Online" ? blue : "#718098"} />
               <Text aria-live="polite" color={ink} fontWeight="750" fontSize={24}>
                 {allowed ? "Agent 访问已开启" : "Agent 访问已关闭"}
               </Text>
             </XStack>
-            <Text color={secondary} fontSize={13} marginTop={7} minHeight={23}>
-              {feedback}
-            </Text>
+
             <Button
               aria-label={action}
               height={48}
@@ -769,7 +721,8 @@ function AccessScreen() {
             }
             subTitle={
               <Text color={secondary} fontSize={12}>
-                {effective.length ? effective.map(({ name }) => name).join("、") : "当前无生效能力"}
+                {effective.map(({ name }) => name).join("、") ||
+                  (state.connection === "Online" ? "查看状态" : connectionLabel[state.connection])}
               </Text>
             }
             iconAfter={
