@@ -36,6 +36,18 @@ jobs:
         run: node --import tsx tools/package-release.ts --public
       - run: npm run package:check
         if: runner.os == 'Linux'
+      - name: Build headless Linux browser distribution
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx tools/package-browser-client.ts
+          version="${GITHUB_REF_NAME#v}"
+          archive="abridge-client-browser-$version-linux.tar.gz"
+          cp -- ".local/release/browser-client/$archive" dist/releases/
+          cd dist/releases
+          test "$(tar -xOf "$archive" abridge-client-browser/version)" = "$version"
+          sha256sum -- "$archive" > "$archive.sha256"
       - name: Build portable unsigned macOS candidate
         if: runner.os == 'macOS'
         run: npm run package:macos -- --reuse-build
@@ -81,6 +93,7 @@ jobs:
           path: |
             dist/releases/*.tgz
             dist/releases/abridge-browser-*.zip
+            dist/releases/abridge-client-browser-*.tar.gz*
             dist/releases/aBridge-*-android.apk
           if-no-files-found: error
           retention-days: 14
@@ -170,6 +183,10 @@ jobs:
             archives+=("$archive")
             checksums+=("$archive.sha256")
           done
+          browser_archive="abridge-client-browser-$version-linux.tar.gz"
+          mv -- "$GITHUB_WORKSPACE/release/$browser_archive" "$GITHUB_WORKSPACE/release/$browser_archive.sha256" .
+          archives+=("$browser_archive")
+          checksums+=("$browser_archive.sha256")
           sha256sum --check --strict -- "${checksums[@]}"
           cp -- "${archives[@]}" "$GITHUB_WORKSPACE/release/"
           sha256sum -- "${archives[@]}" > "$GITHUB_WORKSPACE/release/SHA256SUMS"

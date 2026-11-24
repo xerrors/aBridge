@@ -104,8 +104,8 @@ test("rotating one connection preserves another connection's session, operation 
         async close() {},
       },
     );
-    const firstSession = control.openSession(first.agentConnection, device.device.id, ["files"]);
-    const secondSession = control.openSession(second.agentConnection, device.device.id, ["files"]);
+    const firstSession = await control.openSession(first.agentConnection, device.device.id, ["files"]);
+    const secondSession = await control.openSession(second.agentConnection, device.device.id, ["files"]);
     const firstOperation = await control.execute(
       first.agentConnection,
       firstSession.id,
@@ -180,7 +180,7 @@ for (const reason of ["expiry", "revocation"] as const) {
         { capabilities: { files: true } },
         { async send() {}, async close() {} },
       );
-      const session = control.openSession(agentConnection, device.device.id, ["files"]);
+      const session = await control.openSession(agentConnection, device.device.id, ["files"]);
       const cached = await control.execute(
         agentConnection,
         session.id,

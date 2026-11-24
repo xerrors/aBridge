@@ -45,7 +45,8 @@
     "windows:shell:check": "node --import tsx tools/windows-native.ts check",
     "test:windows:shell:live": "node --import tsx tools/check-windows-shell.ts",
     "agent:build": "cd apps/agent && go build -o ../../dist/agent/abridge-agent ./cmd/abridge-agent",
-    "agent:check": "cd apps/agent && go test -race ./... && go vet ./..."
+    "agent:check": "cd apps/agent && go test -race ./... && go vet ./...",
+    "package:browser-client": "npm run build && node --import tsx tools/package-browser-client.ts"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.4",

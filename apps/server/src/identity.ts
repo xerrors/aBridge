@@ -6,7 +6,11 @@ import {
   errors as joseErrors,
   type JWTPayload,
 } from "jose";
-import { managedBrowserClaimsSchema } from "@abridge/protocol";
+import {
+  managedBrowserBindingSchema,
+  managedBrowserClaimsSchema,
+  type BrowserEnrollmentScope,
+} from "@abridge/protocol";
 import { digest, Store } from "./store.js";
 import { BridgeError, type AgentConnection } from "./types.js";
 
@@ -272,37 +276,43 @@ export class Identity {
     return payload;
   }
 
-  private managedBrowser(payload: JWTPayload | undefined) {
-    if (!this.managedBrowserEnabled || !payload || typeof payload.aud !== "string") return undefined;
+  private browserIdentity(payload: JWTPayload | undefined) {
+    if (!payload || typeof payload.aud !== "string") return undefined;
     const result = managedBrowserClaimsSchema.safeParse(payload);
     if (!result.success) return undefined;
     return {
       ...result.data,
       issuer: this.config.issuer!,
       client_id: this.config.clientId!,
-      client_name: this.config.clientName?.trim(),
     };
   }
 
-  async authenticateManagedBrowser(token: string, action: "provision" | "stop") {
-    if (!this.managedBrowserEnabled)
+  /** 个人登记与工作负载登记各自使用专用受众与用途。 */
+  async authenticateBrowserEnrollment(
+    token: string,
+    scope: BrowserEnrollmentScope,
+    action: "status" | "provision" | "stop",
+  ) {
+    if (action === "provision" && !this.managedBrowserEnabled)
       throw new BridgeError("managed_browser_disabled", "Managed browsers are not enabled", 404);
-    const payload = await this.verifyPlatformToken(token, "/api/managed-browsers/" + action);
-    const managed = this.managedBrowser(payload);
-    if (!managed || payload?.purpose !== "abridge-managed-browser-" + action)
-      throw new BridgeError("unauthorized", "A managed browser grant is required", 401);
-    return managed;
+    const payload = await this.verifyPlatformToken(token, `/api/${scope}-browsers/${action}`);
+    const grant = this.browserIdentity(payload);
+    if (!grant || payload?.purpose !== `abridge-${scope}-browser-${action}`)
+      throw new BridgeError("unauthorized", "A browser enrollment grant is required", 401);
+    return { grant, payload };
   }
 
   async authenticate(token: string): Promise<AgentConnection | undefined> {
     const payload = await this.verifyPlatformToken(token, "/mcp");
-    if (payload?.purpose === "abridge-delegation")
-      return this.store.delegatedAgentConnection(this.config.issuer!, payload.sub!, this.config.clientId!);
-    if (payload?.purpose === "abridge-managed-browser-delegation") {
-      const managed = this.managedBrowser(payload);
-      if (managed) return this.store.managedBrowserConnection(managed);
+    if (payload?.purpose !== "abridge-delegation") return undefined;
+    if (payload.installation_id !== undefined || payload.revision !== undefined) {
+      const grant = this.browserIdentity(payload);
+      const binding = managedBrowserBindingSchema.safeParse(payload);
+      if (this.managedBrowserEnabled && grant && binding.success)
+        return this.store.managedBrowserConnection(grant, binding.data);
+      return undefined;
     }
-    return undefined;
+    return this.store.delegatedAgentConnection(this.config.issuer!, payload.sub!, this.config.clientId!);
   }
   private getConfiguration(): Promise<oidc.Configuration> {
     if (!this.enabled) throw new BridgeError("oidc_disabled", "External login is not configured", 404);

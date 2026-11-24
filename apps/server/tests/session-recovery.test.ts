@@ -100,7 +100,7 @@ test("Android tool discovery, dispatch and recovery agree with the device profil
       "computer_observe",
       "computer_act",
     ]);
-    const session = f.control.openSession(f.agentConnection, device.id, ["screen", "input"]);
+    const session = await f.control.openSession(f.agentConnection, device.id, ["screen", "input"]);
     const before = f.frames.length;
     await assert.rejects(f.control.execute(f.agentConnection, session.id, "computer_apps", {}), {
       code: "unsupported_tool",
@@ -141,7 +141,7 @@ test("Android tool discovery, dispatch and recovery agree with the device profil
 test("activity returns fresh leases for dispatch, completion, status and duplicate requests", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     f.advance(100);
     const accepted = await f.control.execute(
       f.agentConnection,
@@ -200,7 +200,7 @@ test("activity returns fresh leases for dispatch, completion, status and duplica
 test("session closure supersedes caller cancellation before a late action receipt", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
     const action = await f.control.execute(
       f.agentConnection,
       session.id,
@@ -232,7 +232,7 @@ test("session closure supersedes caller cancellation before a late action receip
 test("a result deadline fails desktop reads in place and keeps unconfirmed writes unknown", async (t) => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const missing = [
       f.control.execute(f.agentConnection, session.id, "computer_apps", {}),
@@ -292,7 +292,7 @@ test("a result deadline fails desktop reads in place and keeps unconfirmed write
 test("discovery and input occupancy expose only this Agent connection's sessions without renewing or taking over", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen", "input"]);
     assert.match(session.id, /^ses_[A-Za-z0-9_-]{8}$/);
     f.advance(60);
     const own = f.control.devices(f.agentConnection)[0];
@@ -302,7 +302,7 @@ test("discovery and input occupancy expose only this Agent connection's sessions
     );
     assert.deepEqual(f.control.devices(f.otherAgentConnection)[0].sessions, []);
     assert.equal(f.store.session(session.id)?.lease_until, session.lease_until);
-    assert.throws(
+    await assert.rejects(
       () => f.control.openSession(f.agentConnection, f.device.id, ["input"]),
       (error) => {
         assert.ok(error instanceof BridgeError);
@@ -311,7 +311,7 @@ test("discovery and input occupancy expose only this Agent connection's sessions
         return true;
       },
     );
-    assert.throws(
+    await assert.rejects(
       () => f.control.openSession(f.otherAgentConnection, f.device.id, ["input"]),
       (error) => {
         assert.ok(error instanceof BridgeError);
@@ -321,7 +321,7 @@ test("discovery and input occupancy expose only this Agent connection's sessions
     );
     assert.equal(f.store.session(session.id)?.status, "active");
     await f.control.closeSession(f.agentConnection, session.id);
-    assert.equal(f.control.openSession(f.agentConnection, f.device.id, ["input"]).status, "active");
+    assert.equal((await f.control.openSession(f.agentConnection, f.device.id, ["input"])).status, "active");
   } finally {
     await f.close();
   }
@@ -330,7 +330,7 @@ test("discovery and input occupancy expose only this Agent connection's sessions
 test("unauthorized requests do not renew and retained results never revive stopped or expired sessions", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const operation = await f.control.execute(
       f.agentConnection,
       session.id,
@@ -356,7 +356,7 @@ test("unauthorized requests do not renew and retained results never revive stopp
     assert.equal(stopped.status, "executed");
     assert.equal(stopped.session?.status, "stopped");
     assert.equal(stopped.session?.lease_until, lease);
-    const idle = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const idle = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const idleOperation = await f.control.execute(
       f.agentConnection,
       idle.id,
@@ -388,7 +388,7 @@ test("renewal cannot exceed Agent connection expiry, including a late completion
       f.agentConnection.policy,
       expires,
     );
-    const session = f.control.openSession(agentConnection, f.device.id, ["screen"]);
+    const session = await f.control.openSession(agentConnection, f.device.id, ["screen"]);
     const operation = await f.control.execute(
       agentConnection,
       session.id,
@@ -416,9 +416,9 @@ test("renewal cannot exceed Agent connection expiry, including a late completion
 test("request keys are session scoped while returned operation IDs survive restart without replay", async () => {
   const f = await fixture();
   try {
-    const first = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
-    const second = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
-    const other = f.control.openSession(f.otherAgentConnection, f.device.id, ["screen"]);
+    const first = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const second = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const other = await f.control.openSession(f.otherAgentConnection, f.device.id, ["screen"]);
     const a = await f.control.execute(f.agentConnection, first.id, "computer_apps", {}, "apps", false);
     const b = await f.control.execute(f.agentConnection, second.id, "computer_apps", {}, "apps", false);
     const c = await f.control.execute(f.otherAgentConnection, other.id, "computer_apps", {}, "apps", false);
@@ -443,7 +443,7 @@ test("request keys are session scoped while returned operation IDs survive resta
     assert.equal(retained.result_available, false);
     assert.equal(retained.session?.status, "server_restarted");
     assert.equal(f.control.operationStatus(f.agentConnection, b.operation_id).status, "outcome_unknown");
-    const fresh = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const fresh = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     await assert.rejects(
       f.control.execute(f.agentConnection, fresh.id, "computer_apps", {}, a.operation_id, false),
       {
@@ -459,7 +459,7 @@ test("request keys are session scoped while returned operation IDs survive resta
 test("device receipts cannot supply server-owned disconnect diagnostics", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const error = {
       code: "outcome_unknown",
       message: "Not confirmed",
@@ -503,7 +503,7 @@ test("device receipts cannot supply server-owned disconnect diagnostics", async 
 test("diagnostics preserve desktop causes and heartbeat expiry; session metadata fits minimum output pages", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen", "shell"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen", "shell"]);
     const operation = await f.control.execute(
       f.agentConnection,
       session.id,
@@ -573,7 +573,7 @@ test("diagnostics preserve desktop causes and heartbeat expiry; session metadata
 test("short operation IDs preserve distinct keys through collisions and restart", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const keyHash = createHash("sha256")
       .update(JSON.stringify([f.agentConnection.id, session.id, "retry-key"]))
       .digest("base64url");
@@ -656,7 +656,7 @@ test("short operation IDs preserve distinct keys through collisions and restart"
 test("generated operation IDs stay short and unknown returned-ID syntax cannot start work", async () => {
   const f = await fixture();
   try {
-    const session = f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
+    const session = await f.control.openSession(f.agentConnection, f.device.id, ["screen"]);
     const generated = await f.control.execute(
       f.agentConnection,
       session.id,

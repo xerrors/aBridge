@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""在 Linux 上运行使用原版 aBridge 扩展的独立浏览器设备。"""
+
+import argparse
+import base64
+import fcntl
+import getpass
+import hashlib
+import json
+import os
+import pwd
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.request
+from contextlib import contextmanager, suppress
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from playwright.sync_api import Error, sync_playwright
+
+INSTALLATION = Path(__file__).resolve().parent
+MAX_MESSAGE = 8192
+FAILED = {"status": "failed"}
+
+
+class BindingMissing(ValueError):
+    """扩展已明确缺少预期绑定。"""
+
+
+def valid_origin(origin: str, allow_http: bool = False) -> str:
+    """凭据仅发送至规范化的 HTTPS 或显式信任的 HTTP 来源。"""
+    url = urlsplit(origin)
+    host = url.hostname or ""
+    address = f"[{host}]" if ":" in host else host
+    port = url.port
+    authority = address if port is None else f"{address}:{port}"
+    if (
+        not host
+        or origin != f"{url.scheme}://{authority}"
+        or any(c.isspace() or c in "%\\@*" for c in host)
+        or url.scheme not in {"https", "http"}
+        or (url.scheme == "http" and not allow_http and host not in {"localhost", "127.0.0.1", "::1"})
+    ):
+        raise ValueError("invalid server origin")
+    if port == (443 if url.scheme == "https" else 80):
+        return f"{url.scheme}://{address}"
+    return origin
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """禁止跟随携带凭据的请求重定向。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        """让携带凭据的重定向请求失败。"""
+        return None
+
+
+def device_request(origin: str, path: str, *, body=None, key=None) -> dict:
+    """读取设备身份，禁止继承代理或跟随重定向。"""
+    headers = {"Content-Type": "application/json"} if body is not None else {"Authorization": f"Bearer {key}"}
+    request = urllib.request.Request(origin + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=6) as response:
+        device = json.loads(response.read(16384))
+    if device["kind"] != "browser" or device["capabilities"] != ["browser"]:
+        raise ValueError("a Browser Device Key is required")
+    return device
+
+
+def binding_for(home: Path) -> dict | None:
+    """回读扩展已经确认的绑定。"""
+    try:
+        return json.loads((home / "binding.json").read_text())
+    except FileNotFoundError:
+        return None
+
+
+def save_binding(home: Path, binding: dict) -> None:
+    """在扩展完成绑定后原子发布设备与版本。"""
+    pending = home / "binding.tmp"
+    pending.write_text(json.dumps(binding))
+    pending.replace(home / "binding.json")
+
+
+@contextmanager
+def connection_page(context):
+    """仅向扩展自己的连接页面交付浏览器凭据。"""
+    manifest = json.loads((INSTALLATION / "extension/manifest.json").read_text())
+    # 发行物的公开密钥固定扩展 ID，重启及升级沿用同一 Profile。
+    digest = hashlib.sha256(base64.b64decode(manifest["key"], validate=True)).hexdigest()[:32]
+    extension_id = digest.translate(str.maketrans("0123456789abcdef", "abcdefghijklmnop"))
+    page = context.new_page()
+    try:
+        page.goto(f"chrome-extension://{extension_id}/connection.html", timeout=4000)
+        yield page
+    finally:
+        page.close()
+
+
+def open_browser(playwright, home: Path, origin: str):
+    """复制扩展并仅授予配置主机的权限，Chromium 使用私有持久 profile。"""
+    url = urlsplit(origin)
+    extension = home / "extension"
+    shutil.copytree(INSTALLATION / "extension", extension, dirs_exist_ok=True)
+    manifest_path = extension / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    host = url.hostname if ":" not in url.hostname else f"[{url.hostname}]"
+    # Chrome 的 match pattern 按主机授权，具体端口仍由登记和兑换的 origin 限定。
+    manifest["host_permissions"] = [f"{url.scheme}://{host}/*"]
+    manifest_path.chmod(0o600)
+    manifest_path.write_text(json.dumps(manifest))
+    return playwright.chromium.launch_persistent_context(
+        home / "profile",
+        channel="chromium",
+        headless=True,
+        chromium_sandbox=True,
+        timeout=9000,
+        args=[
+            f"--disable-extensions-except={extension}",
+            f"--load-extension={extension}",
+        ],
+    )
+
+
+def bind(context, origin: str, device_id: str, device_key: str) -> None:
+    """通过原版扩展的内部页面发起绑定。"""
+    with connection_page(context) as page:
+        # 首次消息等待扩展 worker 完成存储和标签页初始化。
+        accepted = page.evaluate(
+            """([server, device_key, http_confirmed_origin]) => Promise.race([
+                chrome.runtime.sendMessage({
+                    type: 'bind_token', server, device_key,
+                    ...(http_confirmed_origin ? {http_confirmed_origin} : {})
+                }).then(r => r?.ok),
+                new Promise(resolve => setTimeout(() => resolve(false), 12000))
+            ])""",
+            [origin, device_key, origin if origin.startswith("http://") else None],
+        )
+        if not accepted:
+            raise ValueError("binding rejected")
+        verify_binding(page, origin, device_id)
+
+
+def verify_binding(page, origin: str, device_id: str, *, timeout: float = 7) -> bool:
+    """核对扩展保存的绑定，并返回扩展实际报告的连接状态。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = page.evaluate(
+            """() => Promise.race([
+                chrome.runtime.sendMessage({type: 'status'}),
+                new Promise(resolve => setTimeout(resolve, 500, null)),
+            ])"""
+        )
+        if status and status.get("authorization_error"):
+            raise ValueError("binding failed")
+        if status and status.get("ok") and not status.get("authorizing"):
+            if (
+                status.get("configured")
+                and not status.get("revoked")
+                and status.get("device_id") == device_id
+                and status.get("server") == origin
+            ):
+                return status.get("connected") is True
+            raise BindingMissing("expected browser binding is missing")
+        time.sleep(0.1)
+    raise TimeoutError("browser binding did not complete")
+
+
+def activate(playwright, home: Path, binding: dict, key: str | None = None):
+    """沿用原 Profile 并核对扩展保存的设备身份。"""
+    origin = binding["browser_origin"]
+    context = open_browser(playwright, home, origin)
+    try:
+        if key is not None:
+            bind(context, origin, binding["device_id"], key)
+            save_binding(home, binding)
+        else:
+            with connection_page(context) as page:
+                try:
+                    verify_binding(page, origin, binding["device_id"])
+                except BindingMissing:
+                    (home / "binding.json").unlink(missing_ok=True)
+                    raise
+        return context
+    except (Error, OSError, ValueError, KeyError):
+        context.close()
+        raise
+
+
+@contextmanager
+def profile_lock(home: Path):
+    """CLI 首绑与运行进程互斥，进程退出时释放锁。"""
+    with (home / "profile.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
+def describe(home: Path, context=None) -> dict:
+    """运行中从扩展回读绑定，只有明确丢失才清理已确认的记录。"""
+    binding = binding_for(home)
+    if binding is None:
+        return {"status": "unbound"}
+    if context is None:
+        return {**binding, "status": "bound"}
+    try:
+        with connection_page(context) as page:
+            connected = verify_binding(page, binding["browser_origin"], binding["device_id"], timeout=1)
+    except BindingMissing:
+        (home / "binding.json").unlink(missing_ok=True)
+        return {"status": "unbound"}
+    except Error as exc:
+        raise TimeoutError("browser binding could not be read") from exc
+    return {**binding, "status": "running", "connected": connected}
+
+
+def platform_binding(data: dict) -> dict:
+    """校验私有平台交接，后续只使用已确认的单一来源。"""
+    origin = valid_origin(data["browser_origin"], data.get("http_confirmed_origin") == data["browser_origin"])
+    device_id, revision = data["device_id"], data["revision"]
+    if not isinstance(device_id, str) or not device_id or type(revision) is not int or revision < 1:
+        raise ValueError("invalid browser registration")
+    return {"browser_origin": origin, "device_id": device_id, "revision": revision}
+
+
+def prepare_binding(home: Path, data: dict) -> tuple[dict, str | None]:
+    """沿用已确认的绑定，或为新版本兑换设备凭据。"""
+    requested = platform_binding(data)
+    prior = binding_for(home)
+    if prior == requested:
+        return requested, None
+    if prior and (prior["browser_origin"] != requested["browser_origin"] or prior["revision"] >= requested["revision"]):
+        raise ValueError("binding version or origin changed")
+    token = data["bootstrap_token"]
+    if not isinstance(token, str) or not token:
+        raise ValueError("browser ticket required")
+    device = device_request(
+        requested["browser_origin"], "/api/managed-browsers/redeem",
+        body={"device_id": requested["device_id"], "bootstrap_token": token},
+    )
+    if device["device_id"] != requested["device_id"]:
+        raise ValueError("unexpected browser identity")
+    return requested, device["key"]
+
+
+def serve(home: Path, foreground: bool) -> None:
+    """监督单个 Chromium，Cube 可通过私有 socket 调用固定动作。"""
+    with profile_lock(home), sync_playwright() as playwright:
+        endpoint = home / "control.sock"
+        endpoint.unlink(missing_ok=True)
+        context = None
+        try:
+            if foreground:
+                binding = binding_for(home)
+                if binding is None:
+                    raise ValueError("browser is unbound")
+                context = activate(playwright, home, binding)
+            with socket.socket(socket.AF_UNIX) as listener:
+                listener.bind(str(endpoint))
+                listener.listen(2)
+                listener.settimeout(2)
+                while True:
+                    try:
+                        client, _ = listener.accept()
+                    except TimeoutError:
+                        if context is not None:
+                            context.cookies("https://example.invalid/")
+                        continue
+                    with client, client.makefile("rb") as stream:
+                        client.settimeout(2)
+                        stop = False
+                        try:
+                            message = json.loads(stream.readline(MAX_MESSAGE + 1))
+                            match message["action"]:
+                                case "start" if not foreground:
+                                    binding, key = prepare_binding(home, message["handoff"])
+                                    if context is None or key is not None:
+                                        previous, context = context, None
+                                        if previous is not None:
+                                            previous.close()
+                                        context = activate(playwright, home, binding, key)
+                                case "stop":
+                                    if context is not None:
+                                        context.close()
+                                        context = None
+                                    stop = True
+                                case "status":
+                                    pass
+                                case _:
+                                    raise ValueError("invalid action")
+                            result = describe(home, context)
+                        except Error:
+                            with suppress(OSError):
+                                client.sendall(json.dumps(FAILED).encode() + b"\n")
+                            raise
+                        except (OSError, ValueError, KeyError, TypeError):
+                            result = FAILED
+                        with suppress(OSError):
+                            client.sendall(json.dumps(result).encode() + b"\n")
+                        if stop:
+                            return
+        finally:
+            endpoint.unlink(missing_ok=True)
+            if context is not None:
+                with suppress(Error):
+                    context.close()
+
+
+def request_service(home: Path, action: str) -> dict:
+    """读取有界交接数据，只有 start 可创建监督进程。"""
+    message = {"action": action}
+    if action == "start":
+        message["handoff"] = json.loads(sys.stdin.buffer.readline(MAX_MESSAGE + 1))
+    payload = json.dumps(message).encode() + b"\n"
+    if len(payload) > MAX_MESSAGE:
+        raise ValueError("control request too large")
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(44 if action == "start" else 7)
+        endpoint = str(home / "control.sock")
+        try:
+            client.connect(endpoint)
+        except (FileNotFoundError, ConnectionRefusedError):
+            if action != "start":
+                # 正在启动的进程持锁；此时不能把缺失的 socket 判成未绑定。
+                with profile_lock(home):
+                    return describe(home)
+            subprocess.Popen(
+                [sys.executable, "-I", __file__, "_serve"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            for _ in range(50):
+                try:
+                    client.connect(endpoint)
+                    break
+                except (FileNotFoundError, ConnectionRefusedError):
+                    time.sleep(0.1)
+            else:
+                raise ValueError("browser supervisor did not start")
+        client.sendall(payload)
+        with client.makefile("rb") as stream:
+            return json.loads(stream.readline(MAX_MESSAGE + 1))
+
+
+def main() -> None:
+    """安装配置由系统账户拥有。长期凭据仅由扩展持久化。"""
+    parser = argparse.ArgumentParser(prog="abridge-client-browser")
+    commands = parser.add_subparsers(dest="action", required=True)
+    pair = commands.add_parser("bind", help="bind a Browser Device Key")
+    pair.add_argument("--server", required=True, help="public aBridge origin")
+    pair.add_argument("--stdin", action="store_true", help="read the key from private stdin")
+    pair.add_argument("--allow-http", action="store_true", help="confirm a specific HTTP origin")
+    for command in ("run", "status", "start", "stop", "_serve"):
+        commands.add_parser(command)
+    args = parser.parse_args()
+
+    os.umask(0o077)
+    account_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    home = Path(os.environ.get("ABRIDGE_BROWSER_HOME") or (account_home / ".local/state/abridge-client-browser"))
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if home.stat().st_mode & 0o077 or home.stat().st_uid != os.getuid() or os.getuid() == 0:
+        raise ValueError("run as a non-root account with a private state directory")
+    bundled_browser = INSTALLATION / "chromium"
+    if bundled_browser.exists():
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled_browser)
+    if args.action == "bind":
+        origin = valid_origin(args.server, args.allow_http)
+        if not args.stdin and not sys.stdin.isatty():
+            raise ValueError("binding requires a terminal or private stdin")
+        key = sys.stdin.readline(MAX_MESSAGE).strip() if args.stdin else getpass.getpass("Browser Device Key: ")
+        with profile_lock(home), sync_playwright() as playwright:
+            prior = binding_for(home)
+            if prior and (prior["revision"] != 0 or prior["browser_origin"] != origin):
+                raise ValueError("existing binding belongs to another origin or platform")
+            device = device_request(origin, "/api/device", key=key)
+            result = {"device_id": device["id"], "browser_origin": origin, "revision": 0}
+            activate(playwright, home, result, key).close()
+            print(json.dumps(describe(home)))
+    elif args.action in {"run", "_serve"}:
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        serve(home, args.action == "run")
+    else:
+        result = request_service(home, args.action)
+        print(json.dumps(result))
+        if result == FAILED:
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Error, OSError, ValueError, KeyError, TypeError):
+        sys.exit("Browser operation failed. Check the origin, credential and Chromium sandbox prerequisites.")

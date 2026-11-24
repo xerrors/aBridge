@@ -93,7 +93,7 @@ test("device details use the current policy when another request changes an auth
     assert.equal(changed.status, 200);
     const listed = f.control.devices(authenticated)[0]!;
     const detail = f.control.deviceView(f.control.authorizedDevice(authenticated, device.id), authenticated);
-    const session = f.control.openSession(authenticated, device.id, ["shell"]);
+    const session = await f.control.openSession(authenticated, device.id, ["shell"]);
     const sessionDevice = f.control.deviceView(
       f.control.authorizedDevice(authenticated, session.device_id),
       authenticated,
@@ -102,7 +102,9 @@ test("device details use the current policy when another request changes an auth
       assert.deepEqual(view.capabilities, ["shell"]);
       assert.deepEqual(view.available, { shell: true });
     }
-    assert.throws(() => f.control.openSession(authenticated, device.id, ["files"]), { code: "forbidden" });
+    await assert.rejects(() => f.control.openSession(authenticated, device.id, ["files"]), {
+      code: "forbidden",
+    });
   } finally {
     await f.dispose();
   }
@@ -297,7 +299,7 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
       { capabilities: { files: true, shell: true }, paused: false },
       transport,
     );
-    const session = control.openSession(agentConnection, device.device.id, ["files"]);
+    const session = await control.openSession(agentConnection, device.device.id, ["files"]);
     const completed = await control.execute(
       agentConnection,
       session.id,
@@ -346,7 +348,7 @@ test("scope reductions cancel affected in-flight sessions and deny cached and wa
     });
     assert.ok(store.authenticateAgent(key));
     const current = store.agentConnection(agentConnection.id)!;
-    const shellSession = control.openSession(current, device.device.id, ["shell"]);
+    const shellSession = await control.openSession(current, device.device.id, ["shell"]);
     const command = await control.execute(
       current,
       shellSession.id,
@@ -389,7 +391,7 @@ test("indefinite connections retain bounded sessions; shorter expiry applies imm
     );
     const transport: DeviceTransport = { async send() {}, async close() {} };
     await control.attachConnection(device.key, "computer", { capabilities: { files: true } }, transport);
-    const session = control.openSession(agentConnection, device.device.id, ["files"]);
+    const session = await control.openSession(agentConnection, device.device.id, ["files"]);
     assert.equal(session.lease_until, now + 300);
     const updated = await control.updateAgentConnection(
       agentConnection,

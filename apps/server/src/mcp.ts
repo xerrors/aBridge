@@ -122,20 +122,20 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
     name: string,
     description: string,
     schema: z.ZodObject<S>,
-    run: (args: z.infer<z.ZodObject<S>>) => Promise<unknown> | unknown,
+    run: (args: z.infer<z.ZodObject<S>>, signal: AbortSignal) => Promise<unknown> | unknown,
   ): void {
     const desktop = name.startsWith("computer_");
     server.registerTool(
       name,
       { description: "aBridge: " + description, inputSchema: z.object(schema.shape).strict() },
-      async (args) => {
+      async (args, context) => {
         try {
           // Cross-field contract errors use the same structured result as domain refusals.
           // MCP still exposes the shared fields, defaults and scalar bounds.
           const parsed = schema.safeParse(args);
           if (!parsed.success)
             throw new BridgeError("invalid_arguments", parsed.error.issues[0]!.message, 422);
-          const value = await run(parsed.data),
+          const value = await run(parsed.data, context.mcpReq.signal),
             response = contentResponse(value, desktop);
           if (
             object(value) &&
@@ -160,9 +160,19 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
   const exec = (
     tool: DeviceTool,
     args: { session_id: string; operation_id?: string } & JsonObject,
+    signal: AbortSignal,
   ): Promise<unknown> => {
     const { session_id, operation_id, ...arguments_ } = args;
-    return control.execute(agentConnection, session_id, tool, arguments_, operation_id);
+    return control.execute(
+      agentConnection,
+      session_id,
+      tool,
+      arguments_,
+      operation_id,
+      true,
+      undefined,
+      signal,
+    );
   };
   register(
     "devices_list",
@@ -183,8 +193,8 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
     "session_open",
     "Open a capability-scoped session on an explicit online device. Use available_tools for this session and obtain a new observation after opening it. Idle lease is 300 seconds, renewed by authorized operations and result queries. Read current session metadata in responses, not the initial deadline. On desktop_busy inspect device_get.sessions. Close it when finished.",
     z.object({ device_id: id, capabilities: z.array(capabilitySchema).min(1).max(5) }).strict(),
-    (a) => {
-      const session = control.openSession(agentConnection, a.device_id, a.capabilities);
+    async (a, signal) => {
+      const session = await control.openSession(agentConnection, a.device_id, a.capabilities, signal);
       const device = control.deviceView(
         control.authorizedDevice(agentConnection, session.device_id),
         agentConnection,
@@ -211,67 +221,67 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
     "computer_apps",
     "Find running apps; query also finds installed apps. Pass a returned bundle_id to computer_open.",
     computerAppsSchema.safeExtend(base),
-    (a) => exec("computer_apps", a),
+    (a, signal) => exec("computer_apps", a, signal),
   );
   register(
     "computer_windows",
     "List windows for an explicit PID. Observe the returned window before acting.",
     computerWindowsSchema.safeExtend(base),
-    (a) => exec("computer_windows", a),
+    (a, signal) => exec("computer_windows", a, signal),
   );
   register(
     "computer_open",
     "Launch or activate an app by exact bundle_id. Continue from result.observation, or choose a window from result.window_candidates with computer_observe. Never relaunch to refresh.",
     computerOpenSchema.safeExtend(base),
-    (a) => exec("computer_open", a),
+    (a, signal) => exec("computer_open", a, signal),
   );
   register(
     "computer_observe",
     "On macOS, omit pid and window_id or pass the selected window's pid alone to refresh it. For a new target, pass pid for an app with one window or choose pid and window_id from computer_windows. Read available_actions and keyboard_focus. Use desktop=true for an explicit whole-desktop task. On Android use desktop=true and read supported_actions, supported_keys, and focus_status. An unconfirmed screen is read-only. References expire after 120 seconds or an action.",
     computerObserveSchema.safeExtend(base),
-    (a) => exec("computer_observe", a),
+    (a, signal) => exec("computer_observe", a, signal),
   );
   register(
     "computer_act",
     "Act once with an observation_id from this session. Check available_actions on macOS or supported_actions and supported_keys on Android. Prefer a supported element_ref action. On a refused action with recovery.action=observe_again, observe once, verify the intended target and retry using the new reference. On user_handoff, stop sending input and ask the user to switch away from the protected screen. If execution is unknown, verify the effect before continuing. On macOS, middle and double clicks require screenshot coordinates. Window screenshot clicks default to background and need an unchanged window image. Use explicit action.delivery_mode=foreground for a screenshot click only when the intended target has verified focus; whole-desktop and modified clicks require it. A covering window can be reported in error.desktop. Use result.observation directly, including any new window target. Set screenshot=true for visual follow-up. wait_after_ms defaults to 2000.",
     computerActSchema.safeExtend(base),
-    (a) => exec("computer_act", a),
+    (a, signal) => exec("computer_act", a, signal),
   );
   register(
     "browser_open",
     "Navigate the current task tab using the existing Profile/login and return its observation. To visit a link whose URL was observed, navigate to that URL here. Do not reopen to wait for loading.",
     browserOpenSchema.safeExtend(base),
-    (a) => exec("browser_open", a),
+    (a, signal) => exec("browser_open", a, signal),
   );
   register(
     "browser_observe",
     "Refresh the current task tab. query is one case-insensitive substring or an array matching any substring in scanned loaded text/controls; zero matches do not establish that the page has no content. Use next_element_offset with the same query to page through controls in a fresh scan. Link target is the declared attribute. opened_tabs reports observed child tabs; use browser_open with the returned URL to navigate the task tab. References expire after 60s and actions/navigation.",
     browserObserveSchema.safeExtend(base),
-    (a) => exec("browser_observe", a),
+    (a, signal) => exec("browser_observe", a, signal),
   );
   register(
     "browser_act",
     "Click, fill, press, select, hover or scroll a reference from the current task page observation. Native pointer actions already scroll and check the target. Scroll changes DOM offsets and reports actual delta; it does not dispatch wheel events. A successful click is not navigation confirmation; links may open another tab, which is not automatically adopted. For a native long press use click with hold_ms (0-10000); omitted means a normal click. Waits 2000ms by default before the follow-up observation; configure wait_after_ms for the expected UI response time. Optionally pass verify with a browser_wait condition scoped to the expected row/variant. A verification timeout preserves the input receipt; read that container before another write. Continue from the returned observation. Observation errors never justify repeating an executed action.",
     browserActSchema.safeExtend(base),
-    (a) => exec("browser_act", a),
+    (a, signal) => exec("browser_act", a, signal),
   );
   register(
     "browser_read",
     "Read current page text or loaded table rows, or page a saved snapshot without capturing again. Offsets count text characters or table rows. Read coverage and truncation before drawing conclusions.",
     browserReadSchema.safeExtend(base),
-    (a) => exec("browser_read", a),
+    (a, signal) => exec("browser_read", a, signal),
   );
   register(
     "browser_wait",
     "Wait for a selector or page text condition in the existing task tab. This is read-only; a timeout never justifies repeating an executed action.",
     browserWaitSchema.safeExtend(base),
-    (a) => exec("browser_wait", a),
+    (a, signal) => exec("browser_wait", a, signal),
   );
   register(
     "browser_exec",
     'Run an async JavaScript function body for batch actions or custom extraction; use await and return a JSON value. page always addresses the current task tab; a clicked link\'s new tab is not automatically adopted. Native locator actions already scroll and check their target. For native actions use page.locator({within: css,role: role,name: exactAccessibleName}) to target a control within one container (within is optional). Locator actions accept a final options object with a browser_wait condition in verify, e.g. fill(text,{verify:{selector,state:"value",value}}). Inspect executed and verification.matched before another write. CSS locators also support read and waitFor. Available: page.goto(url), page.observe(options), page.locator(css).click({hold_ms:1500})/fill(text)/press(key)/select(values)/hover()/scroll(deltaY,deltaX), page.read({selector,mode: text or tables,snapshot_id,offset,limit}), page.wait({selector,text,state,timeout_ms}), page.evaluate(functionOrExpression,arg), and page.frameLocator(css) for a single same-origin iframe. IMPORTANT: window/document exist ONLY inside page.evaluate, e.g. return await page.evaluate(() => document.title). This code runs in isolated QuickJS, not in the page or Node. No setTimeout/setInterval in this outer runtime: prefer page.wait or locator.waitFor for conditions; use await page.sleep(ms) for a cancellable 0-10000 ms delay. click() is a normal native click; click({hold_ms:1500}) holds the native mouse button before release. DOM dispatchEvent is synthetic input, not a native gesture. An unsupported tool gesture does not prove the website lacks that gesture. Only JSON state persists across calls; local variables/functions do not. Await every browser call. Stable operation_id recovers without replay. After yielding use operation_status for that same operation; operation_cancel stops it. Failed code may have completed steps: inspect the page and steps_completed before continuing, never replay the whole batch blindly. Session close clears state.',
     browserExecSchema.safeExtend({ ...base, wait_seconds: wait }),
-    async (a) => {
+    async (a, signal) => {
       const { session_id, operation_id, wait_seconds, ...args } = a;
       const started = await control.execute(
         agentConnection,
@@ -280,6 +290,8 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
         args,
         operation_id,
         false,
+        undefined,
+        signal,
       );
       return control.waitOperation(agentConnection, started.operation_id, wait_seconds);
     },
@@ -288,7 +300,7 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
     "command_execute",
     "Run a user shell command. Short commands return output and exit code directly; wait_seconds defaults to 15s. Yielding does not cancel. Page retained output using next_output_offsets and operation_status, never rerun.",
     commandExecuteSchema.safeExtend({ ...base, wait_seconds: wait, output_limit_chars: outputLimit }),
-    async (a) => {
+    async (a, signal) => {
       const { wait_seconds, output_limit_chars, session_id, operation_id, ...args } = a;
       const started = await control.execute(
         agentConnection,
@@ -297,6 +309,8 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
         args,
         operation_id,
         false,
+        undefined,
+        signal,
       );
       return commandOutputPage(
         await control.waitOperation(agentConnection, started.operation_id, wait_seconds),
@@ -334,16 +348,19 @@ export function createMcpServer(control: ControlService, agentConnection: AgentC
     "files_list",
     "List directory entries on the device. macOS and Linux expand ~/ to the device user's home (e.g. ~/Downloads). Android uses /workspace for its granted directory.",
     filesListSchema.safeExtend(base),
-    (a) => exec("files_list", a),
+    (a, signal) => exec("files_list", a, signal),
   );
-  register("file_read", "Read a UTF-8 file, bounded to one MiB.", fileReadSchema.safeExtend(base), (a) =>
-    exec("file_read", a),
+  register(
+    "file_read",
+    "Read a UTF-8 file, bounded to one MiB.",
+    fileReadSchema.safeExtend(base),
+    (a, signal) => exec("file_read", a, signal),
   );
   register(
     "file_write",
     "Write a UTF-8 file. Content is bounded to one MiB.",
     fileWriteSchema.safeExtend(base),
-    (a) => exec("file_write", a),
+    (a, signal) => exec("file_write", a, signal),
   );
   return server;
 }

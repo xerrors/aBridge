@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   CAPABILITIES,
   PROTOCOL_VERSION,
@@ -53,6 +54,7 @@ const FINAL_STATES = new Set<OperationState>([
   "cancelled",
 ]);
 const safeId = /^[A-Za-z0-9_-]{1,100}$/;
+const BROWSER_RECONNECT_SECONDS = 15;
 function reportedCapabilities(kind: DeviceKind, values: JsonObject, interaction?: DeviceInteractionState) {
   const available = deviceCapabilities(kind);
   const screenBlocked = interaction !== undefined && interaction !== "ready";
@@ -213,7 +215,11 @@ export class ControlService {
         .map((p) => p.operation.id),
     };
   }
-  private readyConnection(deviceId: string): DeviceConnection {
+  isLocalCapabilityBlocked(deviceId: string, capability: Capability): boolean {
+    const observed = this.localAccess.get(deviceId);
+    return !!observed && (observed.paused || !observed.capabilities[capability]);
+  }
+  private readyConnection(deviceId: string, required: Capability[]): DeviceConnection {
     if (this.shuttingDown) throw new BridgeError("server_stopping", "Server is stopping", 503);
     if (this.stopping.has(deviceId))
       throw new BridgeError("device_busy", "Device is stopping existing operations", 409);
@@ -229,25 +235,36 @@ export class ControlService {
     )
       throw new BridgeError("device_offline", "Device is offline; no other device will be selected");
     if (connection.paused) throw new BridgeError("device_paused", "Resume access locally before continuing");
+    requireLocalCapabilities(connection, required);
     return connection;
   }
-  openSession(
+  async openSession(
     agentConnection: AgentConnection,
     deviceId: string,
     capabilities: Capability[],
-  ): ControlSession {
-    const current = this.currentAgentConnection(agentConnection),
-      device = this.authorizedDevice(current, deviceId);
+    signal?: AbortSignal,
+  ): Promise<ControlSession> {
     if (
       !capabilities.length ||
       new Set(capabilities).size !== capabilities.length ||
       capabilities.some((cap) => !CAPABILITIES.includes(cap))
     )
       throw new BridgeError("invalid_capabilities", "Select valid, unique capabilities", 422);
-    if (capabilities.some((cap) => !deviceAccess(current, device).capabilities.includes(cap)))
-      throw new BridgeError("forbidden", "Requested capability is not granted", 403);
-    const connection = this.readyConnection(deviceId);
-    requireLocalCapabilities(connection, capabilities);
+    let { current } = this.sessionOpenAccess(agentConnection, deviceId, capabilities);
+    const connection = this.readyConnection(deviceId, capabilities);
+    if (connection.kind === "browser") {
+      const live = await this.waitForLiveBrowser(
+        agentConnection,
+        deviceId,
+        capabilities,
+        connection.credentialVersion,
+        signal,
+      );
+      ({ current } = this.sessionOpenAccess(agentConnection, deviceId, capabilities));
+      if (this.readyConnection(deviceId, capabilities) !== live)
+        throw new BridgeError("device_offline", "Browser connection changed while opening the session");
+    }
+    signal?.throwIfAborted();
     const occupied = this.store
       .sessions(deviceId)
       .filter((session) => session.lease_until > this.now() && session.capabilities.includes("input"));
@@ -268,6 +285,47 @@ export class ControlService {
       capabilities,
       sessionDeadline(current, this.now() + SESSION_IDLE_SECONDS),
     );
+  }
+  private sessionOpenAccess(agentConnection: AgentConnection, deviceId: string, capabilities: Capability[]) {
+    const current = this.currentAgentConnection(agentConnection),
+      device = this.authorizedDevice(current, deviceId);
+    const granted = deviceAccess(current, device).capabilities;
+    if (capabilities.some((cap) => !granted.includes(cap)))
+      throw new BridgeError("forbidden", "Requested capability is not granted", 403);
+    return { current, device };
+  }
+  private async waitForLiveBrowser(
+    agentConnection: AgentConnection,
+    deviceId: string,
+    capabilities: Capability[],
+    credentialVersion: number,
+    signal?: AbortSignal,
+  ): Promise<DeviceConnection> {
+    const deadline = this.mono() + BROWSER_RECONNECT_SECONDS;
+    while (this.mono() < deadline) {
+      signal?.throwIfAborted();
+      if (this.shuttingDown) throw new BridgeError("server_stopping", "Server is stopping", 503);
+      if (this.deviceConnections.has(deviceId)) {
+        const { device } = this.sessionOpenAccess(agentConnection, deviceId, capabilities);
+        if (device.credential_version !== credentialVersion)
+          throw new BridgeError("device_offline", "Browser credentials changed while opening the session");
+        const connection = this.readyConnection(deviceId, capabilities);
+        if ((await this.confirmBrowserConnection(connection)) && this.mono() < deadline) return connection;
+      }
+      const remaining = deadline - this.mono();
+      if (remaining > 0) await delay(Math.min(200, remaining * 1000), undefined, { signal });
+    }
+    throw new BridgeError("device_offline", "Browser did not reconnect; retry after it is online");
+  }
+  private async confirmBrowserConnection(connection: DeviceConnection): Promise<boolean> {
+    if (!connection.transport.probe)
+      throw new BridgeError("device_offline", "Browser transport cannot verify the connection");
+    const alive = await connection.transport.probe();
+    if (this.deviceConnections.get(connection.deviceId) !== connection) return false;
+    if (alive) return true;
+    this.dropConnection(connection, "connection_lost", 4408);
+    void connection.transport.close(4408, "Browser liveness check failed").catch(() => {});
+    return false;
   }
   sessionInfo(session: ControlSession): SessionInfo {
     return {
@@ -505,7 +563,9 @@ export class ControlService {
     operationId?: string,
     wait = true,
     parentId?: string,
+    signal?: AbortSignal,
   ): Promise<OperationResponse> {
+    signal?.throwIfAborted();
     const { tool, arguments: args } = parseDeviceToolRequest({ tool: requestedTool, arguments: input });
     // Input preparation, transport and the bounded follow-up observation share the usual 30s.
     // A native hold and an explicit verification run sequentially before that observation.
@@ -513,32 +573,15 @@ export class ControlService {
       tool === "browser_act" || tool === "browser_locate_act"
         ? (args.action.type === "click" ? (args.action.hold_ms ?? 0) : 0) + (args.verify?.timeout_ms ?? 0)
         : 0;
-    const deadline = this.mono() + 30 + extraMilliseconds / 1000,
-      current = this.currentAgentConnection(agentConnection),
-      session = this.authorizedSession(current, sessionId),
-      device = this.authorizedDevice(current, session.device_id);
+    const deadline = this.mono() + 30 + extraMilliseconds / 1000;
     const required = [...requiredCapabilities(tool, args)];
-    if (
-      required.some(
-        (cap) =>
-          !session.capabilities.includes(cap) || !deviceAccess(current, device).capabilities.includes(cap),
-      )
-    )
-      throw new BridgeError("forbidden", "Operation is outside the current capability intersection", 403);
+    let { current, session, device } = this.operationTarget(agentConnection, sessionId, required);
     const requestHash = createHash("sha256")
-        .update(sortedJson({ tool, arguments: args, session_id: sessionId }))
-        .digest("hex"),
-      id = this.executionId(current, sessionId, operationId);
-    const previous = this.store.operation(id);
-    if (previous) {
-      this.authorizedOperation(current, id);
-      if (previous.request_hash !== requestHash)
-        throw new BridgeError(
-          "operation_conflict",
-          "An operation identifier cannot be reused with different arguments",
-        );
-      return this.operationStatus(current, id);
-    }
+      .update(sortedJson({ tool, arguments: args, session_id: sessionId }))
+      .digest("hex");
+    let id = this.executionId(current, sessionId, operationId);
+    const previous = this.replayedOperation(current, id, requestHash);
+    if (previous) return previous;
     if (!supportedDeviceTools(device.kind, device.platform).includes(tool))
       throw new BridgeError(
         "unsupported_tool",
@@ -548,6 +591,20 @@ export class ControlService {
           recovery: { action: "select_supported_tool" },
         },
       );
+    const connection = this.readyConnection(device.id, required);
+    if (connection.kind === "browser") {
+      const live = await this.confirmBrowserConnection(connection);
+      signal?.throwIfAborted();
+      ({ current, session, device } = this.operationTarget(agentConnection, sessionId, required));
+      if (!live || this.readyConnection(device.id, required) !== connection)
+        throw new BridgeError("device_offline", "Browser connection changed before dispatch");
+      if (this.mono() >= deadline)
+        throw new BridgeError("operation_expired", "Operation start deadline elapsed");
+      // Other callers can have admitted the same scoped request while the browser answered.
+      id = this.executionId(current, sessionId, operationId);
+      const replay = this.replayedOperation(current, id, requestHash);
+      if (replay) return replay;
+    }
     if (
       tool === "browser_exec" &&
       [...this.pending.values()].some((pending) => pending.operation.session_id === sessionId)
@@ -558,13 +615,12 @@ export class ControlService {
       throw new BridgeError("session_busy", "Browser code owns this session until it finishes", 409);
     if (parentId && (!this.pending.has(parentId) || activeCode !== parentId))
       throw new BridgeError("operation_cancelled", "Parent browser execution ended", 409);
-    const connection = this.readyConnection(device.id);
-    requireLocalCapabilities(connection, required);
     if (
       this.pending.size >= 64 ||
       [...this.pending.values()].filter((p) => p.operation.device_id === device.id).length >= 8
     )
       throw new BridgeError("busy", "Device execution queue is full", 429);
+    signal?.throwIfAborted();
     this.store.createOperation({
       id,
       owner_id: current.owner_id,
@@ -596,8 +652,8 @@ export class ControlService {
     if (tool === "browser_exec") {
       this.browserExecutions.start(id, sessionId, args, {
         identifyStep: (key) => this.executionId(current, sessionId, key),
-        executeStep: (stepTool, stepArgs, key) =>
-          this.execute(current, sessionId, stepTool, stepArgs, key, true, id),
+        executeStep: (stepTool, stepArgs, key, stepSignal) =>
+          this.execute(current, sessionId, stepTool, stepArgs, key, true, id, stepSignal),
         exists: (stepId) => this.store.operation(stepId) !== undefined,
         receipt: (stepId) => this.cache.get(stepId)?.response,
         complete: (status, result, error) => this.finish(id, status, result, error),
@@ -643,6 +699,30 @@ export class ControlService {
       return this.operationStatus(current, id);
     }
     return response;
+  }
+  private operationTarget(agentConnection: AgentConnection, sessionId: string, required: Capability[]) {
+    const current = this.currentAgentConnection(agentConnection),
+      session = this.authorizedSession(current, sessionId),
+      device = this.authorizedDevice(current, session.device_id);
+    const granted = deviceAccess(current, device).capabilities;
+    if (required.some((cap) => !session.capabilities.includes(cap) || !granted.includes(cap)))
+      throw new BridgeError("forbidden", "Operation is outside the current capability intersection", 403);
+    return { current, session, device };
+  }
+  private replayedOperation(
+    agentConnection: AgentConnection,
+    id: string,
+    requestHash: string,
+  ): OperationResponse | undefined {
+    const previous = this.store.operation(id);
+    if (!previous) return undefined;
+    this.authorizedOperation(agentConnection, id);
+    if (previous.request_hash !== requestHash)
+      throw new BridgeError(
+        "operation_conflict",
+        "An operation identifier cannot be reused with different arguments",
+      );
+    return this.operationStatus(agentConnection, id);
   }
   async cancelOperation(agentConnection: AgentConnection, id: string): Promise<OperationResponse> {
     const operation = this.authorizedOperation(agentConnection, id);
@@ -806,7 +886,11 @@ export class ControlService {
   }
   async revokeAgentConnection(agentConnection: AgentConnection): Promise<void> {
     this.store.revokeAgentConnection(agentConnection.id);
-    await this.stopAgentConnection(agentConnection.id);
+    await Promise.allSettled(
+      this.store
+        .agentConnectionSessions(agentConnection.id)
+        .map((session) => this.endAgentConnectionSession(session, "Agent connection revoked")),
+    );
     this.store.audit(
       agentConnection.owner_id,
       null,
@@ -814,13 +898,6 @@ export class ControlService {
       null,
       "agent_connection_revoke",
       "revoked",
-    );
-  }
-  async stopAgentConnection(id: string, reason = "Agent connection revoked"): Promise<void> {
-    await Promise.allSettled(
-      this.store
-        .agentConnectionSessions(id)
-        .map((session) => this.endAgentConnectionSession(session, reason)),
     );
   }
   async invalidateDevice(deviceId: string): Promise<void> {

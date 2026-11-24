@@ -75,6 +75,8 @@ export interface OperationResponse extends JsonObject {
 export interface DeviceTransport {
   send(frame: JsonObject): Promise<void>;
   close(code: number, reason: string): Promise<void>;
+  /** A browser transport must support a bounded round trip before admitting work. */
+  probe?(): Promise<boolean>;
 }
 export interface DeviceConnection {
   deviceId: string;

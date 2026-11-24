@@ -215,13 +215,38 @@ npm run build
 
 扩展独立注册为浏览器设备。在管理台把它加入所需的 Agent 连接，并授予 `browser` 能力。更新构建文件后，在扩展管理页选择「重新加载」并确认已连接，原绑定和暂停状态会保留。[浏览器客户端](browser-profile-design.md)
 
-### 可选 Yuxi 托管沙盒浏览器
+## 无头 Linux 浏览器客户端
 
-部署方可在已配好 Yuxi OIDC 和平台委托的 aBridge Server 设置 `ABRIDGE_MANAGED_BROWSER_ENABLED=true`。Yuxi 后端使用受信任提供方签发的短期注册凭据，为当前用户及其沙盒创建独立浏览器设备和作用于该设备的连接。注册不需要管理台会话。影子用户能否接入由 Yuxi 超级管理员在 Yuxi 中控制。
+`abridge-client-browser` 是独立浏览器设备，只提供 `browser`。由 aBridge 打包业务启动器、Playwright 版本和同版本扩展。构建机器执行 `npm run package:browser-client`，取出 `.local/release/browser-client/abridge-client-browser-<版本>-linux.tar.gz`。
 
-Yuxi 后端访问配置的 aBridge 服务地址。Cube 内的 Chromium 必须能访问 `ABRIDGE_PUBLIC_ORIGIN`，且中间代理必须转发浏览器 WebSocket。Cube 默认禁止访问私网地址，部署时应使用沙盒可达的 HTTPS 来源并在目标沙盒中验证 HTTPS 与 WSS。需要使用现有公网 HTTP 部署时，Yuxi 与 aBridge 均须显式启用 `ABRIDGE_ALLOW_INSECURE_HTTP=true`。托管镜像需要预装浏览器扩展，并只授予部署中指定的 aBridge 主机权限。
+在目标 Linux 上解包。当前已验证 Linux amd64，客户端要求 Python 3.10 或更新版本。管理员预装 Chromium 系统库与可信 CA；可使用发行物所钉住的 Playwright 执行 `python -m playwright install-deps chromium`。使用专用非 root 账户执行以下命令。在启用受限 user namespace 的发行版上，系统策略须允许此 Chromium 使用 user namespace 沙盒。Ubuntu AppArmor 可为实际安装路径上的受保护 Chromium 二进制设置单独的 `userns` 规则。
 
-托管注册返回一次性启动凭据，由沙盒启动器向同一 aBridge 来源换取 Device Key 并交给扩展。注册请求的重试复用同一设备，暂停恢复沿用已绑定的 Profile。新的沙盒代次使旧设备凭据和会话失效。用户撤销设备或其托管连接后，自动注册不恢复旧授权。原有桌面和浏览器设备继续使用各自的连接策略。
+```sh
+cd abridge-client-browser
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m playwright install --no-shell chromium
+.venv/bin/python -I ./abridge-client-browser bind --server https://bridge.example.com
+.venv/bin/python -I ./abridge-client-browser run
+```
+
+在管理台新建浏览器设备，生成 Browser Device Key，在 `bind` 提示中隐藏输入。然后将该设备加入需要控制它的 Agent 连接。`bind --stdin` 可经私有输入管道读取 Key。远端 HTTP 需要指定 `--allow-http`；回环可直接用于开发验收。运行账户可以用 `status` 查看本地绑定状态，aBridge 设备列表确认 WebSocket 在线。将前台 `run` 交给部署已有的进程管理器，重启沿用 `~/.local/state/abridge-client-browser` 中的 Profile。需要修改存储位置时为该账户设置 `ABRIDGE_BROWSER_HOME`，使用权限 0700 的目录。
+
+### 可选平台托管浏览器
+
+Server 启用平台委托并设置 `ABRIDGE_MANAGED_BROWSER_ENABLED=true` 后，受信平台可为工作负载登记浏览器。平台向 `GET /api/managed-browsers/status` 提交只读 JWT。首次安装、替换安装或确认丢失本地绑定时，平台用当前登记版本签发 `POST /api/managed-browsers/provision` 的 JWT。Server 按发行方、客户端与主体登记专属浏览器设备，并维护递增的绑定版本。
+
+平台通过私有 stdin 将 `browser_origin`、`device_id`、`revision` 与首次绑定需要的 `bootstrap_token` 交给浏览器客户端的 `start`。客户端从同一公开 Origin 的 `/api/managed-browsers/redeem` 换取 Browser Device Key。客户端从已确认的 Profile 恢复时，交接只需要 Origin、设备 ID 和版本。来宾须能访问公开 Origin 的 HTTPS 与 WebSocket。HTTP 部署须在 Server 显式打开相应配置，并在交接中提供与 Origin 一致的 `http_confirmed_origin`。
+
+客户端运行时通过 `status` 返回扩展自己的 `connected`。平台核对此值和同一版本的在线登记，再将浏览器标为就绪。
+
+工作负载的通用 `abridge-delegation` 委托还须携带当前 `installation_id` 与 `revision`。aBridge 只允许它控制本次登记的浏览器。替换会轮换设备凭据并废止旧会话。平台撤权使用 `POST /api/managed-browsers/stop`，按版本撤销设备 Key、该工作负载的 MCP 连接和未兑换票据。客户端本地 `stop` 关闭浏览器进程，保留绑定。已有关闭状态可由受信平台查询，即使该部署随后关闭了新登记。
+
+平台也可以在登录用户明确授权后，用该用户的 OIDC `sub` 登记其个人运行环境。`GET /api/personal-browsers/status` 和 `POST /api/personal-browsers/provision` 沿用上述状态和版本协议，分别校验 `abridge-personal-browser-status` 和 `abridge-personal-browser-provision` 用途及对应端点的受众。个人浏览器使用同一票据兑换接口。它是用户账户下的普通浏览器设备，受现有平台连接的设备、能力和撤销策略约束。用户可以在管理台查看和撤销设备。
+
+在管理台为个人浏览器重新生成凭据时，当前安装需要重新连接。管理台签发的 Device Key 可以照常绑定，直到用户在平台重新连接并兑换新凭据。
+
+标准 SQLite schema 6 数据库可以直接启用托管浏览器。已有旧试用登记时，部署方先备份，再在隔离副本中转换该表。
 
 ## 数据与更新
 
