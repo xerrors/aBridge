@@ -43,7 +43,7 @@ func normalizeServerURL(_ value: String, confirmedHttpOrigin: String? = nil) thr
     components.scheme = scheme
     components.host = host.lowercased()
     if components.port == (scheme == "https" ? 443 : 80) { components.port = nil }
-    if scheme == "http", !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()), confirmedHttpOrigin != origin {
+    if DeviceServerTransport(server: url) == .confirmedHTTP, confirmedHttpOrigin != origin {
         throw DesktopError(code: "invalid_url", message: "请先确认此 Server 使用未加密的 HTTP 连接")
     }
     guard var normalized = components.url?.absoluteString else {

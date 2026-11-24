@@ -7,6 +7,7 @@ import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { z } from "zod";
 import {
   VERSION,
+  DEVICE_KEY_REJECTION,
   MAX_MESSAGE_BYTES,
   capabilitySchema,
   agentConnectionInputSchema,
@@ -207,8 +208,20 @@ export async function createServer(config: ServerConfig) {
       `${name}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${sameOrigin(request).startsWith("https:") ? "; Secure" : ""}`,
     );
   }
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof BridgeError) {
+      const path = request.routeOptions.url;
+      if (
+        error.status === 401 &&
+        error.code === "unauthorized" &&
+        request.method === "GET" &&
+        (path === "/api/device" || path === "/ws/device")
+      ) {
+        // A proxy can remove Authorization. Mark only a Device Key received and rejected here.
+        if (bearer(request).startsWith("abr_device_"))
+          reply.header(DEVICE_KEY_REJECTION.header, DEVICE_KEY_REJECTION.value);
+        if (path === "/ws/device") reply.header("connection", "close");
+      }
       reply.code(error.status).send({ error: { code: error.code, message: error.message } });
       return;
     }

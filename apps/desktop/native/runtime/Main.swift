@@ -30,7 +30,9 @@ import Darwin
         switch positionals.first ?? "status" {
         case "startup-check": emitJSON(["ready": .bool(true), "native": .bool(true), "version": .string(contract.version)])
         case "run":
-            let config = try storage.loadConfig(), key = try storage.loadCredential(url: config.url)
+            let config = try storage.loadConfig()
+            try requireDeviceServerTransport(config.url)
+            let key = try storage.loadCredential(url: config.url)
             let parent = ProcessInfo.processInfo.environment["ABRIDGE_PARENT_PID"].flatMap(Int32.init)
             let client = DeviceClient(storage: storage, config: config, key: key, contract: contract, parentPid: parent.flatMap { $0 > 0 ? $0 : nil })
             let signals = [SIGINT, SIGTERM].map { value -> DispatchSourceSignal in

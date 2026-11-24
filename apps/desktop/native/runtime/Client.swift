@@ -1,6 +1,8 @@
 import Foundation
 import Darwin
 
+private let deviceCredentialRejected = "设备凭证无效或已撤销，请重新绑定这台 Mac"
+
 private func systemDetails() -> JSONObject {
     let info = ProcessInfo.processInfo
     let version = info.operatingSystemVersion
@@ -31,12 +33,11 @@ private func systemDetails() -> JSONObject {
     }
 }
 
-/// Credentials never follow HTTP or WebSocket redirects to another endpoint.
-final class DeviceNetworkDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
-}
-
 actor DeviceClient {
+    private enum ConnectionFailure: Error {
+        case revoked(String)
+        case unavailable(String)
+    }
     private enum CancellationSource { case caller, stop }
     private struct Admission {
         let hash: String, session: String
@@ -91,11 +92,17 @@ actor DeviceClient {
                 if config.revoked == true { try? await sleepMilliseconds(100); continue }
                 do { try await connect(); backoff = 1 }
                 catch {
-                    if !stopping {
-                        if let e = error as? DesktopError, e.code == "device_revoked" {
+                    if status == "online" { backoff = 1 }
+                    if !stopping && status != "revoked" {
+                        switch error as? ConnectionFailure {
+                        case .revoked(let message)?:
                             config.revoked = true; try storage.saveConfig(config); status = "revoked"
-                            self.error = "Device credential revoked; bind this device again"
-                        } else { status = "offline"; self.error = "Server connection unavailable" }
+                            self.error = message
+                        case .unavailable(let message)?:
+                            status = "offline"; self.error = message
+                        case nil:
+                            status = "offline"; self.error = "设备连接失败，请检查 Server 地址、网络及服务状态"
+                        }
                     }
                 }
                 await stopOperations(); await executor.stop(); try await writeStatus()
@@ -130,22 +137,23 @@ actor DeviceClient {
     }
     private func connect() async throws {
         var components = URLComponents(string: config.url)!
-        components.scheme = components.scheme == "https" ? "wss" : "ws"
+        components.scheme = components.scheme?.lowercased() == "https" ? "wss" : "ws"
         components.path += "/ws/device"
         var request = URLRequest(url: components.url!); request.timeoutInterval = 10
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        let sessionConfig = URLSessionConfiguration.ephemeral
-        sessionConfig.httpShouldSetCookies = false; sessionConfig.urlCredentialStorage = nil
-        let session = URLSession(configuration: sessionConfig, delegate: DeviceNetworkDelegate(), delegateQueue: nil)
+        let session = deviceServerSession()
         let ws = session.webSocketTask(with: request)
         ws.maximumMessageSize = Int(contract.limit("messageBytes"))
         let identity = UUID(); connection = identity; socket = ws; status = "connecting"
         defer { ws.cancel(with: .goingAway, reason: nil); session.invalidateAndCancel(); if connection == identity { socket = nil } }
-        try await writeStatus(); ws.resume()
         do {
+            try await writeStatus(); ws.resume()
             let caps = await capabilities()
             try await send(["type": .string("hello"), "protocol": .string(contract.protocolVersion), "platform": .string("darwin"), "version": .string(contract.version), "capabilities": .object(caps), "paused": .bool(config.paused), "details": .object(systemDetails())])
-            let welcome = try contract.validate("welcome", try await next(ws, timeout: 10))
+            let frame = try await next(ws, timeout: 10)
+            guard let welcome = try? contract.validate("welcome", frame) else {
+                throw ConnectionFailure.unavailable("Server 返回了不兼容的设备握手响应，请检查 Server 和 Mac 客户端版本")
+            }
             epoch = welcome.number("connection_epoch")!; deviceId = welcome.string("device_id")!
             deviceName = welcome.string("device_name") ?? ""; owner = welcome.string("owner_name")!
             sequence = 0; closedSessions.removeAll(); lastAck = monotonicSeconds()
@@ -165,19 +173,73 @@ actor DeviceClient {
                 try await receive(frame)
             }
         } catch {
-            if let response = ws.response as? HTTPURLResponse, [401, 403].contains(response.statusCode) {
-                throw DesktopError(code: "device_revoked", message: "Device connection rejected")
-            }
-            throw error
+            throw await connectionFailure(error, socket: ws)
         }
+    }
+    /// 连接状态只发布本机定义的诊断，HTTP 响应正文和 WebSocket 关闭原因始终留在传输层。
+    private func connectionFailure(_ cause: Error, socket ws: URLSessionWebSocketTask) async -> ConnectionFailure {
+        if let failure = cause as? ConnectionFailure { return failure }
+        if let failure = cause as? DesktopError, failure.code == "status_write_failed" {
+            return .unavailable(failure.message)
+        }
+        let response = ws.response as? HTTPURLResponse
+        if let response, contract.isDeviceKeyRejection(response) {
+            return .revoked("\(deviceCredentialRejected)（HTTP 401）")
+        }
+        if status == "connecting", response == nil || response?.statusCode == 401 {
+            // URLSession can surface a failed upgrade without its HTTP response. Ask the same Server.
+            let identity = await deviceIdentityResponse()
+            if let identity, contract.isDeviceKeyRejection(identity) {
+                return .revoked("\(deviceCredentialRejected)（HTTP 401）")
+            }
+            if response?.statusCode == 401 || identity?.statusCode == 401 {
+                return .unavailable("设备连接需要认证，请检查反向代理是否转发 WebSocket 的 Authorization，以及管理台中的设备凭据（HTTP 401）")
+            }
+        }
+        let message: String
+        if status == "connecting", let code = response?.statusCode, code != 101 {
+            switch code {
+            case 200..<300, 400, 404, 426:
+                message = "Server 未建立 WebSocket 连接，请检查 Server 地址和反向代理的 WebSocket 转发（HTTP \(code)）"
+            default:
+                message = deviceServerHTTPFailure(code)
+            }
+        } else if status == "online", monotonicSeconds() - lastAck >= lease {
+            message = "等待 Server 心跳确认超时，请检查网络及 Server 是否运行"
+        } else if let network = cause as? URLError, network.code != .cancelled {
+            if status == "connecting", [.badServerResponse, .cannotParseResponse, .networkConnectionLost].contains(network.code) {
+                message = "设备连接未完成 WebSocket 握手，请检查 Server 和反向代理的认证与 WebSocket 转发"
+            } else {
+                message = deviceServerNetworkFailure(network)
+            }
+        } else if status == "connecting" {
+            message = "设备连接握手未完成，请检查 Server 及反向代理的 WebSocket 配置"
+        } else {
+            message = "与 Server 的设备连接中断，请检查网络及 Server 是否运行"
+        }
+        return .unavailable(message)
+    }
+    private func deviceIdentityResponse() async -> HTTPURLResponse? {
+        guard !stopping, let url = URL(string: config.url + "/api/device") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 2)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        let session = deviceServerSession(timeout: 2)
+        defer { session.invalidateAndCancel() }
+        guard let (_, response) = try? await session.bytes(for: request) else { return nil }
+        return response as? HTTPURLResponse
     }
     private func next(_ ws: URLSessionWebSocketTask, timeout: Double) async throws -> JSONObject {
         let timer = Task { try await sleepMilliseconds(timeout * 1000); ws.cancel(with: .goingAway, reason: nil) }
         defer { timer.cancel() }
         let message = try await ws.receive()
         let bytes: Data
-        switch message { case .data(let data): bytes = data; case .string(let text): bytes = Data(text.utf8); @unknown default: throw DesktopError(code: "protocol_error", message: "Invalid message") }
-        guard bytes.count <= Int(contract.limit("messageBytes")), let frame = try JSONValue.decode(bytes).object else { throw DesktopError(code: "protocol_error", message: "Invalid server message") }
+        let invalid = ConnectionFailure.unavailable("Server 发送了无效的设备消息，请检查 Server 和 Mac 客户端版本")
+        switch message {
+        case .data(let data): bytes = data
+        case .string(let text): bytes = Data(text.utf8)
+        @unknown default: throw invalid
+        }
+        guard bytes.count <= Int(contract.limit("messageBytes")), let frame = (try? JSONValue.decode(bytes))?.object else { throw invalid }
         return frame
     }
     private func send(_ value: JSONObject) async throws {
@@ -215,7 +277,8 @@ actor DeviceClient {
             }
         case "stop": await stopOperations(); await executor.stop()
         case "revoke":
-            config.revoked = true; try storage.saveConfig(config); status = "revoked"; unbindAcknowledged = true
+            config.revoked = true; try storage.saveConfig(config); status = "revoked"
+            error = "设备授权已撤销，请重新绑定这台 Mac"; unbindAcknowledged = true
             await stopOperations(); socket?.cancel(with: .goingAway, reason: nil)
         default: break
         }
@@ -345,19 +408,7 @@ actor DeviceClient {
                 if cap == "screen" || cap == "input" { await executor.stopComputer() }
             }
         case "rename":
-            let body = try contract.validate("deviceRename", ["name": request["name"] ?? .null])
-            guard status == "online", !key.isEmpty, !deviceId.isEmpty, config.revoked != true else { throw DesktopError(code: "device_offline", message: "请连接 Server 后再修改设备名称") }
-            var request = URLRequest(url: URL(string: config.url + "/api/device")!); request.httpMethod = "PATCH"; request.timeoutInterval = 10
-            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization"); request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try body.encoded()
-            let configuration = URLSessionConfiguration.ephemeral; configuration.httpShouldSetCookies = false; configuration.urlCredentialStorage = nil
-            let session = URLSession(configuration: configuration, delegate: DeviceNetworkDelegate(), delegateQueue: nil); defer { session.invalidateAndCancel() }
-            let (stream, response) = try await session.bytes(for: request)
-            var bytes = Data()
-            for try await byte in stream { guard bytes.count < 65536 else { throw DesktopError(code: "invalid_response", message: "Server response exceeds limit") }; bytes.append(byte) }
-            guard (response as? HTTPURLResponse)?.statusCode == 200, let value = try JSONValue.decode(bytes).object else { throw DesktopError(code: "rename_failed", message: "设备名称保存失败") }
-            let result = try contract.validate("deviceRenameResult", value)
-            guard result.string("id") == deviceId else { throw DesktopError(code: "invalid_response", message: "Server 返回了不匹配的设备名称") }
-            deviceName = result.string("name")!
+            try await rename(request["name"] ?? .null)
         case "unbind":
             config.paused = true; config.revoked = true; try storage.saveConfig(config); try storage.deleteCredential(); await stopOperations()
             unbindAcknowledged = false
@@ -372,6 +423,49 @@ actor DeviceClient {
         try await writeStatus(); if status == "online" { try? await heartbeat() }
         return await snapshot()
     }
+    /// 改名请求的网络和响应错误只通过本机定义的消息返回给 UI。
+    private func rename(_ name: JSONValue) async throws {
+        let body = try contract.validate("deviceRename", ["name": name])
+        guard status == "online", !key.isEmpty, !deviceId.isEmpty, config.revoked != true else {
+            throw DesktopError(code: "device_offline", message: "请连接 Server 后再修改设备名称")
+        }
+        var request = URLRequest(url: URL(string: config.url + "/api/device")!, timeoutInterval: 10)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try body.encoded()
+        let session = deviceServerSession()
+        defer { session.invalidateAndCancel() }
+        let failure = { (detail: String) in DesktopError(code: "rename_failed", message: "修改设备名称失败。\(detail)") }
+        do {
+            let (stream, response) = try await session.bytes(for: request)
+            guard let code = (response as? HTTPURLResponse)?.statusCode else {
+                throw failure("Server 返回了无效响应，请检查 Server 地址")
+            }
+            guard code == 200 else {
+                throw failure(code == 401 ? "\(deviceCredentialRejected)（HTTP 401）" : deviceServerHTTPFailure(code))
+            }
+            var bytes = Data()
+            for try await byte in stream {
+                guard bytes.count < 65536 else { throw failure("Server 响应过大，请检查 Server 地址和版本") }
+                bytes.append(byte)
+            }
+            guard let value = (try? JSONValue.decode(bytes))?.object,
+                  let result = try? contract.validate("deviceRenameResult", value) else {
+                throw failure("Server 返回了无效的设备名称响应，请检查 Server 版本")
+            }
+            guard result.string("id") == deviceId else {
+                throw failure("Server 返回了其他设备的响应，请确认绑定的 Server 地址")
+            }
+            deviceName = result.string("name")!
+        } catch let error as URLError {
+            throw failure(deviceServerNetworkFailure(error))
+        } catch let error as DesktopError {
+            throw error
+        } catch {
+            throw failure("无法与 Server 通信，请检查网络及 Server 是否运行")
+        }
+    }
     func snapshot() async -> JSONObject {
         let caps = await capabilities(), diagnostics = await executor.diagnostics(initialize: false)
         let active = Array(operations.values)
@@ -381,6 +475,9 @@ actor DeviceClient {
     private func writeStatus() async throws {
         let previous = statusWrite
         let next = Task { [self] in _ = try? await previous?.value; try storage.writeStatus(await snapshot()) }
-        statusWrite = next; try await next.value
+        statusWrite = next
+        do { try await next.value } catch {
+            throw DesktopError(code: "status_write_failed", message: "无法保存本机连接状态，请确认 aBridge 数据目录可写且磁盘空间充足。")
+        }
     }
 }

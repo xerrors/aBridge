@@ -169,7 +169,10 @@ actor LocalControlServer {
         let deadline = monotonicSeconds() + timeout
         let path = controlSocketPath(stateDir)
         var info = stat()
-        guard lstat(path, &info) == 0 else { throw posixFailure("Read local socket") }
+        guard lstat(path, &info) == 0 else {
+            if errno == ENOENT { throw DesktopError(code: "control_unavailable", message: "本机设备客户端尚未启动，请在 aBridge 设置中检查绑定和连接状态。") }
+            throw posixFailure("Read local socket")
+        }
         guard info.st_mode & S_IFMT == S_IFSOCK, info.st_uid == getuid(), info.st_mode & 0o777 == 0o600 else { throw DesktopError(code: "control_failed", message: "Unsafe local socket permissions") }
         let fd = try await connectUnix(path, deadline: deadline)
         defer { Darwin.close(fd) }

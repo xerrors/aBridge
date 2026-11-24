@@ -66,6 +66,10 @@ export const adminOverviewSchema = z.object({
 });
 export type AdminOverview = z.infer<typeof adminOverviewSchema>;
 export const PROTOCOL_VERSION = "abridge/1";
+export const DEVICE_KEY_REJECTION = {
+  header: "abridge-device-auth",
+  value: "invalid_device_key",
+} as const;
 export const OBSERVATION_SECONDS = 60;
 export const DESKTOP_OBSERVATION_SECONDS = 120;
 export type DesktopFocusStatus = "confirmed" | "unconfirmed";

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { get, type IncomingMessage } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
+import { DEVICE_KEY_REJECTION } from "@abridge/protocol";
 import { createServer } from "../src/server.js";
 import { commandOutputPage, characterLength } from "../src/command-output.js";
 import { contentResponse } from "../src/mcp.js";
@@ -127,6 +129,59 @@ test("HTTP bootstrap, exact origin scopes, account auth, and same-data-dir proce
       body: JSON.stringify({ username: "owner", password: "test-password-long", name: "Browser" }),
     });
     assert.equal(res.status, 404, "Password-based extension registration is no longer exposed");
+  } finally {
+    await f.dispose();
+  }
+});
+
+test("device credential checks mark a rejected Device Key and leave missing auth unmarked", async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.store.createUser("websocket-auth-user", "fixture-password-123");
+    const computer = f.store.createDevice(owner.id, "Fixture Mac", ["shell"], "computer");
+    const browser = f.store.createDevice(owner.id, "Fixture Browser", ["browser"], "browser");
+    f.store.rotateDevice(computer.device.id);
+    for (const [key, marker] of [
+      [undefined, undefined],
+      [f.adminToken, undefined],
+      [computer.key, DEVICE_KEY_REJECTION.value],
+      [browser.key, DEVICE_KEY_REJECTION.value],
+    ] as const) {
+      const response = await new Promise<IncomingMessage>((resolve, reject) => {
+        const request = get(
+          f.url + "/ws/device",
+          {
+            agent: false,
+            signal: AbortSignal.timeout(3000),
+            headers: {
+              connection: "Upgrade",
+              upgrade: "websocket",
+              "sec-websocket-version": "13",
+              "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+              ...(key ? { authorization: "Bearer " + key } : {}),
+            },
+          },
+          (reply) => {
+            reply.resume();
+            resolve(reply);
+          },
+        );
+        request.once("error", reject);
+        request.once("upgrade", (_reply, socket) => {
+          socket.destroy();
+          reject(Error("Invalid device credentials must be rejected before upgrading"));
+        });
+      });
+      assert.equal(response.statusCode, 401);
+      assert.equal(response.headers[DEVICE_KEY_REJECTION.header], marker);
+
+      if (key === browser.key) continue;
+      const identity = await fetch(f.url + "/api/device", {
+        headers: key ? { authorization: "Bearer " + key } : {},
+      });
+      assert.equal(identity.status, 401);
+      assert.equal(identity.headers.get(DEVICE_KEY_REJECTION.header), marker ?? null);
+    }
   } finally {
     await f.dispose();
   }

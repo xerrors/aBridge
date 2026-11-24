@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createConnection } from "node:net";
 import { createHash, randomUUID } from "node:crypto";
 import { buildNative, PROJECT_ROOT } from "./build-native.js";
+import { desktopRuntimeExecutables } from "./lib/desktop-swift.js";
 import { run } from "./lib/process.js";
 export type DesktopInstallOptions = {
   app: string;
@@ -62,23 +63,36 @@ export async function assertClientStopped(stateDir: string): Promise<void> {
 }
 async function assertAppStopped(app: string): Promise<void> {
   const running = (await run("/bin/ps", ["-ww", "-axo", "comm="])).split("\n").map((line) => line.trim());
-  if (["aBridge", "abridge-desktop"].some((binary) => running.includes(join(app, "Contents/MacOS", binary))))
+  if (
+    ["aBridge", ...desktopRuntimeExecutables].some((binary) =>
+      running.includes(join(app, "Contents/MacOS", binary)),
+    )
+  )
     throw Error("Quit aBridge before replacing its application bundle");
 }
 export async function smokeDesktopRuntime(app: string): Promise<Record<string, unknown>> {
   const home = await mkdtemp(join(tmpdir(), "abridge-native-smoke-"));
   try {
     const env = { HOME: home, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", TMPDIR: tmpdir() };
-    const executable = join(app, "Contents/MacOS/abridge-desktop");
-    const result = JSON.parse(
-      await run(executable, ["smoke", "--state-dir", join(home, "state")], { env, timeout: 30000 }),
-    ) as Record<string, unknown>;
-    if (result.embedded !== true || result.desktop_actions !== 0 || result.authorizations !== 0)
-      throw Error("Native smoke returned unsafe or incomplete evidence");
-    JSON.parse(
-      await run(executable, ["status", "--state-dir", join(home, "state")], { env, timeout: 10000 }),
+    const results = await Promise.all(
+      desktopRuntimeExecutables.map(async (name) => {
+        const executable = join(app, "Contents/MacOS", name);
+        const result = JSON.parse(
+          await run(executable, ["smoke", "--state-dir", join(home, "state")], { env, timeout: 30000 }),
+        ) as Record<string, unknown>;
+        if (result.embedded !== true || result.desktop_actions !== 0 || result.authorizations !== 0)
+          throw Error(`${name} smoke returned unsafe or incomplete evidence`);
+        return result;
+      }),
     );
-    return result;
+    JSON.parse(
+      await run(
+        join(app, "Contents/MacOS", desktopRuntimeExecutables[0]),
+        ["status", "--state-dir", join(home, "state")],
+        { env, timeout: 10000 },
+      ),
+    );
+    return results[0]!;
   } finally {
     await rm(home, { recursive: true, force: true });
   }

@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var window: NSWindow!
     private let urlField = NSTextField(string: "http://127.0.0.1:8765")
     private let deviceNameField = NSTextField(string: String((Host.current().localizedName ?? ProcessInfo.processInfo.hostName).prefix(80)))
-    private let deviceNameMessage = StatusTextField(labelWithString: "")
+    private let deviceNameMessage = StatusTextField(wrappingLabelWithString: "")
     private var saveNameButton: NSButton!
     private var deviceNameDirty = false
     private var savingDeviceName = false
@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var unbindButton: NSButton!
     private var authorizationCancelButton: NSButton!
     private var authorizationOpenButton: NSButton!
-    private let authorizationLabel = StatusTextField(labelWithString: "")
+    private let authorizationLabel = StatusTextField(wrappingLabelWithString: "")
     private var authorizationProcess: Process?
     private var authorizationInput: FileHandle?
     private var authorizationURL: URL?
@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var runtime: [String: String] = [:]
     private var current: [String: Any] = [:]
     private var monitor: Any?
+    private var lastControlFailure: String?
     private var checkingEnvironment = false
     private var stoppingDaemon = false
     private var daemonStopActions: [() -> Void] = []
@@ -100,7 +101,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
            let settings = try? JSONSerialization.jsonObject(with: data) as? [String: String] {
             runtime = settings
         }
-        runtime["cli_path"] = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/abridge-desktop").path
         if runtime["state_dir"] == nil {
             runtime["state_dir"] = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/aBridge").path
@@ -403,12 +403,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         addFullWidth(nameRow, to: connection)
         deviceNameMessage.font = .systemFont(ofSize: 12)
         deviceNameMessage.textColor = .secondaryLabelColor
-        deviceNameMessage.lineBreakMode = .byTruncatingTail
+        deviceNameMessage.isSelectable = true
         deviceNameMessage.isHidden = true
         addFullWidth(deviceNameMessage, to: connection)
         authorizationLabel.font = .systemFont(ofSize: 12)
         authorizationLabel.textColor = .secondaryLabelColor
-        authorizationLabel.lineBreakMode = .byTruncatingTail
+        authorizationLabel.isSelectable = true
         authorizationLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addFullWidth(authorizationLabel, to: connection)
         authorizationLabel.isHidden = true
@@ -750,6 +750,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         httpConfirmedOrigin = nil
         if authorizationProcess != nil && !sameServer(urlField.stringValue, authorizationServer) {
             cancelAuthorization()
+        } else if authorizationProcess == nil && !authorizationLabel.isHidden {
+            authorizationLabel.isHidden = true
+            resizeSettingsWindow()
         }
         renderMenu()
     }
@@ -764,11 +767,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         beginAuthorization()
     }
 
-    private func sendAuthorization(_ value: [String: Any]) throws {
-        guard let handle = authorizationInput else { throw CocoaError(.fileWriteUnknown) }
-        var data = try JSONSerialization.data(withJSONObject: value)
-        data.append(0x0a)
-        try handle.write(contentsOf: data)
+    private func sendAuthorization(_ value: [String: Any]) {
+        guard let handle = authorizationInput else { return }
+        do {
+            var data = try JSONSerialization.data(withJSONObject: value)
+            data.append(0x0a)
+            try handle.write(contentsOf: data)
+        } catch {
+            // 子进程可能已在 stdout 写出启动或提交错误，让同一个读取任务消费最终结果。
+            try? handle.close()
+            authorizationInput = nil
+        }
     }
 
     @objc private func bindingMethodChanged() {
@@ -789,8 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func confirmHttp(_ server: String) -> Bool {
-        guard let url = URL(string: server), url.scheme == "http",
-              let host = url.host, !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host) else { return true }
+        guard let url = URL(string: server), DeviceServerTransport(server: url) == .confirmedHTTP else { return true }
         var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         parts.path = ""
         let origin = parts.string!
@@ -808,20 +816,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func beginAuthorization() {
         guard let address = normalizedServerAddress(urlField.stringValue) else {
-            authorizationLabel.stringValue = "请填写完整的 HTTP 或 HTTPS Server 地址"
-            authorizationLabel.isHidden = false
+            finishAuthorization("请填写完整的 HTTP 或 HTTPS 服务地址，例如 http://主机:端口。")
             return
         }
         let tokenMode = bindingMethod.indexOfSelectedItem == 1
         let token = (revealToken.state == .on ? visibleTokenField.stringValue : deviceTokenField.stringValue).trimmingCharacters(in: .whitespacesAndNewlines)
         if tokenMode && (!token.hasPrefix("abr_device_") || token.count > 4096) {
-            authorizationLabel.stringValue = "请输入电脑设备的 Device Token，不能使用 Agent Key 或管理员 Token"
-            authorizationLabel.isHidden = false
+            finishAuthorization("请输入电脑设备的 Device Token，不能使用 Agent Key 或管理员 Token。")
             return
         }
         guard confirmHttp(address) else { return }
-        guard let process = runtimeProcess(arguments: clientArguments(["authorize", "--stdin"])) else {
-            statusLabel.stringValue = "运行时文件缺失"
+        guard let process = runtimeProcess(arguments: clientArguments(["authorize", "--stdin"]), server: address) else {
+            finishAuthorization("找不到 aBridge 的设备客户端，请重新安装完整的 Mac 应用。")
             return
         }
         let output = Pipe()
@@ -831,21 +837,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         process.standardError = errorLog()
         authorizationProcess = process
         authorizationInput = input.fileHandleForWriting
+        _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         authorizationServer = address
         authorizationURL = nil
         authorizationCommitting = false
-        authorizationLabel.stringValue = tokenMode ? "正在验证设备 Token…" : "正在打开浏览器授权…"
+        authorizationLabel.stringValue = tokenMode ? "正在验证设备 Token…" : "正在获取授权链接…"
         authorizationLabel.isHidden = false
-        do {
-            try process.run()
-            var request: [String: Any] = ["url": address]
-            if tokenMode { request["device_key"] = token }
-            if let origin = httpConfirmedOrigin { request["http_confirmed_origin"] = origin }
-            try sendAuthorization(request)
-        } catch {
-            finishAuthorization("无法启动浏览器授权，请查看日志")
+        do { try process.run() } catch {
+            finishAuthorization("无法启动本机授权进程，请重新打开 aBridge 后重试。")
             return
         }
+        var request: [String: Any] = ["url": address]
+        if tokenMode { request["device_key"] = token }
+        if let origin = httpConfirmedOrigin { request["http_confirmed_origin"] = origin }
+        sendAuthorization(request)
         renderMenu()
         resizeSettingsWindow()
         DispatchQueue.global().async { [weak self] in
@@ -865,19 +870,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             process.waitUntilExit()
             DispatchQueue.main.async {
                 guard let self, self.authorizationProcess === process else { return }
-                self.finishAuthorization("授权未完成，请重新发起")
+                self.finishAuthorization(Self.exitMessage(process, name: "本机授权进程") + "，请重新发起绑定。")
             }
         }
     }
 
     private func handleAuthorization(_ event: [String: Any], from process: Process) {
         guard authorizationProcess === process else { return }
+        if let failure = Self.clientFailure(event) {
+            finishAuthorization(failure)
+            return
+        }
         switch event["event"] as? String {
         case "authorization":
             guard let address = event["authorization_url"] as? String,
                   let destination = URL(string: address),
                   validAuthorizationOrigin(destination, server: authorizationServer ?? "") else {
-                finishAuthorization("授权页面与服务地址不匹配")
+                finishAuthorization("授权页面与填写的服务地址不一致，请检查服务地址和反向代理的对外地址。")
                 return
             }
             authorizationURL = destination
@@ -890,9 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             renderMenu()
             stopDaemon { [weak self] in
                 guard let self, self.authorizationProcess === process else { return }
-                do {
-                    try self.sendAuthorization(["command": "commit", "capabilities": self.capabilityButtons.mapValues { $0.state == .on }])
-                } catch { self.finishAuthorization("无法保存绑定，请重新发起") }
+                self.sendAuthorization(["command": "commit", "capabilities": self.capabilityButtons.mapValues { $0.state == .on }])
             }
         case "complete":
             deviceTokenField.stringValue = ""
@@ -923,7 +930,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc private func openAuthorization() {
         guard let address = authorizationURL else { return }
         if !NSWorkspace.shared.open(address) {
-            authorizationLabel.stringValue = "无法打开浏览器，请点击重新打开授权页"
+            authorizationLabel.stringValue = "macOS 未能打开默认浏览器，请检查默认浏览器设置，再点「重新打开授权页」。"
+            resizeSettingsWindow()
         }
     }
 
@@ -1051,7 +1059,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     @objc private func showDiagnostics() {
         let alert = NSAlert()
         alert.messageText = "aBridge 诊断"
-        alert.informativeText = current["error"] as? String ?? "暂无错误记录"
+        var details = ["设备连接：\(statusLabel.stringValue)"]
+        if !authorizationLabel.isHidden { details.append("设备绑定：\(authorizationLabel.stringValue)") }
+        if !deviceNameMessage.isHidden { details.append("设备名称：\(deviceNameMessage.stringValue)") }
+        if let failure = lastControlFailure, failure != statusLabel.stringValue,
+           deviceNameMessage.isHidden || failure != deviceNameMessage.stringValue {
+            details.append("本机操作：\(failure)")
+        }
+        alert.informativeText = details.joined(separator: "\n\n")
         alert.addButton(withTitle: "查看运行日志")
         alert.addButton(withTitle: "关闭")
         alert.buttons[0].isEnabled = FileManager.default.fileExists(atPath: logURL.path)
@@ -1163,34 +1178,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func startDaemon() {
         guard !stoppingDaemon,
-              boundServerAddress() != nil,
+              let server = boundServerAddress(),
               daemon?.isRunning != true else { return }
-        guard let process = runtimeProcess(arguments: clientArguments(["run"])) else {
+        guard let process = runtimeProcess(arguments: clientArguments(["run"]), server: server) else {
             statusLabel.stringValue = "运行时文件缺失"
             environmentLabels["runtime"]?.stringValue = "未安装 / 路径失效"
             return
         }
         daemon = process
         let log = errorLog()
-        process.standardOutput = log
+        let output = Pipe()
+        process.standardOutput = output
         process.standardError = log
-        process.terminationHandler = { terminated in
-            let message = "Device client exited: status=\(terminated.terminationStatus), reason=\(terminated.terminationReason.rawValue)\n"
-            if let data = message.data(using: .utf8) { try? log.write(contentsOf: data) }
-            Task { @MainActor [weak self] in
-                guard let self, self.daemon === terminated else { return }
-                self.daemon = nil
-                self.current["connection"] = "offline"
-                self.statusLabel.stringValue = "客户端已退出，可重试连接或查看诊断"
-                self.renderMenu()
-            }
-        }
         do {
             try process.run()
             statusLabel.stringValue = "正在连接"
         } catch {
-            if daemon === process { daemon = nil }
-            statusLabel.stringValue = "无法启动运行时，请查看诊断"
+            daemon = nil
+            statusLabel.stringValue = "无法启动设备客户端，请重新打开 aBridge。若再次失败，请检查 Mac 应用是否安装完整。"
+            return
+        }
+        DispatchQueue.global().async { [weak self] in
+            // run 只在退出失败时写一行回执。持续排空 stdout，仅保留末尾用于读取错误码。
+            var tail = Data()
+            while true {
+                let chunk = output.fileHandleForReading.availableData
+                if chunk.isEmpty { break }
+                tail.append(chunk)
+                if tail.count > 8192 { tail = Data(tail.suffix(8192)) }
+            }
+            process.waitUntilExit()
+            let reply = tail.split(separator: 10).last.flatMap { try? JSONSerialization.jsonObject(with: Data($0)) as? [String: Any] }
+            DispatchQueue.main.async { [weak self] in
+                let exit = Self.exitMessage(process, name: "设备客户端")
+                let failure = reply.flatMap(Self.clientFailure)
+                try? log.write(contentsOf: Data(((failure.map { exit + "。" + $0 } ?? exit) + "\n").utf8))
+                guard let self, self.daemon === process else { return }
+                self.daemon = nil
+                self.current["connection"] = "offline"
+                if let failure { self.statusLabel.stringValue = failure }
+                else if process.terminationStatus == 0 && self.boundServerAddress() == nil { self.statusLabel.stringValue = "尚未绑定这台 Mac" }
+                else { self.statusLabel.stringValue = exit + "，可重新连接或查看运行日志。" }
+                self.renderMenu()
+            }
         }
     }
 
@@ -1230,14 +1260,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
-    private func runtimeProcess(arguments: [String]) -> Process? {
-        guard let cli = runtime["cli_path"], cli.hasPrefix("/"),
-              FileManager.default.isExecutableFile(atPath: cli)
-        else { return nil }
+    private func runtimeProcess(arguments: [String], server: String? = nil) -> Process? {
+        let transport = server.flatMap { URL(string: $0) }.map(DeviceServerTransport.init) ?? .standard
+        let cli = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/" + transport.executableName)
+        guard FileManager.default.isExecutableFile(atPath: cli.path) else { return nil }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: cli)
+        process.executableURL = cli
         process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: cli).deletingLastPathComponent()
+        process.currentDirectoryURL = cli.deletingLastPathComponent()
         var environment = ProcessInfo.processInfo.environment
         environment["ABRIDGE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         process.environment = environment
@@ -1248,27 +1278,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         ["--state-dir", stateDirectory.path] + arguments
     }
 
+    /// 只解析失败回执。成功的状态快照也有 error 字段，内容属于设备连接状态。
+    private static func clientFailure(_ reply: [String: Any]) -> String? {
+        guard reply["ok"] as? Bool == false else { return nil }
+        let error = reply["error"] as? [String: Any]
+        switch error?["code"] as? String {
+        case "invalid_contract": return "无法读取 aBridge 随附的协议文件，请重新安装完整的 Mac 应用。"
+        case "control_timeout": return "本机设备客户端响应超时。请先检查当前状态，再决定是否重试。"
+        case "control_failed", "runtime_error": return "本机设备客户端未能完成操作，请打开「运行诊断」查看运行日志。"
+        case "already_running": return "已有 aBridge 设备客户端正在运行，请检查是否同时打开了两份应用。"
+        case "credential_permissions": return "本机绑定文件的所有者或权限不正确，请使用创建绑定的 macOS 账户打开 aBridge，并检查数据目录权限。"
+        case "credential_invalid", "credential_mismatch", "configuration_invalid": return "本机绑定记录无效或与服务地址不匹配，请检查地址并重新绑定这台 Mac。"
+        case "status_write_failed", "journal_failed": return "设备客户端无法保存本机状态，请检查磁盘可用空间和 aBridge 数据目录的写入权限。"
+        case "invalid_url": return "本机绑定记录的服务地址无效或缺少 HTTP 确认，设备连接已停止。请检查已有的本机绑定配置。"
+        case "transport_mismatch": return "本机服务地址与设备客户端的传输方式不匹配，请检查绑定配置并重新连接。"
+        case "device_offline", "rename_failed", "control_unavailable":
+            if let message = error?["message"] as? String, !message.isEmpty { return message }
+        default: break
+        }
+        return "本机设备客户端拒绝了请求，请检查当前连接并查看运行日志。"
+    }
+
+    private static func exitMessage(_ process: Process, name: String) -> String {
+        process.terminationReason == .uncaughtSignal
+            ? "\(name)被系统信号 \(process.terminationStatus) 中断"
+            : "\(name)已退出（退出码 \(process.terminationStatus)）"
+    }
+
     private func runClient(
         _ arguments: [String],
         completion: @escaping ([String: Any]) -> Void
     ) {
+        // 状态每秒刷新，诊断保留用户最近一次本机控制的失败原因。
+        let complete: ([String: Any]) -> Void = { result in
+            if arguments.first == "control", !arguments.contains("--if-desktop-active") {
+                self.lastControlFailure = result["ok"] as? Bool == true ? nil : result["error"] as? String
+            }
+            completion(result)
+        }
         guard let process = runtimeProcess(arguments: clientArguments(arguments)) else {
-            completion(["error": "运行时文件缺失"])
+            complete(["error": "找不到设备客户端，请重新安装完整的 Mac 应用。"])
             return
         }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = errorLog()
         do { try process.run() } catch {
-            completion(["error": "无法启动运行时，请查看诊断"])
+            complete(["error": "无法启动本机设备客户端，请重新打开 aBridge 后重试。"])
             return
         }
         DispatchQueue.global().async {
             let data = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            let result = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
-                ?? ["error": "运行时返回异常，请查看诊断"]
-            DispatchQueue.main.async { completion(result) }
+            let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            DispatchQueue.main.async {
+                if let reply, let failure = Self.clientFailure(reply) { complete(["error": failure]) }
+                else if let reply, process.terminationStatus == 0 { complete(reply) }
+                else { complete(["error": Self.exitMessage(process, name: "本机设备客户端") + "，未收到有效结果，请查看运行日志。"]) }
+            }
         }
     }
 
@@ -1363,14 +1430,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         } else {
             statusLabel.stringValue = connection == "connecting" ? "正在连接" : "连接已断开"
         }
-        statusLabel.toolTip = nil
-        if let error = status["error"] as? String, !error.isEmpty {
-            statusLabel.toolTip = error
-            if error.contains("Device credential revoked") {
-                statusLabel.stringValue = authorizationProcess != nil ? "正在重新绑定，请在浏览器确认授权" : "设备授权已撤销，请重新绑定这台 Mac"
-            } else {
-                statusLabel.stringValue = error
-            }
+        if connection == "revoked" && authorizationProcess != nil {
+            statusLabel.stringValue = "正在重新绑定这台 Mac"
+        } else if let error = status["error"] as? String, !error.isEmpty {
+            statusLabel.stringValue = error
+        } else if connection == "revoked" {
+            statusLabel.stringValue = "设备授权已失效，请重新绑定这台 Mac。"
         }
         let pauseTitle = paused ? "恢复访问" : "暂停访问"
         pauseItem.title = pauseTitle
@@ -1438,11 +1503,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         _ = try? handle.seekToEnd()
         return handle
     }
-}
-
-MainActor.assumeIsolated {
-    let app = NSApplication.shared
-    let delegate = AppDelegate()
-    app.delegate = delegate
-    app.run()
 }

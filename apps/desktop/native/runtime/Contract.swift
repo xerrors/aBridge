@@ -7,9 +7,9 @@ struct NativeContract: Sendable {
     static func load(path: String? = nil) throws -> NativeContract {
         let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
         let url = path.map { URL(fileURLWithPath: $0) } ?? executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/desktop-contract.json")
-        guard let data = try JSONValue.decode(Data(contentsOf: url)).object,
+        guard let bytes = try? Data(contentsOf: url), let data = (try? JSONValue.decode(bytes))?.object,
               data.string("version") != nil, data.object("schemas") != nil else {
-            throw DesktopError(code: "invalid_contract", message: "Missing native protocol contract")
+            throw DesktopError(code: "invalid_contract", message: "无法读取 aBridge 随附的协议文件，请重新安装完整的 Mac 应用。")
         }
         return NativeContract(data: data)
     }
@@ -17,6 +17,11 @@ struct NativeContract: Sendable {
     var protocolVersion: String { data.string("protocol")! }
     var desktopCapabilities: [String] { data.array("desktopCapabilities")!.compactMap(\.string) }
     var capabilities: [String] { data.array("capabilities")!.compactMap(\.string) }
+    func isDeviceKeyRejection(_ response: HTTPURLResponse) -> Bool {
+        guard response.statusCode == 401, let rejection = data.object("deviceKeyRejection"),
+              let header = rejection.string("header"), let value = rejection.string("value") else { return false }
+        return response.value(forHTTPHeaderField: header) == value
+    }
     func limit(_ name: String) -> Double { data.object("limits")!.number(name)! }
     func requiredCapabilities(_ tool: String, _ arguments: JSONObject) -> Set<String> {
         guard let capability = data.object("toolCapabilities")?.string(tool) else { return [] }

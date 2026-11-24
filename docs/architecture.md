@@ -232,4 +232,8 @@ macOS App 包含 AppKit 主程序、Swift 设备客户端、更新器、共享�
 
 设备凭据的手动签发与浏览器 PKCE 授权共享同一设备身份。`GET /api/device` 是设备凭据验证入口，电脑/浏览器客户端在绑定提交前校验设备类型；管理员 Token 和 Agent Key 不作为设备凭据。macOS 继续使用先验证、再停止旧运行时、最后提交的私有双阶段管道；扩展在验证期间保持旧绑定，提交前显式退役旧连接，避免迟到的撤销/关闭消息改变新绑定。
 
-公网 HTTP 由用户显式确认具体 Origin；共享协议包负责地址规范化和确认匹配。确认写入成功绑定的本机配置，连接恢复时再次校验，浏览器 PKCE 状态与回调校验保持不变。HTTP 风险确认不代替 Server Host/Origin 访问校验，OIDC 的公网 HTTP 另由部署管理员通过 `--allow-insecure-http` / `ABRIDGE_ALLOW_INSECURE_HTTP=true` 显式开启；默认 HTTPS 策略和身份校验保持不变。
+公网 HTTP 由用户显式确认具体 Origin；共享协议包负责地址规范化和确认匹配。确认写入成功绑定的本机配置，连接恢复时再次校验，浏览器 PKCE 状态与回调校验保持不变。HTTP 风险确认不代替 Server Host/Origin 访问校验，OIDC 的公网 HTTP 另由部署管理员通过 `--allow-insecure-http` / `ABRIDGE_ALLOW_INSECURE_HTTP=true` 显式开启。
+
+macOS 的设备进程使用系统 URLSession 连接用户指定的 Server。HTTPS、WSS 和回环连接由使用系统默认 ATS 策略的 `abridge-desktop` 处理。经 Origin 确认的远端 HTTP 和 WS 由单独签名的 `abridge-desktop-http` 处理，只有这个进程包含 ATS 例外。绑定和启动时，设备进程在连接前复核所选传输方式。更新器也使用系统默认的 ATS 策略。
+
+设备 WebSocket 握手的 HTTP 401/403 通常按连接错误重试。如果系统未提供握手响应或只返回普通 401，Mac 客户端会向同一 Server 发起有时限的 `GET /api/device` 验证。Server 收到并拒绝设备凭据时，HTTP 401 包含 `abridge-device-auth: invalid_device_key`。带这个标记的 401 和已建立连接收到的撤销消息会停止自动重连，直至重新绑定。反向代理需要传递设备请求的 Authorization 和 Server 的认证错误标记。
