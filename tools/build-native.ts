@@ -108,6 +108,7 @@ export async function nativeBuildInputs(
     .sort();
   const files = [
     "apps/desktop/native/aBridge.swift",
+    "apps/desktop/native/main.swift",
     "apps/desktop/native/runtime/Info.plist",
     ...nativeSources.map((name) => "apps/desktop/native/runtime/" + name),
     "dist/desktop/desktop-contract.json",

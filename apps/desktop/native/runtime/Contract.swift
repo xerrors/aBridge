@@ -7,9 +7,9 @@ struct NativeContract: Sendable {
     static func load(path: String? = nil) throws -> NativeContract {
         let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
         let url = path.map { URL(fileURLWithPath: $0) } ?? executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Resources/desktop-contract.json")
-        guard let data = try JSONValue.decode(Data(contentsOf: url)).object,
+        guard let bytes = try? Data(contentsOf: url), let data = (try? JSONValue.decode(bytes))?.object,
               data.string("version") != nil, data.object("schemas") != nil else {
-            throw DesktopError(code: "invalid_contract", message: "Missing native protocol contract")
+            throw DesktopError(code: "invalid_contract", message: "无法读取 aBridge 随附的协议文件，请重新安装完整的 Mac 应用。")
         }
         return NativeContract(data: data)
     }

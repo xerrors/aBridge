@@ -48,10 +48,18 @@ func refuses(_ body: () throws -> Void) throws { do { try body() } catch { retur
         do { _ = try await LocalControlServer.start(stateDir:root) { _ in [:] }; throw DesktopError(code:"test_failed",message:"Duplicate listener allowed") } catch { try expect((error as? DesktopError)?.code == "already_running","Duplicate listener refused") }
         await server.close()
         try expect(!FileManager.default.fileExists(atPath:controlSocketPath(root)),"Socket cleanup")
+        do {
+            _ = try await LocalControlServer.request(stateDir: root, request: ["command": .string("status")])
+            throw DesktopError(code: "test_failed", message: "Expected control socket to be unavailable")
+        } catch { try expect((error as? DesktopError)?.code == "control_unavailable", "Report missing device process") }
+        do {
+            _ = try NativeContract.load(path: root + "/missing-contract.json")
+            throw DesktopError(code: "test_failed", message: "Expected missing bundled contract")
+        } catch { try expect((error as? DesktopError)?.code == "invalid_contract", "Identify missing app resource") }
         let restarted = try await LocalControlServer.start(stateDir:root) { _ in [:] }
         await restarted.close()
         try storage.deleteCredential()
         try refuses { _ = try storage.loadCredential(url:config.url) }
-        print("native lifecycle storage/socket: 22 checks passed")
+        print("native lifecycle storage/socket: checks passed")
     }
 }

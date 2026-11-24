@@ -17,6 +17,7 @@ export async function desktopSwiftTargets(root: string) {
       "-target",
       desktopTarget,
       join(native, "aBridge.swift"),
+      join(native, "main.swift"),
       "-framework",
       "AppKit",
       "-framework",

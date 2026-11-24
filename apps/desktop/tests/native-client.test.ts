@@ -55,8 +55,9 @@ async function fixture({
   await chmod(directory, 0o700);
   let name = "Fixture Mac",
     responseId = "fixture",
-    reject = false,
     socketKey = deviceKey;
+  let upgradeStatus: number | undefined;
+  let renameResponse: { status: number; body: string } | undefined;
   const requests: {
     method: string | undefined;
     path: string | undefined;
@@ -103,6 +104,10 @@ async function fixture({
     }
     assert.equal(request.url, "/api/device");
     assert.equal(request.headers.authorization, `Bearer ${deviceKey}`);
+    if (request.method === "PATCH" && renameResponse) {
+      response.writeHead(renameResponse.status).end(renameResponse.body);
+      return;
+    }
     if (request.method === "PATCH") name = (body as { name: string }).name;
     response.end(
       JSON.stringify(
@@ -119,12 +124,14 @@ async function fixture({
   const authorizationURL = `${url}/?authorize=${authorizationId}`;
   const server = new WebSocketServer({ noServer: true });
   http.on("upgrade", (request, socket, head) => {
-    if (reject) {
-      socket.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
-      return;
-    }
     assert.equal(request.url, "/ws/device");
     assert.equal(request.headers.authorization, `Bearer ${socketKey}`);
+    if (upgradeStatus !== undefined) {
+      socket.end(
+        `HTTP/1.1 ${upgradeStatus} Fixture response\r\nContent-Length: ${deviceKey.length}\r\nConnection: close\r\n\r\n${deviceKey}`,
+      );
+      return;
+    }
     server.handleUpgrade(request, socket, head, (ws) => server.emit("connection", ws));
   });
   let peer: WebSocket | undefined,
@@ -264,8 +271,11 @@ async function fixture({
     set responseId(value: string) {
       responseId = value;
     },
-    set reject(value: boolean) {
-      reject = value;
+    set upgradeStatus(value: number | undefined) {
+      upgradeStatus = value;
+    },
+    set renameResponse(value: { status: number; body: string } | undefined) {
+      renameResponse = value;
     },
     async close() {
       await stop();
@@ -336,6 +346,24 @@ test(
     }
   },
 );
+
+test("native client: local status write errors survive runtime exit", { skip: !native }, async () => {
+  const f = await fixture();
+  try {
+    await mkdir(join(f.directory, "status.json"));
+    await assert.rejects(f.cli("run"), (failure: unknown) => {
+      assert.ok(failure instanceof Error && "stdout" in failure);
+      const result = JSON.parse(String(failure.stdout)) as { error: Frame; ok: boolean };
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "status_write_failed");
+      assert.match(String(result.error.message), /无法保存本机连接状态.*目录可写.*磁盘空间/);
+      assert.equal(String(result.error.message).includes(f.directory), false);
+      return true;
+    });
+  } finally {
+    await f.close();
+  }
+});
 
 function testHttpConsent(label: string, bindAddress?: string, urlHost?: string) {
   test(
@@ -475,6 +503,50 @@ if (testHttpAddress && testHttpHostname) {
 }
 
 test(
+  "native client: connection status diagnoses invalid frames and failed WebSocket upgrades",
+  { skip: !native },
+  async () => {
+    const f = await fixture();
+    try {
+      await f.start();
+      let latest: Frame | undefined;
+      async function expectConnectionError(connection: string, pattern: RegExp) {
+        const message = await until(
+          async () => {
+            latest = await f.cli("status");
+            const message = String(latest.error);
+            return latest.connection === connection && pattern.test(message) ? message : undefined;
+          },
+          () => `Missing ${pattern} in ${connection} status (last status: ${JSON.stringify(latest)})`,
+        );
+        assert.equal(message.includes(deviceKey), false);
+        assert.equal(message.includes(f.url), false);
+      }
+
+      f.upgradeStatus = 404;
+      f.peer.send(`Invalid frame with private content ${deviceKey}`);
+      await expectConnectionError("offline", /无效的设备消息.*版本/);
+      await expectConnectionError("offline", /WebSocket.*HTTP 404/);
+      assert.notEqual(JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")).revoked, true);
+
+      f.upgradeStatus = undefined;
+      const recovered = await until(async () => {
+        const status = await f.cli("status");
+        return status.connection === "online" ? status : undefined;
+      });
+      assert.equal(recovered.error, "");
+
+      f.upgradeStatus = 403;
+      f.peer.terminate();
+      await expectConnectionError("revoked", /HTTP 403.*访问规则.*重新绑定/);
+      assert.equal(JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")).revoked, true);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
   "native client: signed runtime speaks protocol, persists no-replay journal and rejects invalid admission",
   { skip: !native },
   async () => {
@@ -579,8 +651,25 @@ test(
         JSON.stringify({ type: "heartbeat_ack", connection_epoch: f.epoch, device_name: "Console Name" }),
       );
       await until(async () => (await f.cli("status")).device_name === "Console Name");
-      f.responseId = "wrong";
-      await assert.rejects(f.cli("control", "rename", "--name", "wrong-device"));
+      async function expectRenameFailure(pattern: RegExp) {
+        await assert.rejects(f.cli("control", "rename", "--name", "Rejected rename"), (failure: unknown) => {
+          assert.ok(failure instanceof Error && "stdout" in failure);
+          const result = JSON.parse(String(failure.stdout)) as { error: Frame; ok: boolean };
+          assert.equal(result.ok, false);
+          assert.equal(result.error.code, "rename_failed");
+          assert.match(String(result.error.message), pattern);
+          assert.equal(String(result.error.message).includes(deviceKey), false);
+          return true;
+        });
+      }
+      f.renameResponse = { status: 503, body: deviceKey };
+      await expectRenameFailure(/修改设备名称失败.*HTTP 503/);
+      f.renameResponse = { status: 200, body: deviceKey };
+      await expectRenameFailure(/无效的设备名称响应.*Server 版本/);
+      f.renameResponse = undefined;
+      f.responseId = deviceKey;
+      await expectRenameFailure(/其他设备的响应.*Server 地址/);
+      assert.equal((await f.cli("status")).device_name, "Console Name");
       f.peer.send(
         JSON.stringify({ type: "session_close", connection_epoch: f.epoch, session_id: "fixture_session" }),
       );
@@ -619,9 +708,13 @@ test(
       await f.cli("control", "stop");
       for (let i = 1; i < 8; i++) assert.equal((await f.result(`busy_${i}`)).status, "outcome_unknown");
       assert.equal((await f.cli("status")).active_operations, 0);
-      f.reject = true;
+      f.upgradeStatus = 401;
       f.peer.terminate();
-      await until(async () => (await f.cli("status")).connection === "revoked");
+      const revoked = await until(async () => {
+        const status = await f.cli("status");
+        return status.connection === "revoked" ? status : undefined;
+      });
+      assert.match(String(revoked.error), /设备凭证.*重新绑定.*HTTP 401/);
       assert.equal(
         (JSON.parse(await readFile(join(f.directory, "config.json"), "utf8")) as Frame).revoked,
         true,

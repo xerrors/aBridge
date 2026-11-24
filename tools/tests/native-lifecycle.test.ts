@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { run } from "../lib/process.js";
@@ -37,7 +37,7 @@ test(
         executable,
       ]);
       await t.test("private storage, URL consent, journal recovery and socket ownership", async () => {
-        assert.match(await run(executable, []), /22 checks passed/);
+        assert.match(await run(executable, []), /native lifecycle storage\/socket: checks passed/);
       });
       for (const scenario of [
         "pkce",
@@ -49,11 +49,15 @@ test(
         "expired",
         "cross-origin",
         "invalid-token",
+        "unsafe-binding-file",
         "wrong-kind",
         "redirect",
         "connection-refused",
         "server-refused",
+        "missing-route",
+        "grant-rejected",
         "malformed-token",
+        "incompatible-token",
         "token-timeout",
       ] as const) {
         await t.test(scenario, async () => {
@@ -73,6 +77,7 @@ test(
           let request: Record<string, unknown> = {},
             exchange: Record<string, unknown> | undefined;
           let cancellations = 0;
+          const responseSecret = "abr_device_fixture_secret";
           const server = createServer(async (incoming, response) => {
             const chunks: Buffer[] = [];
             for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
@@ -81,7 +86,7 @@ test(
             if (incoming.url === "/api/device") {
               assert.equal(incoming.headers.authorization, "Bearer abr_device_new");
               if (scenario === "redirect") {
-                response.writeHead(302, { location: "http://127.0.0.1:1/forbidden" }).end("{}");
+                response.writeHead(302, { location: "http://127.0.0.1:1/" + responseSecret }).end("{}");
                 return;
               }
               response.writeHead(scenario === "invalid-token" ? 401 : 200).end(
@@ -95,7 +100,13 @@ test(
             } else if (incoming.url === "/api/device-authorizations" && incoming.method === "POST") {
               request = body;
               if (scenario === "server-refused") {
-                response.writeHead(401).end("{}");
+                response
+                  .writeHead(401)
+                  .end(JSON.stringify({ error: { code: "unauthorized", message: responseSecret } }));
+                return;
+              }
+              if (scenario === "missing-route") {
+                response.writeHead(404).end(JSON.stringify({ message: responseSecret }));
                 return;
               }
               response.end(
@@ -114,8 +125,18 @@ test(
                 request.code_challenge,
               );
               assert.equal(body.redirect_uri, request.redirect_uri);
+              if (scenario === "grant-rejected") {
+                response
+                  .writeHead(400)
+                  .end(JSON.stringify({ error: { code: "invalid_grant", message: responseSecret } }));
+                return;
+              }
               if (scenario === "malformed-token") {
-                response.end('{"key":"abr_device_fixture_secret"');
+                response.end('{"key":' + JSON.stringify(responseSecret));
+                return;
+              }
+              if (scenario === "incompatible-token") {
+                response.end(JSON.stringify({ key: responseSecret }));
                 return;
               }
               if (scenario === "token-timeout") {
@@ -142,7 +163,13 @@ test(
           const origin = `http://127.0.0.1:${address.port}`;
           if (scenario === "connection-refused")
             await new Promise<void>((resolve) => server.close(() => resolve()));
-          const manual = ["manual", "invalid-token", "wrong-kind", "redirect"].includes(scenario);
+          const manual = [
+            "manual",
+            "invalid-token",
+            "unsafe-binding-file",
+            "wrong-kind",
+            "redirect",
+          ].includes(scenario);
           const child = spawn(executable, ["authorize", directory], {
             stdio: ["pipe", "pipe", "pipe"],
             env: {
@@ -186,7 +213,13 @@ test(
                   );
                 else {
                   assert.ok(
-                    scenario === "pkce" || scenario === "malformed-token" || scenario === "token-timeout",
+                    [
+                      "pkce",
+                      "grant-rejected",
+                      "malformed-token",
+                      "incompatible-token",
+                      "token-timeout",
+                    ].includes(scenario),
                   );
                   if (scenario === "pkce") {
                     assert.equal(
@@ -195,17 +228,17 @@ test(
                     );
                     assert.equal(exchange, undefined);
                   }
-                  assert.equal(
-                    (await callback({ state: String(request.state), code: "c".repeat(43) })).status,
-                    200,
-                  );
+                  const response = await callback({ state: String(request.state), code: "c".repeat(43) });
+                  assert.equal(response.status, 200);
+                  assert.equal(await response.text(), "已收到授权，请返回 aBridge 查看绑定结果。");
                 }
               } else if (event.event === "ready") {
-                assert.ok(scenario === "pkce" || scenario === "manual");
+                assert.ok(scenario === "pkce" || scenario === "manual" || scenario === "unsafe-binding-file");
                 assert.deepEqual(
                   JSON.parse(await readFile(join(directory, "config.json"), "utf8")),
                   previous,
                 );
+                if (scenario === "unsafe-binding-file") await chmod(join(directory, "config.json"), 0o644);
                 child.stdin.write(
                   JSON.stringify({ command: "commit", capabilities: { files: true } }) + "\n",
                 );
@@ -220,21 +253,53 @@ test(
             const success = scenario === "pkce" || scenario === "manual";
             assert.equal((await exited)[0], success ? 0 : 1, stderr);
             assert.equal(completed, success);
-            assert.ok(!output.join("").includes("abr_device_new"));
-            if (exchange) assert.ok(!output.join("").includes(String(exchange.code_verifier)));
+            const diagnostics = output.join("\n") + stderr;
+            assert.ok(!diagnostics.includes("abr_device_new"));
+            assert.ok(!diagnostics.includes(responseSecret));
+            if (exchange) assert.ok(!diagnostics.includes(String(exchange.code_verifier)));
             if (scenario === "connection-refused") {
               assert.match(String(authorizationError), /^发起浏览器授权失败。无法连接 Server/);
             } else if (scenario === "server-refused") {
-              assert.match(String(authorizationError), /^发起浏览器授权失败。Server 拒绝了请求（HTTP 401）$/);
-              assert.equal(cancellations, 0);
+              assert.match(String(authorizationError), /^发起浏览器授权失败。.*访问规则（HTTP 401）$/);
+            } else if (scenario === "missing-route") {
+              assert.match(String(authorizationError), /^发起浏览器授权失败。.*Server 版本（HTTP 404）$/);
+            } else if (scenario === "unsafe-binding-file") {
+              assert.match(
+                String(authorizationError),
+                /已取得设备凭据，但未能保存本机绑定。.*所有者与访问权限/,
+              );
+              assert.ok(!diagnostics.includes(directory));
             } else if (scenario === "invalid-token") {
               assert.match(
                 String(authorizationError),
-                /^验证设备凭证失败。设备凭证无效或已撤销（HTTP 401）$/,
+                /^验证设备凭证失败。设备凭证无效或已撤销，请使用此 Server 的 Device Key（HTTP 401）$/,
+              );
+            } else if (scenario === "wrong-kind") {
+              assert.match(String(authorizationError), /^验证设备凭证失败。.*请换用电脑设备的 Device Key$/);
+            } else if (scenario === "redirect") {
+              assert.match(
+                String(authorizationError),
+                /^验证设备凭证失败。.*最终的 Server 地址（HTTP 302）$/,
+              );
+            } else if (scenario === "denial") {
+              assert.equal(authorizationError, "浏览器授权已取消。如需绑定，请重新发起");
+            } else if (scenario === "expired") {
+              assert.equal(authorizationError, "授权已过期，请重新发起");
+            } else if (scenario === "cross-origin") {
+              assert.match(
+                String(authorizationError),
+                /^发起浏览器授权失败。.*检查所填地址及 Server 对外地址设置$/,
+              );
+              assert.ok(!diagnostics.includes("https://other.invalid/authorize"));
+            } else if (scenario === "grant-rejected") {
+              assert.match(
+                String(authorizationError),
+                /^兑换设备凭证失败。.*请重新发起浏览器授权（HTTP 400）$/,
               );
             } else if (scenario === "malformed-token") {
               assert.match(String(authorizationError), /^兑换设备凭证失败。Server 返回了无效的 JSON 响应/);
-              assert.ok(!output.join("").includes("abr_device_fixture_secret"));
+            } else if (scenario === "incompatible-token") {
+              assert.match(String(authorizationError), /^兑换设备凭证失败。.*请检查 Server 地址和版本$/);
             } else if (scenario === "token-timeout") {
               assert.match(String(authorizationError), /^兑换设备凭证失败。连接 Server 超时/);
             }
@@ -251,8 +316,9 @@ test(
               assert.deepEqual(config, previous);
               assert.deepEqual(credential, oldCredential);
             }
-            if (!manual && !["parent", "connection-refused", "server-refused"].includes(scenario)) {
-              assert.equal(cancellations, success ? 0 : 1);
+            if (!manual && !["parent", "connection-refused"].includes(scenario)) {
+              const startRejected = scenario === "server-refused" || scenario === "missing-route";
+              assert.equal(cancellations, success || startRejected ? 0 : 1);
               await assert.rejects(fetch(String(request.redirect_uri)));
             }
           } finally {
