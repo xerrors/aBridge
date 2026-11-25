@@ -13,7 +13,7 @@ function dateTime(value: number | null): string {
   return value === null ? "尚未连接" : new Date(value * 1000).toLocaleString("zh-CN");
 }
 
-export function InstanceAdminPage({
+export function UserAdminPage({
   requireLogin,
   notify,
 }: {

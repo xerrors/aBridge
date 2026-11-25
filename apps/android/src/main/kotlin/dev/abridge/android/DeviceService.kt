@@ -187,7 +187,7 @@ class DeviceService : AccessibilityService() {
             override fun onOpen(response: ServerHandshake) { val self = this; scope.launch {
                 if (self !== this@DeviceService.socket) return@launch
                 send(JSONObject().put("type", "hello").put("protocol", contract.protocol)
-                    .put("platform", "android").put("version", contract.version)
+                    .put("platform", "android").put("version", contract.version).put("task_session_ack", true)
                     .put("capabilities", capabilities()).put("paused", paused())
                     .put("interaction_state", interactionState().wire))
             } }
@@ -329,12 +329,24 @@ class DeviceService : AccessibilityService() {
             "revoke" -> revoke()
             "session_close" -> {
                 val session = frame.getString("session_id")
-                if (closedSessions.size >= contract.limits.getInt("journalEntries")) {
+                if (session !in closedSessions && closedSessions.size >= contract.limits.getInt("journalEntries")) {
                     scheduleReconnect()
                     return
                 }
                 closedSessions.add(session)
+                val operation = running?.takeIf { it.session == session }?.job
+                val connection = socket
+                val closingEpoch = epoch
                 stopWork(session)
+                if (frame.optBoolean("acknowledge", false)) scope.launch {
+                    // The admission gate above stays closed while cancellation completes.
+                    // A prior connection must never acknowledge on its replacement.
+                    operation?.join()
+                    if (connection != null && connection === socket && epoch == closingEpoch && connection.isOpen) {
+                        send(JSONObject().put("type", "session_closed").put("session_id", session)
+                            .put("connection_epoch", closingEpoch))
+                    }
+                }
             }
             "cancel" -> {
                 val active = running ?: return

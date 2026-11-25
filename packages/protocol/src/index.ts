@@ -742,6 +742,7 @@ export const deviceHelloSchema = z
     capabilities: z.record(z.string(), z.boolean()),
     paused: z.boolean(),
     interaction_state: deviceInteractionStateSchema.optional(),
+    task_session_ack: z.boolean().optional(),
     ...deviceMetadataSchema.shape,
   })
   .passthrough();
@@ -770,3 +771,5 @@ export { windowsShellRequestSchema, type WindowsShellRequest } from "./windows-s
 export type DesktopAccessibilityLimit = "time_budget";
 
 export { windowsComputerActionSchema, type WindowsComputerAction } from "./windows-computer.js";
+
+export * from "./tasks.js";
