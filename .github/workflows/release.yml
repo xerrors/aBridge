@@ -44,10 +44,13 @@ jobs:
           node --import tsx tools/package-browser-client.ts
           version="${GITHUB_REF_NAME#v}"
           archive="abridge-client-browser-$version-linux.tar.gz"
-          cp -- ".local/release/browser-client/$archive" dist/releases/
+          installer="install-browser-client.sh"
+          cp -- ".local/release/browser-client/$archive" ".local/release/browser-client/$installer" dist/releases/
           cd dist/releases
           test "$(tar -xOf "$archive" abridge-client-browser/version)" = "$version"
+          bash -n "$installer"
           sha256sum -- "$archive" > "$archive.sha256"
+          sha256sum -- "$installer" > "$installer.sha256"
       - name: Build portable unsigned macOS candidate
         if: runner.os == 'macOS'
         run: npm run package:macos -- --reuse-build
@@ -94,6 +97,7 @@ jobs:
             dist/releases/*.tgz
             dist/releases/abridge-browser-*.zip
             dist/releases/abridge-client-browser-*.tar.gz*
+            dist/releases/install-browser-client.sh*
             dist/releases/aBridge-*-android.apk
           if-no-files-found: error
           retention-days: 14
@@ -176,20 +180,22 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          archives=()
+          assets=()
           checksums=()
           for target in aarch64-unknown-linux-musl x86_64-unknown-linux-musl; do
             archive="abridge-client-$version-$target.tar.gz"
-            archives+=("$archive")
+            assets+=("$archive")
             checksums+=("$archive.sha256")
           done
           browser_archive="abridge-client-browser-$version-linux.tar.gz"
+          installer="install-browser-client.sh"
           mv -- "$GITHUB_WORKSPACE/release/$browser_archive" "$GITHUB_WORKSPACE/release/$browser_archive.sha256" .
-          archives+=("$browser_archive")
-          checksums+=("$browser_archive.sha256")
+          mv -- "$GITHUB_WORKSPACE/release/$installer" "$GITHUB_WORKSPACE/release/$installer.sha256" .
+          assets+=("$browser_archive" "$installer")
+          checksums+=("$browser_archive.sha256" "$installer.sha256")
           sha256sum --check --strict -- "${checksums[@]}"
-          cp -- "${archives[@]}" "$GITHUB_WORKSPACE/release/"
-          sha256sum -- "${archives[@]}" > "$GITHUB_WORKSPACE/release/SHA256SUMS"
+          cp -- "${assets[@]}" "$GITHUB_WORKSPACE/release/"
+          sha256sum -- "${assets[@]}" > "$GITHUB_WORKSPACE/release/SHA256SUMS"
       - name: Verify Windows release assets
         working-directory: release
         shell: bash

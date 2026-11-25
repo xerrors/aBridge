@@ -1,5 +1,12 @@
 # 变更记录
 
+## 0.5.3 — 正式发布（2026-11-25）
+
+### 浏览器
+
+- GitHub Release 新增 `install-browser-client.sh`。Ubuntu 和 Debian amd64 用户可以通过 `curl | bash` 安装无头浏览器，从终端输入 Server 地址与 Browser Device Key。安装器校验同版本浏览器包的 SHA-256，安装匹配的 Chromium 后启动浏览器。[安装说明](deployment.md#无头-linux-浏览器客户端)
+- 在同一 Linux 账号下安装后，已有设备可以沿用同一服务地址下的绑定与 Chromium Profile。
+
 ## 0.5.2 — 正式发布（2026-11-25）
 
 ### 浏览器

@@ -85,7 +85,7 @@ CI 上传 **windows-client-unsigned**，保留 30 天。tag 发布另将 `aBridg
 
 发布复用 Linux CI，在原生 amd64 和 arm64 runner 上构建 musl 静态包，并验证打包二进制与 Server 联调、用户级 systemd 生命周期。两个架构均须通过才进入发布。GitHub Release 附带两个架构各自的 `abridge-client-<version>-<target>.tar.gz` 和一份 `SHA256SUMS`。各架构的体积报告和单独的校验文件留在 CI artifact 中。下载后按 [Linux 安装说明](https://github.com/xerrors/aBridge/blob/main/apps/linux-client/README.md#安装与绑定) 核对校验和。
 
-GitHub Release 同时附带 `abridge-client-browser-<version>-linux.tar.gz`。Linux 发布任务使用同版本扩展生成发行物，校验包内版本并将包的 SHA-256 汇总到 `SHA256SUMS`。该客户端使用 [无头 Linux 浏览器安装流程](deployment.md#无头-linux-浏览器客户端) 安装 Chromium。
+GitHub Release 同时附带 `abridge-client-browser-<version>-linux.tar.gz` 和 `install-browser-client.sh`。运行 `npm run package:browser-client` 会在 `.local/release/browser-client/` 生成两者。安装器使用根版本和本次生成的压缩包 SHA-256。发布任务校验包内版本，核对两份产物并将其 SHA-256 汇总到 `SHA256SUMS`。[无头 Linux 浏览器安装流程](deployment.md#无头-linux-浏览器客户端)
 
 ## Chrome 应用商店
 

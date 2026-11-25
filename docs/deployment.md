@@ -219,9 +219,19 @@ npm run build
 
 ## 无头 Linux 浏览器客户端
 
-`abridge-client-browser` 是独立浏览器设备，只提供 `browser`。由 aBridge 打包业务启动器、Playwright 版本和同版本扩展。构建机器执行 `npm run package:browser-client`，取出 `.local/release/browser-client/abridge-client-browser-<版本>-linux.tar.gz`。
+`abridge-client-browser` 是独立浏览器设备，只提供 `browser`。GitHub Release 提供安装脚本和同版本客户端包。安装脚本适用于 Ubuntu 或 Debian amd64，需要能运行 `sudo` 的普通账号。
 
-在目标 Linux 上解包。当前已验证 Linux amd64，客户端要求 Python 3.10 或更新版本。管理员预装 Chromium 系统库与可信 CA；可使用发行物所钉住的 Playwright 执行 `python -m playwright install-deps chromium`。使用专用非 root 账户执行以下命令。在启用受限 user namespace 的发行版上，系统策略须允许此 Chromium 使用 user namespace 沙盒。Ubuntu AppArmor 可为实际安装路径上的受保护 Chromium 二进制设置单独的 `userns` 规则。
+先在管理台添加浏览器设备并生成 Browser Device Key。在 Linux 的交互终端运行：
+
+```sh
+curl -fsSL https://github.com/xerrors/aBridge/releases/latest/download/install-browser-client.sh | bash
+```
+
+脚本会询问 aBridge 的 HTTPS 地址，校验该 Release 的包并安装 Chromium，然后在隐藏输入提示中读取设备凭证。通过 SSH 运行时使用 `ssh -t` 分配终端。也可以用 `bash -s -- https://bridge.example.com` 预填地址。浏览器在当前终端运行，再次执行会沿用同一地址下的绑定。在管理台确认设备在线，将其加入所需的 Agent 连接并授予浏览器能力。
+
+客户端要求 Python 3.10+。在启用受限 user namespace 的发行版上，系统策略须允许此 Chromium 使用 user namespace 沙盒。Ubuntu AppArmor 可为实际安装路径上的 Chromium 二进制设置专用的 `userns` 规则。
+
+需要手动安装时，下载并校验 `abridge-client-browser-<版本>-linux.tar.gz`，解压后用普通账号运行以下命令。管理员可用发行物固定的 Playwright 执行 `python -m playwright install-deps chromium` 安装系统库。
 
 ```sh
 cd abridge-client-browser
@@ -232,7 +242,7 @@ python3 -m venv .venv
 .venv/bin/python -I ./abridge-client-browser run
 ```
 
-在管理台新建浏览器设备，生成 Browser Device Key，在 `bind` 提示中隐藏输入。然后将该设备加入需要控制它的 Agent 连接。`bind --stdin` 可经私有输入管道读取 Key。远端 HTTP 需要指定 `--allow-http`；回环可直接用于开发验收。运行账户可以用 `status` 查看本地绑定状态，aBridge 设备列表确认 WebSocket 在线。将前台 `run` 交给部署已有的进程管理器，重启沿用 `~/.local/state/abridge-client-browser` 中的 Profile。需要修改存储位置时为该账户设置 `ABRIDGE_BROWSER_HOME`，使用权限 0700 的目录。
+`bind --stdin` 可经私有输入管道读取 Key。远端 HTTP 需要指定 `--allow-http`，回环可直接用于开发验收。运行账户可以用 `status` 查看本地绑定状态。将前台 `run` 交给部署已有的进程管理器，重启沿用 `~/.local/state/abridge-client-browser` 中的 Profile。需要修改存储位置时为该账户设置 `ABRIDGE_BROWSER_HOME`，使用权限 0700 的目录。
 
 ### 可选平台托管浏览器
 
