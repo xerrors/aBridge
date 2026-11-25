@@ -125,3 +125,39 @@ export const activityFilterSchema = z
   })
   .strict();
 export type ActivityFilter = z.infer<typeof activityFilterSchema>;
+
+/** Groups organize people only; membership never authorizes a device or Agent connection. */
+export const groupInputSchema = z.strictObject({ name: z.string().trim().min(1).max(120) });
+export const adminGroupInputSchema = groupInputSchema.extend({ owner_id: z.string().min(1).max(160) });
+export const groupMemberSchema = managementUserSchema.extend({
+  role: z.enum(["owner", "member"]),
+  joined_at: z.number(),
+});
+export const groupInviteSchema = z.object({
+  id: z.string(),
+  group_id: z.string(),
+  created_at: z.number(),
+  expires_at: z.number(),
+  revoked_at: z.number().nullable(),
+});
+export const groupViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  owner_id: z.string(),
+  created_at: z.number(),
+  members: z.array(groupMemberSchema),
+});
+export const groupsListSchema = z.object({ groups: z.array(groupViewSchema) });
+export const groupInvitesListSchema = z.object({ invites: z.array(groupInviteSchema) });
+export const groupInviteIssueSchema = z.strictObject({
+  expires_in_seconds: z.number().int().min(60).max(604800).default(86400),
+});
+export const groupInviteIssuedSchema = z.object({ invite: groupInviteSchema, code: z.string() });
+export const groupJoinSchema = z.strictObject({ code: z.string().trim().min(1).max(128) });
+export const usersListSchema = z.object({
+  users: z.array(managementUserSchema.extend({ created_at: z.number() })),
+});
+export type GroupView = z.infer<typeof groupViewSchema>;
+export type GroupMember = z.infer<typeof groupMemberSchema>;
+export type GroupInvite = z.infer<typeof groupInviteSchema>;
+export type GroupInviteIssued = z.infer<typeof groupInviteIssuedSchema>;

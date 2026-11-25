@@ -73,6 +73,10 @@ func modelSettings(getenv func(string) string) (string, string, string, error) {
 }
 
 func main() {
+	if address := os.Getenv("ABRIDGE_TASK_SERVER_URL"); address != "" {
+		runWorkerMode(address)
+		return
+	}
 	requestKey := required("ABRIDGE_TASK_KEY")
 	if len(requestKey) < 24 {
 		log.Fatal("ABRIDGE_TASK_KEY must have at least 24 characters")
@@ -200,4 +204,32 @@ func reply(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func runWorkerMode(address string) {
+	address = endpoint("ABRIDGE_TASK_SERVER_URL", address)
+	parsed, _ := url.Parse(address)
+	if parsed.Path != "" && parsed.Path != "/" {
+		log.Fatal("ABRIDGE_TASK_SERVER_URL must be a service origin without a path")
+	}
+	key := required("ABRIDGE_TASK_KEY")
+	if len(key) < 24 {
+		log.Fatal("ABRIDGE_TASK_KEY must have at least 24 characters")
+	}
+	modelURL, modelName, modelKey, err := modelSettings(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	parallelism := 2
+	if value := os.Getenv("ABRIDGE_AGENT_PARALLELISM"); value != "" {
+		parallelism, err = strconv.Atoi(value)
+		if err != nil || parallelism < 1 || parallelism > 16 {
+			log.Fatal("ABRIDGE_AGENT_PARALLELISM must be between 1 and 16")
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	worker := taskWorker{base: strings.TrimRight(address, "/"), key: key, modelURL: modelURL, modelName: modelName, modelKey: modelKey, http: &http.Client{Timeout: 50 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	log.Printf("Agent worker started (parallelism %d)", parallelism)
+	worker.run(ctx, parallelism)
 }

@@ -1,3 +1,5 @@
+import { ControllerChat } from "./controller-chat.js";
+import { TaskStore } from "./task-store.js";
 import { createHash, createHmac, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -16,6 +18,7 @@ import {
   type ManagedBrowserProvision,
   type PersonalBrowserProvision,
 } from "@abridge/protocol";
+import { GroupStore } from "./groups.js";
 import { validatePolicy } from "./policy.js";
 import {
   BridgeError,
@@ -109,6 +112,9 @@ export class Store {
   private readonly db: DatabaseSync;
   private readonly bootstrapKey = randomBytes(32);
   readonly path: string;
+  readonly tasks: TaskStore;
+  readonly controllerChat: ControllerChat;
+  readonly groups: GroupStore;
   constructor(path: string) {
     this.path = resolve(path);
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
@@ -121,6 +127,9 @@ export class Store {
       else if (version !== 6)
         throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
 
+      this.groups = new GroupStore(this.db);
+      this.tasks = new TaskStore(this.db);
+      this.controllerChat = new ControllerChat(this.db, this.tasks);
       this.db.exec(MANAGED_BROWSER_SCHEMA);
       const columns = new Set(
         this.all<{ name: string }>("PRAGMA table_info(managed_browsers)").map(({ name }) => name),
@@ -934,6 +943,7 @@ export class Store {
         leaseUntil,
         nowSeconds(),
       );
+      this.tasks.recordSession(agentConnection.id, id);
       this.audit(agentConnection.owner_id, deviceId, agentConnection.id, null, "session_open", "active");
     });
     return this.session(id)!;

@@ -14,13 +14,15 @@ import { ConnectionsPage } from "../features/connections/list.js";
 import { type Mutate, type RunAction } from "../lib/types.js";
 import { useUserSession } from "../features/auth/session.js";
 import { DeviceAuthorization } from "../features/devices/authorization.js";
-import { InstanceAdminPage } from "../features/admin/page.js";
+import { AdminNavigation, InstanceAdminPage, type AdminSection } from "../features/admin/console.js";
 import { useInstanceAdminSession } from "../features/admin/session.js";
 import { confirmCredentialNavigation } from "../lib/credential-guard.js";
 import { parseRoute, type Tab } from "./navigation.js";
 import { OverviewPage } from "../features/overview/page.js";
 import { DeviceSetupPage } from "../features/devices/setup.js";
 import { ConnectionCreatePage, ConnectionPage } from "../features/connections/pages.js";
+
+import { GroupsPage } from "../features/admin/groups.js";
 
 const tabs: readonly [Tab, string][] = [
   ["overview", "概览"],
@@ -163,7 +165,16 @@ function ManagementApp() {
           </header>
           <main key={identityRevision} id="main" class="workspace-content" tabIndex={-1}>
             {visibleTab === "admin" ? (
-              <InstanceAdminPage requireLogin={admin.requireLogin} notify={notify} />
+              <InstanceAdminPage
+                requireLogin={admin.requireLogin}
+                notify={notify}
+                section={
+                  (["tasks", "devices", "users", "groups", "audit"].includes(route.id ?? "")
+                    ? route.id
+                    : "overview") as AdminSection
+                }
+                groups={<GroupsPage notify={notify} />}
+              />
             ) : visibleTab === "overview" ? (
               <OverviewPage data={data} />
             ) : visibleTab === "devices" && route.id === "new" ? (
@@ -308,7 +319,100 @@ function ManagementApp() {
     </>
   );
 }
+function AdministratorApp() {
+  const [notice, setNotice] = useState("");
+  const admin = useInstanceAdminSession(setNotice);
+  const [hash, setHash] = useState(location.hash);
+  useEffect(() => {
+    document.title = "管理后台 · aBridge";
+    const navigate = () => setHash(location.hash);
+    window.addEventListener("hashchange", navigate);
+    return () => window.removeEventListener("hashchange", navigate);
+  }, []);
+  const section = parseRoute(hash).id;
+  if (admin.phase !== "ready")
+    return (
+      <main class="admin-login" id="main" tabIndex={-1}>
+        <div class="admin-login-shell">
+          <div class="admin-login-visual" aria-hidden="true">
+            <img src="/static/login-bridge-studio.webp" alt="" />
+          </div>
+          <section class="admin-login-form" aria-labelledby="admin-login-title">
+            <div class="admin-login-inner">
+              <Brand administrator />
+              <div class="admin-login-heading">
+                <h1 id="admin-login-title">欢迎回来</h1>
+                <p>使用管理员令牌登录管理后台</p>
+              </div>
+              {admin.phase === "loading" ? (
+                <p role="status">正在验证管理员身份…</p>
+              ) : (
+                <>
+                  <Form
+                    label="登录"
+                    onSubmit={async (data) => {
+                      setNotice("");
+                      location.hash = new URLSearchParams({
+                        admin_token: String(data.get("token")).trim(),
+                      }).toString();
+                    }}
+                  >
+                    <Field name="token" label="管理员令牌" type="password" passwordPurpose="current" />
+                  </Form>
+                  {notice && (
+                    <p class="error" role="alert">
+                      {notice}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  const activeSection = (
+    ["tasks", "devices", "users", "groups", "audit"].includes(section ?? "") ? section : "overview"
+  ) as AdminSection;
+  return (
+    <div class="dedicated-admin">
+      <aside class="admin-sidebar">
+        <a class="brand-home" href="#admin/overview" aria-label="管理后台首页">
+          <Brand administrator />
+        </a>
+        <AdminNavigation section={activeSection} sidebar />
+        <div class="sidebar-bottom">
+          <span class="server-host" title={location.host}>
+            {location.host}
+          </span>
+          <span class="small muted">v{VERSION}</span>
+        </div>
+      </aside>
+      <header class="workspace-header dedicated-admin-header">
+        <span>管理后台</span>
+        <button onClick={() => void admin.logout().catch(() => setNotice("退出失败，请重试"))}>
+          退出管理员
+        </button>
+      </header>
+      <main id="main" class="workspace-content" tabIndex={-1}>
+        <InstanceAdminPage
+          requireLogin={admin.requireLogin}
+          notify={setNotice}
+          section={activeSection}
+          groups={<GroupsPage notify={setNotice} />}
+          sidebar
+        />
+      </main>
+      {notice && (
+        <div id="notice" role="status">
+          {notice}
+        </div>
+      )}
+    </div>
+  );
+}
 export function App() {
+  if (/^\/admin\/?$/.test(location.pathname)) return <AdministratorApp />;
   const parameters = new URLSearchParams(location.search);
   return parameters.has("authorize") ? (
     <DeviceAuthorization requestId={parameters.get("authorize") ?? ""} />

@@ -15,6 +15,10 @@
 
 管理台采用中性表面与黑色主操作：画布 `#FAFAFA`、表面 `#FFFFFF`、正文及主按钮 `#171717`、次级文字 `#666666`、边框 `#E5E5E5`。蓝色保留给品牌、在线与可用状态、链接和键盘焦点。应用控件圆角为 6px，列表表面为 8px，弹窗为 12px；以 1px 边框分组，阴影只用于浮层。管理台自托管 Geist Sans 的 400、500、600 字重，中文使用系统字体，代码使用系统等宽字体；不依赖外部字体服务。
 
+## 独立管理员后台
+
+`/admin` 以 [Materio Free](https://github.com/themeselection/materio-mui-nextjs-admin-template-free/tree/3f28aff6111823a24357bbe87fcef312b399d20c) 为设计参考。登录沿用左侧插画、右侧表单，桌面工作区使用 260px 左侧导航、紫色渐变选中项和右上角退出入口。指标卡使用带浅紫底的图标，列表使用浅色表头，单图标动作采用圆形按钮并提供可访问名称。后台各模块共享这些样式，页面按实际管理任务选择字段和操作。
+
 ## 资源单源
 
 `docs/assets/brand/bridge.svg` 是桥标矢量源；字标由 `tools/brand-wordmark.swift` 的 Helvetica-Bold 定义生成 `docs/assets/brand/wordmark.svg`。统一导出以下派生资源：

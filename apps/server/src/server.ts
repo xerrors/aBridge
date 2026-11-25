@@ -1,3 +1,6 @@
+import { registerControllerChat } from "./controller-chat.js";
+import { registerGroupRoutes } from "./group-routes.js";
+import { registerTaskRoutes } from "./task-routes.js";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
@@ -49,10 +52,12 @@ export interface ServerConfig {
   host?: string;
   port?: number;
   staticRoot?: string;
+  controllerStaticRoot?: string;
   allowedHosts?: string[];
   allowedOrigins?: string[];
   publicOrigin?: string;
   adminToken?: string;
+  taskWorkerKey?: string;
   resetAdminToken?: boolean;
   identity?: IdentityConfig;
 }
@@ -113,6 +118,8 @@ export async function createServer(config: ServerConfig) {
       );
     }
   }
+  if (config.taskWorkerKey !== undefined && config.taskWorkerKey.length < 24)
+    throw new BridgeError("invalid_worker_key", "Task worker key must contain at least 24 characters", 422);
   // 配置在打开持久状态前校验，错误不占用数据库锁。
   validateIdentityConfig(config.identity ?? {}, publicOrigin?.origin);
   const release = acquireInstanceLock(config.dbPath);
@@ -123,6 +130,7 @@ export async function createServer(config: ServerConfig) {
     try {
       admin = new AdminAuth(loadAdminToken(store.path, config.adminToken, config.resetAdminToken));
       store.recoverAfterRestart();
+      for (const id of store.tasks.expire(true)) store.revokeAgentConnection(id);
     } catch (error) {
       store.close();
       throw error;
@@ -291,6 +299,18 @@ export async function createServer(config: ServerConfig) {
     reply.code(201);
     return user;
   });
+  app.post("/api/admin/devices", async (request, reply) => {
+    requireAdmin(request);
+    rateLimit(request, "admin-create-device", 30);
+    const { owner_id, name: deviceName } = z
+      .object({ owner_id: z.string().min(1).max(120), name })
+      .strict()
+      .parse(request.body);
+    if (!store.user(owner_id)) throw new BridgeError("not_found", "User not found", 404);
+    const result = store.createDevice(owner_id, deviceName, ["screen", "input", "files"], "computer");
+    reply.header("cache-control", "no-store").code(201);
+    return { id: result.device.id, key: result.key };
+  });
   app.get("/api/admin/overview", async (request): Promise<AdminOverview> => {
     requireAdmin(request);
     const devicesByOwner = new Map<string, AdminOverview["users"][number]["devices"]>();
@@ -365,6 +385,17 @@ export async function createServer(config: ServerConfig) {
     setCookie(reply, request, "", 0);
     return { ok: true };
   });
+  registerControllerChat(app, store.controllerChat, account, rateLimit);
+  registerGroupRoutes(app, { store, account, requireAdmin, rateLimit });
+  registerTaskRoutes(app, {
+    store,
+    control,
+    account,
+    requireAdmin,
+    rateLimit,
+    viewer: (request) => store.account(cookie(request)),
+    workerKey: config.taskWorkerKey,
+  });
   app.get("/api/me", async (request) => account(request));
   app.get("/api/devices", async (request) => ({
     devices: store.devices(account(request).id).map((device) => control.deviceView(device)),
@@ -432,15 +463,22 @@ export async function createServer(config: ServerConfig) {
     return { id: device.id, key };
   });
   app.get("/api/agent-connections", async (request) => ({
-    connections: store.agentConnections(account(request).id).map((agentConnection) => ({
-      ...publicAgentConnection(agentConnection),
-      can_reconnect: store.canReconnectPlatformAgentConnection(agentConnection),
-    })),
+    connections: store
+      .agentConnections(account(request).id)
+      .filter((connection) => !store.tasks.scopedConnection(connection.id))
+      .map((agentConnection) => ({
+        ...publicAgentConnection(agentConnection),
+        can_reconnect: store.canReconnectPlatformAgentConnection(agentConnection),
+      })),
   }));
   function ownedAgentConnection(request: FastifyRequest): AgentConnection {
     const user = account(request),
       agentConnection = store.agentConnection((request.params as { id: string }).id);
-    if (!agentConnection || agentConnection.owner_id !== user.id)
+    if (
+      !agentConnection ||
+      agentConnection.owner_id !== user.id ||
+      store.tasks.scopedConnection(agentConnection.id)
+    )
       throw new BridgeError("not_found", "Connection not found", 404);
     return agentConnection;
   }
@@ -478,7 +516,11 @@ export async function createServer(config: ServerConfig) {
   app.post("/api/agent-connections/:id/revoke", async (request) => {
     const user = account(request),
       agentConnection = store.agentConnection((request.params as { id: string }).id);
-    if (!agentConnection || agentConnection.owner_id !== user.id)
+    if (
+      !agentConnection ||
+      agentConnection.owner_id !== user.id ||
+      store.tasks.scopedConnection(agentConnection.id)
+    )
       throw new BridgeError("not_found", "Agent connection not found", 404);
     await control.revokeAgentConnection(agentConnection);
     return { ok: true };
@@ -782,18 +824,38 @@ export async function createServer(config: ServerConfig) {
   }
   addSocket("/ws/device", "computer");
   addSocket("/ws/browser", "browser");
+  const controllerAvailable = Boolean(config.controllerStaticRoot && existsSync(config.controllerStaticRoot));
   if (config.staticRoot && existsSync(config.staticRoot)) {
     await app.register(staticFiles, {
       root: resolve(config.staticRoot),
       prefix: "/static/",
       decorateReply: true,
     });
-    app.get("/", async (_request, reply) => {
-      reply.header(
-        "content-security-policy",
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
-      );
-      return reply.sendFile("index.html");
+    for (const path of ["/", "/admin", "/admin/"])
+      app.get(path, async (request, reply) => {
+        if (path === "/" && controllerAvailable && !(request.query as { authorize?: string }).authorize)
+          return reply.redirect("/admin");
+        reply.header(
+          "content-security-policy",
+          "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
+        );
+        return reply.sendFile("index.html");
+      });
+  }
+  if (controllerAvailable) {
+    await app.register(async (controller) => {
+      await controller.register(staticFiles, {
+        root: resolve(config.controllerStaticRoot!),
+        prefix: "/controller/static/",
+      });
+      for (const entry of ["/controller", "/controller/"])
+        controller.get(entry, async (_request, reply) => {
+          reply.header(
+            "content-security-policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'",
+          );
+          return reply.sendFile("index.html");
+        });
     });
   }
   let closed = false;

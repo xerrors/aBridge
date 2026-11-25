@@ -86,6 +86,7 @@ export interface DeviceConnection {
   capabilities: Partial<Record<Capability, boolean>>;
   paused: boolean;
   interactionState?: DeviceInteractionState;
+  taskSessionAck?: boolean;
   heartbeatAt: number;
   sequence: number;
   transport: DeviceTransport;

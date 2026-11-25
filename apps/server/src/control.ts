@@ -15,6 +15,7 @@ import {
   operationFrameSchema,
   deviceCancelSchema,
   parseDeviceToolRequest,
+  taskSessionClosedSchema,
   operationIdPattern,
   deviceErrorSchema,
   type OperationError,
@@ -122,6 +123,7 @@ function sortedJson(value: unknown): string {
 export class ControlService {
   private readonly browserExecutions = new BrowserExecutions();
   private readonly deviceConnections = new Map<string, DeviceConnection>();
+  private readonly taskClosures = new Map<string, { ticket: DeviceConnection; resolve: () => void }>();
   private readonly pending = new Map<string, Pending>();
   private readonly lastDisconnect = new Map<string, ConnectionLoss>();
   // Retain the last local policy across disconnects; offline status does not revoke completed results.
@@ -279,9 +281,11 @@ export class ControlService {
       capabilities.some((cap) => !CAPABILITIES.includes(cap))
     )
       throw new BridgeError("invalid_capabilities", "Select valid, unique capabilities", 422);
+    this.store.tasks.assertDispatch(agentConnection.id);
     const access = this.sessionOpenAccess(agentConnection, deviceId, capabilities);
     let { current } = access;
     const { device } = access;
+    if (device.platform === "android") this.store.tasks.assertRecipientAvailable(device.owner_id, current.id);
     if (device.kind === "browser") {
       const live = await this.waitForLiveBrowser(
         agentConnection,
@@ -474,11 +478,15 @@ export class ControlService {
         .digest("base64url");
     return "op_" + candidate.slice(0, 8);
   }
-  private authorizedSession(agentConnection: AgentConnection, id: string): ControlSession {
+  private ownedSession(agentConnection: AgentConnection, id: string): ControlSession {
     this.currentAgentConnection(agentConnection);
     const session = this.store.session(id);
     if (!session || session.agent_connection_id !== agentConnection.id)
       throw new BridgeError("not_found", "Session does not exist or is not granted", 404);
+    return session;
+  }
+  private authorizedSession(agentConnection: AgentConnection, id: string): ControlSession {
+    const session = this.ownedSession(agentConnection, id);
     if (session.status === "expired" || (session.status === "active" && session.lease_until <= this.now()))
       throw new BridgeError("session_expired", "Idle session expired; open a new session", 409, {
         session: this.sessionInfo(session),
@@ -502,10 +510,47 @@ export class ControlService {
     return session;
   }
   async closeSession(agentConnection: AgentConnection, id: string): Promise<JsonObject> {
-    const session = this.authorizedSession(agentConnection, id);
-    await this.endSession(session, "Session closed");
+    const session = this.store.tasks.scopedConnection(agentConnection.id)
+      ? this.ownedSession(agentConnection, id)
+      : this.authorizedSession(agentConnection, id);
+    if (session.status === "active") await this.endSession(session, "Session closed");
+    if (!(await this.confirmTaskSessionClosed(session.device_id, id)))
+      throw new BridgeError("cleanup_unconfirmed", "Android has not confirmed session cleanup", 409);
     return { session_id: id, status: "stopped" };
   }
+  taskDeviceReady(device: Device): boolean {
+    if (!this.deviceConnections.get(device.id)?.taskSessionAck) return false;
+    const view = this.deviceView(device);
+    return view.available.screen === true && view.available.input === true;
+  }
+  async confirmTaskSessionClosed(deviceId: string, sessionId: string): Promise<boolean> {
+    if (!this.store.tasks.pendingSession(sessionId)) return true;
+    const ticket = this.deviceConnections.get(deviceId);
+    if (!ticket?.taskSessionAck || this.taskClosures.has(sessionId)) return false;
+    let resolve!: () => void;
+    const confirmed = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const timeout = new AbortController();
+    this.taskClosures.set(sessionId, { ticket, resolve });
+    try {
+      if (
+        !(await this.safeSend(ticket, {
+          type: "session_close",
+          session_id: sessionId,
+          connection_epoch: ticket.epoch,
+          reason: "Confirm task cleanup",
+          acknowledge: true,
+        }))
+      )
+        return false;
+      return await Promise.race([confirmed.then(() => true), delay(2500, false, { signal: timeout.signal })]);
+    } finally {
+      timeout.abort();
+      this.taskClosures.delete(sessionId);
+    }
+  }
+
   private async endSession(
     session: ControlSession,
     reason: string,
@@ -619,6 +664,7 @@ export class ControlService {
     signal?: AbortSignal,
   ): Promise<OperationResponse> {
     signal?.throwIfAborted();
+    this.store.tasks.assertDispatch(agentConnection.id);
     const { tool, arguments: args } = parseDeviceToolRequest({ tool: requestedTool, arguments: input });
     // Input preparation, transport and the bounded follow-up observation share the usual 30s.
     // A native hold and an explicit verification run sequentially before that observation.
@@ -757,6 +803,7 @@ export class ControlService {
     const current = this.currentAgentConnection(agentConnection),
       session = this.authorizedSession(current, sessionId),
       device = this.authorizedDevice(current, session.device_id);
+    if (device.platform === "android") this.store.tasks.assertRecipientAvailable(device.owner_id, current.id);
     const granted = deviceAccess(current, device).capabilities;
     if (required.some((cap) => !session.capabilities.includes(cap) || !granted.includes(cap)))
       throw new BridgeError("forbidden", "Operation is outside the current capability intersection", 403);
@@ -1096,6 +1143,8 @@ export class ControlService {
       kind: device.kind,
       capabilities: reportedCapabilities(device.kind, capabilities, interactionState),
       interactionState,
+      taskSessionAck:
+        device.kind === "computer" && hello.platform === "android" && hello.task_session_ack === true,
       paused: hello.paused === true,
       heartbeatAt: this.mono(),
       sequence: 0,
@@ -1165,6 +1214,15 @@ export class ControlService {
       throw new BridgeError("stale_connection", "Connection epoch is no longer current");
     if (!device || device.revoked_at !== null || device.credential_version !== ticket.credentialVersion)
       throw new BridgeError("revoked", "Device credentials revoked");
+    if (message.type === "session_closed") {
+      const ack = taskSessionClosedSchema.parse(message);
+      const request = this.taskClosures.get(ack.session_id);
+      if (request?.ticket === ticket) {
+        this.store.tasks.confirmSessionClosed(ack.session_id);
+        request.resolve();
+      }
+      return;
+    }
     if (message.type === "unbind") {
       this.store.revokeDevice(device.id);
       await this.invalidateDevice(device.id);
