@@ -574,3 +574,23 @@
     border-radius: 50px;
   }
 }
+
+button.admin-refresh {
+  width: 40px;
+  padding: 0;
+  justify-content: center;
+}
+.admin-refresh svg {
+  width: 18px;
+  height: 18px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .admin-refresh[aria-busy="true"] svg {
+    animation: admin-refresh-spin 1s linear infinite;
+  }
+}
+@keyframes admin-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

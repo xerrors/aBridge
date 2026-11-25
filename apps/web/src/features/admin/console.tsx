@@ -1,10 +1,10 @@
+import { RefreshButton } from "./refresh-button.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   Activity,
   ClipboardList,
   LayoutDashboard,
   Monitor,
-  RefreshCw,
   ShieldCheck,
   Users,
   UsersRound,
@@ -194,10 +194,7 @@ export function InstanceAdminPage({
     <>
       <div class="page-title">
         <h1>{sections[section]}</h1>
-        <button disabled={loading} onClick={() => void refresh()}>
-          <RefreshCw aria-hidden="true" />
-          {loading ? "刷新中…" : "刷新"}
-        </button>
+        <RefreshButton loading={loading} refresh={refresh} />
       </div>
       {!sidebar && <AdminNavigation section={section} />}
       {error && (

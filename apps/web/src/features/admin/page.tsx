@@ -1,4 +1,5 @@
-import { ChevronDown, Plus, RefreshCw } from "lucide-preact";
+import { RefreshButton } from "./refresh-button.js";
+import { ChevronDown, Plus } from "lucide-preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import {
   adminCreateUserSchema,
@@ -97,10 +98,7 @@ export function UserAdminPage({
       <div class="page-title">
         <h1>实例管理</h1>
         <div class="actions">
-          <button disabled={loading} onClick={() => void refresh()}>
-            <RefreshCw aria-hidden="true" />
-            {loading ? "刷新中…" : "刷新"}
-          </button>
+          <RefreshButton loading={loading} refresh={refresh} />
           <button class="primary" onClick={() => setCreating(true)}>
             <Plus aria-hidden="true" />
             创建用户
