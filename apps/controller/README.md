@@ -1,6 +1,6 @@
 # AI 家 / AI Home
 
-独立 Android 控制端，包名 `com.aihome.app`。它连接 aBridge Server 的 `/controller/` 页面，提供聊天草稿、任务确认和任务状态；接收任务的 aBridge Android 客户端需要单独安装和授权。管理员通过 Server 的 `/admin` 进入独立管理后台。
+独立 Android 控制端，包名 `com.aihome.app`。它连接 aBridge Server 的 `/controller/` 页面，提供聊天草稿、任务确认和任务状态；接收任务的 aBridge Android 客户端需要单独安装和授权。启用 AI 家 Web 后，Server 首页进入 `/admin`。管理员可在「设备 → 添加 Android 设备」为指定账户生成接收端 Device Key。
 
 ## 构建与安装
 

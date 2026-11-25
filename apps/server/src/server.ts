@@ -299,6 +299,18 @@ export async function createServer(config: ServerConfig) {
     reply.code(201);
     return user;
   });
+  app.post("/api/admin/devices", async (request, reply) => {
+    requireAdmin(request);
+    rateLimit(request, "admin-create-device", 30);
+    const { owner_id, name: deviceName } = z
+      .object({ owner_id: z.string().min(1).max(120), name })
+      .strict()
+      .parse(request.body);
+    if (!store.user(owner_id)) throw new BridgeError("not_found", "User not found", 404);
+    const result = store.createDevice(owner_id, deviceName, ["screen", "input", "files"], "computer");
+    reply.header("cache-control", "no-store").code(201);
+    return { id: result.device.id, key: result.key };
+  });
   app.get("/api/admin/overview", async (request): Promise<AdminOverview> => {
     requireAdmin(request);
     const devicesByOwner = new Map<string, AdminOverview["users"][number]["devices"]>();
@@ -812,6 +824,7 @@ export async function createServer(config: ServerConfig) {
   }
   addSocket("/ws/device", "computer");
   addSocket("/ws/browser", "browser");
+  const controllerAvailable = Boolean(config.controllerStaticRoot && existsSync(config.controllerStaticRoot));
   if (config.staticRoot && existsSync(config.staticRoot)) {
     await app.register(staticFiles, {
       root: resolve(config.staticRoot),
@@ -819,7 +832,9 @@ export async function createServer(config: ServerConfig) {
       decorateReply: true,
     });
     for (const path of ["/", "/admin", "/admin/"])
-      app.get(path, async (_request, reply) => {
+      app.get(path, async (request, reply) => {
+        if (path === "/" && controllerAvailable && !(request.query as { authorize?: string }).authorize)
+          return reply.redirect("/admin");
         reply.header(
           "content-security-policy",
           "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
@@ -827,7 +842,7 @@ export async function createServer(config: ServerConfig) {
         return reply.sendFile("index.html");
       });
   }
-  if (config.controllerStaticRoot && existsSync(config.controllerStaticRoot)) {
+  if (controllerAvailable) {
     await app.register(async (controller) => {
       await controller.register(staticFiles, {
         root: resolve(config.controllerStaticRoot!),

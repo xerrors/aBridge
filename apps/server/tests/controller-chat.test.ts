@@ -18,6 +18,7 @@ test("controller chat preserves one account history and creates tasks only after
   const server = await createServer({
     dbPath: join(dir, "database.sqlite"),
     staticRoot: web,
+    adminToken: "fixture-admin-device-token-12345678",
     controllerStaticRoot: controller,
   });
   try {
@@ -40,7 +41,23 @@ test("controller chat preserves one account history and creates tasks only after
     const send = (method: "POST" | "PATCH", url: string, payload: Record<string, unknown>, h = auth) =>
       server.app.inject({ method, url, headers: h, payload });
 
-    assert.equal((await get("/")).body, "existing aBridge console");
+    const root = await get("/");
+    assert.equal(root.statusCode, 302);
+    assert.equal(root.headers.location, "/admin");
+    assert.equal((await get("/?authorize=fixture")).body, "existing aBridge console");
+    assert.equal((await get("/admin")).body, "existing aBridge console");
+    const newDevice = { name: "Admin provisioned Android", owner_id: receiver.id };
+    assert.equal((await send("POST", "/api/admin/devices", newDevice)).statusCode, 401);
+    const admin = { ...auth, authorization: "Bearer fixture-admin-device-token-12345678" };
+    assert.equal(
+      (await send("POST", "/api/admin/devices", { ...newDevice, owner_id: "missing" }, admin)).statusCode,
+      404,
+    );
+    const provisioned = await send("POST", "/api/admin/devices", newDevice, admin);
+    assert.equal(provisioned.statusCode, 201);
+    assert.equal(provisioned.headers["cache-control"], "no-store");
+    assert.equal(server.store.device(provisioned.json().id)?.owner_id, receiver.id);
+    assert.ok(provisioned.json().key);
     for (const entry of ["/controller", "/controller/"]) {
       const page = await get(entry);
       assert.equal(page.statusCode, 200);

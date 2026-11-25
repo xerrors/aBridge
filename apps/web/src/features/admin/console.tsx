@@ -12,7 +12,8 @@ import {
   type TaskAuditEntry,
 } from "@abridge/protocol";
 import { api, ApiError } from "../../lib/api.js";
-import { Form, Modal, Select } from "../../components/forms.js";
+import { z } from "zod";
+import { Field, Form, Modal, Select } from "../../components/forms.js";
 import { executionSteps } from "../tasks/trace.js";
 import { UserAdminPage } from "./page.js";
 
@@ -69,6 +70,14 @@ export function InstanceAdminPage({
   groups?: preact.ComponentChildren;
   sidebar?: boolean;
 }) {
+  const [addingDevice, setAddingDevice] = useState(false);
+  const [deviceKey, setDeviceKey] = useState("");
+  useEffect(() => {
+    if (section !== "devices") {
+      setAddingDevice(false);
+      setDeviceKey("");
+    }
+  }, [section]);
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [audit, setAudit] = useState<TaskAuditEntry[]>([]);
@@ -174,7 +183,14 @@ export function InstanceAdminPage({
     <>
       <div class="page-title">
         <h1>{sections[section]}</h1>
-        <RefreshButton loading={loading} refresh={refresh} />
+        <div class="actions">
+          <RefreshButton loading={loading} refresh={refresh} />
+          {section === "devices" && sidebar && (
+            <button class="primary" disabled={!overview?.users.length} onClick={() => setAddingDevice(true)}>
+              添加 Android 设备
+            </button>
+          )}
+        </div>
       </div>
       {!sidebar && <AdminNavigation section={section} />}
       {error && (
@@ -327,6 +343,57 @@ export function InstanceAdminPage({
             {!devices.length && <p class="admin-empty">暂无已绑定设备</p>}
           </div>
         </section>
+      )}
+      {section === "devices" && addingDevice && (
+        <Modal
+          title="添加 Android 设备"
+          close={() => {
+            setAddingDevice(false);
+            setDeviceKey("");
+          }}
+        >
+          {deviceKey ? (
+            <>
+              <p>在 aBridge App 填写服务器地址和 Device Key，然后点击「绑定设备」。请保存凭证。</p>
+              <label class="field">
+                <span>服务器地址</span>
+                <input readOnly value={location.origin} />
+              </label>
+              <label class="field">
+                <span>Device Key</span>
+                <input readOnly value={deviceKey} onFocus={(event) => event.currentTarget.select()} />
+              </label>
+            </>
+          ) : (
+            <Form
+              label="生成 Device Key"
+              onSubmit={async (data) => {
+                const result = await api(
+                  "/api/admin/devices",
+                  z.object({ id: z.string(), key: z.string() }),
+                  {
+                    owner_id: data.get("owner_id"),
+                    name: data.get("name"),
+                  },
+                );
+                setDeviceKey(result.key);
+                void refresh();
+              }}
+            >
+              <Field name="name" label="设备名称" />
+              <label class="field">
+                <span>设备所有人</span>
+                <Select name="owner_id" required>
+                  {(overview?.users ?? []).map((user) => (
+                    <option key={user.id} value={user.id}>
+                      {user.username}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+            </Form>
+          )}
+        </Modal>
       )}
       {section === "users" && <UserAdminPage requireLogin={requireLogin} notify={notify} />}
       {section === "groups" && groups}
