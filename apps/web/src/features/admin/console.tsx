@@ -1,14 +1,6 @@
+import { AdminIcon } from "./icon.js";
 import { RefreshButton } from "./refresh-button.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import {
-  Activity,
-  ClipboardList,
-  LayoutDashboard,
-  Monitor,
-  ShieldCheck,
-  Users,
-  UsersRound,
-} from "lucide-preact";
 import {
   adminOverviewSchema,
   taskListSchema,
@@ -33,27 +25,15 @@ const sections = {
   audit: "审计",
 } as const;
 export type AdminSection = keyof typeof sections;
-const sectionIcons = {
-  overview: LayoutDashboard,
-  tasks: ClipboardList,
-  devices: Monitor,
-  users: Users,
-  groups: UsersRound,
-  audit: ShieldCheck,
-};
-
 export function AdminNavigation({ section, sidebar = false }: { section: AdminSection; sidebar?: boolean }) {
   return (
     <nav class={sidebar ? "admin-sidebar-nav" : "subnav admin-subnav"} aria-label="实例管理导航">
-      {(Object.keys(sections) as AdminSection[]).map((key) => {
-        const Icon = sectionIcons[key];
-        return (
-          <a key={key} href={`#admin/${key}`} aria-current={section === key ? "page" : undefined}>
-            {sidebar && <Icon aria-hidden="true" />}
-            {sections[key]}
-          </a>
-        );
-      })}
+      {(Object.keys(sections) as AdminSection[]).map((key) => (
+        <a key={key} href={`#admin/${key}`} aria-current={section === key ? "page" : undefined}>
+          {sidebar && <AdminIcon name={key} />}
+          {sections[key]}
+        </a>
+      ))}
     </nav>
   );
 }
@@ -206,12 +186,14 @@ export function InstanceAdminPage({
       {section === "overview" && overview && (
         <>
           <div class="admin-metrics">
-            {[
-              ["在线设备", overview.totals.online_devices, "devices"],
-              ["正在处理", active.length, "active"],
-              ["已排队", tasks.filter((t) => t.status === "queued").length, "queued"],
-              ["待接收方确认", tasks.filter((t) => t.status === "approval").length, "approval"],
-            ].map(([label, count, target]) => (
+            {(
+              [
+                ["在线设备", overview.totals.online_devices, "devices"],
+                ["正在处理", active.length, "active"],
+                ["已排队", tasks.filter((t) => t.status === "queued").length, "queued"],
+                ["待接收方确认", tasks.filter((t) => t.status === "approval").length, "approval"],
+              ] as const
+            ).map(([label, count, target]) => (
               <button
                 key={label}
                 class="surface admin-metric"
@@ -221,6 +203,9 @@ export function InstanceAdminPage({
               >
                 <span>{label}</span>
                 <strong>{count}</strong>
+                <span class="admin-metric-icon">
+                  <AdminIcon name={target} />
+                </span>
                 <small>{target === "queued" ? "按接收人依序执行" : "查看详情 →"}</small>
               </button>
             ))}
@@ -229,7 +214,6 @@ export function InstanceAdminPage({
             <section class="surface">
               <div class="instance-list-heading">
                 <h2>接收人队列</h2>
-                <Activity size={18} aria-hidden="true" />
               </div>
               {recipients.map((id) => (
                 <button class="admin-queue-row" key={id} onClick={() => showTasks("all", id)}>

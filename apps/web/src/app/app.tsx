@@ -381,6 +381,12 @@ function AdministratorApp() {
           <Brand administrator />
         </a>
         <AdminNavigation section={activeSection} sidebar />
+        <div class="sidebar-bottom">
+          <span class="server-host" title={location.host}>
+            {location.host}
+          </span>
+          <span class="small muted">v{VERSION}</span>
+        </div>
       </aside>
       <header class="workspace-header dedicated-admin-header">
         <span>管理后台</span>
