@@ -85,7 +85,7 @@ Linux 构建消费 `@abridge/protocol/desktop-contract` 导出的能力、常量
 
 ## Go Agent 服务
 
-`apps/agent/` 是独立运行的 Android 任务执行器，使用模型规划并通过 aBridge MCP 操作选中的设备。启用 Server 队列模式时，Server 管理确认、SQLite 队列、任务租约、执行记录及审计。旧的独立 HTTP 入口依然可以按设备调度。[运行和接口示例](../apps/agent/README.md)
+`apps/agent/` 是独立运行的 Android 任务执行器，使用模型规划并通过 aBridge MCP 操作选中的设备。启用 Server 队列模式时，Server 管理确认、SQLite 队列、任务租约、执行记录及审计。旧的独立 HTTP 入口依然可以按设备调度。[运行和接口示例](https://github.com/xerrors/aBridge/blob/main/apps/agent/README.md)
 
 用户通过 `/api/tasks` 提交已确认的目标和设备。同一接收人名下的 Android 手机和平板共用一条队列，接收方确认时分配队列顺序。不同接收人可并行。发起人和接收人都可以取消未开始的任务或停止执行中的任务。执行器使用独立 Worker Key 领取任务，领取时取得仅覆盖一个目标设备和屏幕、输入能力的临时 MCP 凭据。
 
