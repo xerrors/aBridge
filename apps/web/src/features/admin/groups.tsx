@@ -11,35 +11,36 @@ import {
 } from "@abridge/protocol";
 import { api, objectResultSchema } from "../../lib/api.js";
 import { Field, Form, Modal } from "../../components/forms.js";
+import { RefreshButton } from "./refresh-button.js";
 
 export function GroupsPage({ notify }: { notify: (message: string) => void }) {
   const base = "/api/admin/groups";
   const [groups, setGroups] = useState<GroupView[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<GroupView | null>(null);
   const refresh = useCallback(async () => {
-    const result = await api(base, groupsListSchema);
-    setGroups(result.groups);
+    setLoading(true);
+    try {
+      const result = await api(base, groupsListSchema);
+      setGroups(result.groups);
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "读取小组失败");
+    } finally {
+      setLoading(false);
+    }
   }, [base]);
   useEffect(() => {
-    let alive = true;
-    void api(base, groupsListSchema)
-      .then((r) => {
-        if (alive) setGroups(r.groups);
-      })
-      .catch((e) => {
-        if (alive) setError(e instanceof Error ? e.message : "读取小组失败");
-      });
-    return () => {
-      alive = false;
-    };
-  }, [base]);
+    void refresh();
+  }, [refresh]);
   return (
     <>
-      <div class="section-heading">
-        <h2>全部小组</h2>
+      <div class="page-title">
+        <h1>小组</h1>
         <div class="actions">
+          <RefreshButton loading={loading} refresh={refresh} />
           <button class="primary" onClick={() => setCreating(true)}>
             创建小组
           </button>
@@ -49,13 +50,7 @@ export function GroupsPage({ notify }: { notify: (message: string) => void }) {
       {error && (
         <p class="error" role="alert">
           {error}
-          <button
-            onClick={() =>
-              void refresh()
-                .then(() => setError(""))
-                .catch((e) => setError(String(e)))
-            }
-          >
+          <button disabled={loading} onClick={() => void refresh()}>
             重试
           </button>
         </p>
@@ -72,7 +67,7 @@ export function GroupsPage({ notify }: { notify: (message: string) => void }) {
             </div>
           </section>
         ))}
-        {!groups.length && !error && <p class="admin-empty">暂无小组</p>}
+        {!groups.length && !error && !loading && <p class="admin-empty">暂无小组</p>}
       </div>
       {creating && (
         <Modal title="创建小组" close={() => setCreating(false)}>

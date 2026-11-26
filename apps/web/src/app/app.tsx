@@ -2,7 +2,7 @@ import { LayoutDashboard, Monitor, Link2, ListFilter, ShieldCheck } from "lucide
 import { VERSION } from "@abridge/protocol";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api, objectResultSchema } from "../lib/api.js";
-import { Authentication, ExternalLogin } from "../features/auth/page.js";
+import { Authentication, ExternalLogin, SessionLoading } from "../features/auth/page.js";
 import { ActionMenu } from "../components/actions.js";
 import { Brand } from "../components/brand.js";
 import { Field, Form, Modal } from "../components/forms.js";
@@ -330,7 +330,8 @@ function AdministratorApp() {
     return () => window.removeEventListener("hashchange", navigate);
   }, []);
   const section = parseRoute(hash).id;
-  if (admin.phase !== "ready")
+  if (admin.phase === "loading") return <SessionLoading administrator />;
+  if (admin.phase === "none")
     return (
       <main class="admin-login" id="main" tabIndex={-1}>
         <div class="admin-login-shell">
@@ -344,27 +345,21 @@ function AdministratorApp() {
                 <h1 id="admin-login-title">欢迎回来</h1>
                 <p>使用管理员令牌登录管理后台</p>
               </div>
-              {admin.phase === "loading" ? (
-                <p role="status">正在验证管理员身份…</p>
-              ) : (
-                <>
-                  <Form
-                    label="登录"
-                    onSubmit={async (data) => {
-                      setNotice("");
-                      location.hash = new URLSearchParams({
-                        admin_token: String(data.get("token")).trim(),
-                      }).toString();
-                    }}
-                  >
-                    <Field name="token" label="管理员令牌" type="password" passwordPurpose="current" />
-                  </Form>
-                  {notice && (
-                    <p class="error" role="alert">
-                      {notice}
-                    </p>
-                  )}
-                </>
+              <Form
+                label="登录"
+                onSubmit={async (data) => {
+                  setNotice("");
+                  location.hash = new URLSearchParams({
+                    admin_token: String(data.get("token")).trim(),
+                  }).toString();
+                }}
+              >
+                <Field name="token" label="管理员令牌" type="password" passwordPurpose="current" />
+              </Form>
+              {notice && (
+                <p class="error" role="alert">
+                  {notice}
+                </p>
               )}
             </div>
           </section>

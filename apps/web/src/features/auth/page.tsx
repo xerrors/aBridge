@@ -28,6 +28,16 @@ export function ExternalLogin() {
     </a>
   ) : null;
 }
+export function SessionLoading({ administrator = false }: { administrator?: boolean }) {
+  return (
+    <main class="login-wrap" id="main" tabIndex={-1} aria-busy="true">
+      <div class="login-loading" role="status">
+        <Brand administrator={administrator} />
+        <p class="muted">{administrator ? "正在加载管理后台…" : "正在加载管理台…"}</p>
+      </div>
+    </main>
+  );
+}
 export function Authentication({
   phase,
   notice,
@@ -37,15 +47,7 @@ export function Authentication({
   notice: string;
   authenticate: (data: FormData) => Promise<void>;
 }) {
-  if (phase === "loading")
-    return (
-      <main class="login-wrap" id="main" tabIndex={-1}>
-        <div class="login-loading" role="status">
-          <Brand />
-          <p class="muted">正在加载管理台…</p>
-        </div>
-      </main>
-    );
+  if (phase === "loading") return <SessionLoading />;
   return (
     <main class="login-wrap" id="main" tabIndex={-1}>
       <div class="login-panel">

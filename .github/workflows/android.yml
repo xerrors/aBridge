@@ -31,8 +31,11 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
       - run: npm run build
-      - run: apps/android/gradlew -p apps/android --no-daemon assembleDebug assembleRelease lintDebug testDebugUnitTest
-      - name: Verify signed Release APK size
+      - name: Build and lint aBridge Android
+        run: apps/android/gradlew -p apps/android --no-daemon assembleDebug assembleRelease lintDebug testDebugUnitTest
+      - name: Build and lint AI Home Android
+        run: apps/controller/gradlew -p apps/controller --no-daemon assembleDebug assembleRelease lintDebug testDebugUnitTest
+      - name: "Verify signed APK sizes (aBridge: 300,000 B; AI Home: 2,000,000 B)"
         run: |
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
@@ -40,13 +43,22 @@ jobs:
           "$work/python/bin/python" -m pip install -r tools/android-apk-requirements.txt
           keytool -genkeypair -keystore "$work/check.keystore" -alias android -storepass sizecheck -keypass sizecheck \
             -keyalg RSA -keysize 2048 -validity 1 -dname "CN=Android size check"
-          ANDROID_KEYSTORE_BASE64="$(openssl base64 -A -in "$work/check.keystore")" \
-          ANDROID_KEYSTORE_PASSWORD=sizecheck ANDROID_KEY_ALIAS=android ANDROID_KEY_PASSWORD=sizecheck \
-          ANDROID_APK_PYTHON="$work/python/bin/python" bash tools/sign-android-release.sh
+          export ANDROID_KEYSTORE_BASE64="$(openssl base64 -A -in "$work/check.keystore")"
+          export ANDROID_KEYSTORE_PASSWORD=sizecheck ANDROID_KEY_ALIAS=android ANDROID_KEY_PASSWORD=sizecheck
+          export ANDROID_APK_PYTHON="$work/python/bin/python"
+          bash tools/sign-android-release.sh abridge
+          bash tools/sign-android-release.sh aihome
       - name: Upload installable Debug APK
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: abridge-android-debug
           path: apps/android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload installable AI Home Debug APK
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aihome-android-debug
+          path: apps/controller/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14

@@ -179,6 +179,13 @@ export function InstanceAdminPage({
       {!rows.length && <p class="admin-empty">没有符合条件的任务</p>}
     </div>
   );
+  if (section === "users" || section === "groups")
+    return (
+      <>
+        {!sidebar && <AdminNavigation section={section} />}
+        {section === "users" ? <UserAdminPage requireLogin={requireLogin} notify={notify} /> : groups}
+      </>
+    );
   return (
     <>
       <div class="page-title">
@@ -395,8 +402,6 @@ export function InstanceAdminPage({
           )}
         </Modal>
       )}
-      {section === "users" && <UserAdminPage requireLogin={requireLogin} notify={notify} />}
-      {section === "groups" && groups}
       {section === "audit" && (
         <section class="surface">
           <div class="instance-list-heading">

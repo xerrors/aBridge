@@ -86,9 +86,12 @@ jobs:
         run: |
           npm --prefix apps/android/ui ci --legacy-peer-deps --no-audit --no-fund
           apps/android/gradlew -p apps/android --no-daemon assembleRelease
+          apps/controller/gradlew -p apps/controller --no-daemon assembleRelease
           python3 -m venv "$RUNNER_TEMP/android-apk-build"
           "$RUNNER_TEMP/android-apk-build/bin/python" -m pip install -r tools/android-apk-requirements.txt
-          ANDROID_APK_PYTHON="$RUNNER_TEMP/android-apk-build/bin/python" bash tools/sign-android-release.sh
+          export ANDROID_APK_PYTHON="$RUNNER_TEMP/android-apk-build/bin/python"
+          bash tools/sign-android-release.sh abridge
+          bash tools/sign-android-release.sh aihome
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: runner.os == 'Linux'
         with:
@@ -99,6 +102,7 @@ jobs:
             dist/releases/abridge-client-browser-*.tar.gz*
             dist/releases/install-browser-client.sh*
             dist/releases/aBridge-*-android.apk
+            dist/releases/AIHome-*-android.apk
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

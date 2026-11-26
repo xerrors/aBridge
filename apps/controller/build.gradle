@@ -14,6 +14,10 @@ android {
         versionName upstream
         versionCode parts[0] * 1000000 + parts[1] * 1000 + parts[2]
     }
+    packaging {
+        // Compress DEX in the download; Android extracts it during installation.
+        dex.useLegacyPackaging = true
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

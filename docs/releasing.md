@@ -77,7 +77,7 @@ CI 上传 **windows-client-unsigned**，保留 30 天。tag 发布另将 `aBridg
 
 ## Android
 
-发布正式 APK 时，设置 `ANDROID_SIGNING_ENABLED=true`，并配置 `ANDROID_KEYSTORE_BASE64`（密钥库的单行 Base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`。工作流重新压缩并对齐 APK，然后签名。在加入 GitHub Release 前，检查 `aBridge-<version>-android.apk` 签名和 200,000 字节的体积上限。
+发布正式 APK 时，设置 `ANDROID_SIGNING_ENABLED=true`，并配置 `ANDROID_KEYSTORE_BASE64`（密钥库的单行 Base64）、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 和 `ANDROID_KEY_PASSWORD`。工作流重新压缩并对齐 APK，然后签名。在加入 GitHub Release 前，分别检查 `aBridge-<version>-android.apk` 的 300,000 字节上限和 `AIHome-<version>-android.apk` 的 2,000,000 字节（2 MB，十进制）上限，两者均按完整签名文件计量。签名脚本的 `abridge`（默认）和 `aihome` 参数分别选择对应产物和固定预算。
 
 后续版本继续使用同一签名密钥，已安装用户即可原地升级。Android 安装器会检查包标识、签名和版本。调试 APK 使用开发签名，供本地和 CI 测试。
 
