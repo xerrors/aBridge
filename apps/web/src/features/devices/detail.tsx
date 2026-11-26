@@ -7,7 +7,7 @@ import type { Device, ManagementData, Mutate, RunAction } from "../../lib/types.
 import { ArrowLeft, ChevronRight, Square } from "lucide-preact";
 import { ActivityPage } from "../activity/page.js";
 import { connectionCapabilities } from "../connections/policy.js";
-import { browserLabel, systemLabel } from "./metadata.js";
+import { browserLabel, deviceTypeLabel, systemLabel } from "./metadata.js";
 export function DevicePage({
   device,
   data,
@@ -167,7 +167,7 @@ export function DevicePage({
                 <dl class="device-facts">
                   <div>
                     <dt>设备类型</dt>
-                    <dd>{device.kind === "browser" ? "浏览器" : "电脑"}</dd>
+                    <dd>{deviceTypeLabel(device)}</dd>
                   </div>
                   {[
                     [

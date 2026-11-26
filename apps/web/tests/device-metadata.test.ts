@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { platformIcon, platformName } from "../src/components/icons.js";
+import { deviceTypeLabel } from "../src/features/devices/metadata.js";
 import { deviceViewSchema } from "@abridge/protocol";
 import { existsSync } from "node:fs";
 
@@ -56,4 +57,30 @@ test("Chrome keeps its label and shipped icon online and offline", () => {
     assert.equal(platformIcon(browser.platform), "chrome");
     assert.ok(existsSync(new URL("../../../docs/assets/brand/platforms/chrome.svg", import.meta.url)));
   }
+});
+
+test("native device type labels use reported platforms rather than transport kind or chat support", () => {
+  for (const [platform, expected] of [
+    ["android", "Android"],
+    [" iOS ", "iOS"],
+    ["darwin", "macOS"],
+    ["win32", "Windows"],
+    ["linux", "Linux"],
+    ["Custom OS", "Custom OS"],
+  ]) {
+    for (const status of ["online", "offline"]) {
+      for (const chat_available of [true, false]) {
+        const parsed = deviceViewSchema.parse({ ...device, platform, status });
+        assert.equal(deviceTypeLabel({ ...parsed, ...{ chat_available } }), expected);
+      }
+    }
+  }
+});
+
+test("device type labels keep browsers distinct and missing native platforms neutral", () => {
+  for (const platform of [undefined, null, "", " "]) {
+    assert.equal(deviceTypeLabel({ kind: "computer", platform }), "本机设备");
+    assert.equal(deviceTypeLabel({ kind: "browser", platform }), "浏览器");
+  }
+  assert.equal(deviceTypeLabel({ kind: "browser", platform: "chrome" }), "浏览器");
 });
