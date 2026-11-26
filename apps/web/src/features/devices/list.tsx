@@ -90,7 +90,7 @@ export function DevicesPage({
           </label>
           <Select aria-label="设备类型" value={kind} onChange={(event) => setKind(event.currentTarget.value)}>
             <option value="all">全部类型</option>
-            <option value="computer">电脑</option>
+            <option value="computer">本机设备</option>
             <option value="browser">浏览器</option>
           </Select>
           <Select

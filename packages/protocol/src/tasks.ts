@@ -39,7 +39,9 @@ export const taskEventSchema = z.object({
   image: z
     .string()
     .max(750_000)
-    .regex(/^data:image\/(png|jpeg|webp);base64,[\w+/]+={0,2}$/)
+    .regex(
+      /^(?:data:image\/(?:png|jpeg|webp);base64,[\w+/]+={0,2}|\/api\/tasks\/[a-zA-Z0-9_-]+\/images\/[a-f0-9]{32}\.jpg)$/,
+    )
     .optional(),
   created_at: z.number(),
 });
@@ -68,11 +70,19 @@ export const taskCreateSchema = z
     prompt: z.string().trim().min(1).max(4000),
   })
   .strict();
+export const adminDeviceChatInputSchema = taskCreateSchema.pick({ request_id: true, prompt: true });
 export const taskDecisionSchema = z.object({ approve: z.boolean() }).strict();
 export const taskWorkerLeaseSchema = z.object({ lease_token: z.string().min(32).max(128) }).strict();
 export const taskWorkerEventSchema = taskEventSchema
   .omit({ created_at: true })
-  .extend(taskWorkerLeaseSchema.shape)
+  .extend({
+    ...taskWorkerLeaseSchema.shape,
+    image: z
+      .string()
+      .max(750_000)
+      .regex(/^data:image\/(png|jpeg|webp);base64,[\w+/]+={0,2}$/)
+      .optional(),
+  })
   .strict();
 export const taskWorkerFinishSchema = taskWorkerLeaseSchema
   .extend({
@@ -115,3 +125,6 @@ export const controllerMessageInputSchema = z
   })
   .strict();
 export const controllerTargetSchema = z.object({ recipient_id: id, device_id: id }).strict();
+
+export const controllerSettingsSchema = z.object({ require_task_approval: z.boolean() }).strict();
+export type ControllerSettings = z.infer<typeof controllerSettingsSchema>;

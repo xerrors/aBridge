@@ -101,7 +101,7 @@ type executionReporter struct {
 	failed, unknown bool
 }
 
-func (r *executionReporter) event(tool, status, summary string, receipt any) {
+func (r *executionReporter) event(tool, status, summary string, receipt any, thumbnail string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.failed {
@@ -120,6 +120,9 @@ func (r *executionReporter) event(tool, status, summary string, receipt any) {
 		if err == nil {
 			event["receipt"] = boundedText(string(data), 6000)
 		}
+	}
+	if thumbnail != "" {
+		event["image"] = thumbnail
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -155,7 +158,7 @@ func (p reportingPlanner) Next(ctx context.Context, history []model.Message, too
 			summary = "Next tool: " + decision.ToolCalls[0].Name
 		}
 		// Only public assistant content is reported. ReasoningContent remains private to the model conversation.
-		p.reporter.event("", "decision", summary, nil)
+		p.reporter.event("", "decision", summary, nil, "")
 	}
 	return decision, err
 }
@@ -173,7 +176,7 @@ func (b *reportingBridge) Call(ctx context.Context, name string, args map[string
 		return mcp.Result{}, errors.New("previous session cleanup not confirmed")
 	}
 	if name != "session_close" && name != "device_get" {
-		b.reporter.event(name, "started", "", args)
+		b.reporter.event(name, "started", "", args, "")
 	}
 	if name != "session_close" && ctx.Err() != nil {
 		return mcp.Result{}, ctx.Err()
@@ -219,7 +222,7 @@ func (b *reportingBridge) Call(ctx context.Context, name string, args map[string
 		_ = json.Unmarshal(result.Text, &receipt)
 	}
 	if name != "device_get" {
-		b.reporter.event(name, status, "", receipt)
+		b.reporter.event(name, status, "", receipt, taskThumbnail(result.Images))
 	}
 	return result, err
 }
@@ -262,9 +265,9 @@ func (w *taskWorker) execute(parent context.Context, task workerTask) {
 	}()
 	result, err := runner.Run(ctx, task.ID, task.Device, task.Prompt, func(tool, status string) {
 		if tool == "device_wait" && strings.HasPrefix(status, "waiting_for_") {
-			reporter.event(tool, "waiting", status, nil)
+			reporter.event(tool, "waiting", status, nil, "")
 		} else {
-			reporter.event(tool, status, "", nil)
+			reporter.event(tool, status, "", nil, "")
 		}
 	})
 	close(heartbeatStop)

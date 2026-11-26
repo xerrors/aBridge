@@ -628,3 +628,44 @@ button.admin-refresh:not(:disabled):hover {
     transform: rotate(360deg);
   }
 }
+
+.admin-device-chat {
+  width: min(800px, calc(100vw - 48px));
+}
+.admin-chat-target {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.admin-chat-target small {
+  flex-basis: 100%;
+}
+.admin-chat-history {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-block: 20px;
+}
+.admin-chat-message {
+  border-bottom: 1px solid var(--border, #e5e5e5);
+  padding: 16px 0;
+}
+.admin-chat-prompt {
+  white-space: pre-wrap;
+  background: #f4f0ff;
+  padding: 12px 16px;
+  border-radius: 8px;
+}
+.admin-chat-progress {
+  padding: 8px 12px;
+}
+.admin-chat-progress > span + span {
+  margin-left: 12px;
+}
+.admin-chat-result {
+  white-space: pre-wrap;
+}
+.admin-device-chat textarea {
+  resize: vertical;
+  width: 100%;
+}

@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
   taskCreateSchema,
+  controllerSettingsSchema,
+  adminDeviceChatInputSchema,
   taskDecisionSchema,
   taskWorkerEventSchema,
   taskWorkerFinishSchema,
@@ -26,6 +28,16 @@ export function registerTaskRoutes(app: FastifyInstance, context: TaskRouteConte
   const tasks = store.tasks;
   const taskId = (request: FastifyRequest) => (request.params as { id: string }).id;
 
+  app.get("/api/controller/settings", async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return tasks.settings(account(request).id);
+  });
+  app.put("/api/controller/settings", async (request, reply) => {
+    const user = account(request);
+    reply.header("Cache-Control", "no-store");
+    return tasks.updateSettings(user.id, controllerSettingsSchema.parse(request.body));
+  });
+
   app.get("/api/tasks", async (request) => ({ tasks: tasks.list(account(request).id) }));
   app.post("/api/tasks", async (request, reply) => {
     const user = account(request);
@@ -40,6 +52,21 @@ export function registerTaskRoutes(app: FastifyInstance, context: TaskRouteConte
     const task = tasks.forUser(taskId(request), account(request).id);
     return { task: tasks.view(task, true), events: tasks.events(task.id), details_visible: true };
   });
+  app.get("/api/tasks/:id/images/:name", async (request, reply) => {
+    const task = tasks.get(taskId(request));
+    const user = viewer(request);
+    if (!user || !tasks.participant(task, user.id)) {
+      requireAdmin(request);
+      if (task.actor_id !== store.instanceAdminActor())
+        throw new BridgeError("not_found", "Task image not found", 404);
+    }
+    const name = (request.params as { name: string }).name;
+    return reply
+      .header("Cache-Control", "private, no-store")
+      .header("X-Content-Type-Options", "nosniff")
+      .type("image/jpeg")
+      .send(tasks.image(task.id, name));
+  });
   app.post("/api/tasks/:id/decision", async (request) => {
     const user = account(request);
     const task = tasks.decide(taskId(request), user.id, taskDecisionSchema.parse(request.body).approve);
@@ -49,15 +76,43 @@ export function registerTaskRoutes(app: FastifyInstance, context: TaskRouteConte
     task: tasks.view(tasks.stop(taskId(request), account(request).id), true),
   }));
 
+  const adminActor = () => store.instanceAdminActor();
+  const chatDevice = (request: FastifyRequest) => {
+    requireAdmin(request);
+    const device = store.device(taskId(request));
+    if (!device || !tasks.eligible(device.id, device.owner_id))
+      throw new BridgeError("not_found", "Eligible Android device not found", 404);
+    return device;
+  };
+  app.get("/api/admin/devices/:id/chat", async (request) => {
+    const device = chatDevice(request);
+    return { tasks: tasks.deviceConversation(adminActor(), device.id) };
+  });
+  app.post("/api/admin/devices/:id/chat", async (request, reply) => {
+    const device = chatDevice(request);
+    rateLimit(request, "task-submit", 40);
+    const input = adminDeviceChatInputSchema.parse(request.body);
+    const task = tasks.create(adminActor(), {
+      ...input,
+      device_id: device.id,
+      recipient_id: device.owner_id,
+    });
+    return reply.code(201).send({ task: tasks.view(task, true) });
+  });
   app.get("/api/admin/tasks", async (request) => {
     requireAdmin(request);
-    return { tasks: tasks.list(null, viewer(request)?.id ?? null) };
+    const actor = adminActor();
+    return {
+      tasks: tasks
+        .list(null, viewer(request)?.id ?? null)
+        .map((task) => (task.actor_id === actor ? tasks.view(tasks.get(task.id), true) : task)),
+    };
   });
   app.get("/api/admin/tasks/:id", async (request) => {
     requireAdmin(request);
     const task = tasks.get(taskId(request)),
       user = viewer(request);
-    const visible = !!user && tasks.participant(task, user.id);
+    const visible = task.actor_id === adminActor() || (!!user && tasks.participant(task, user.id));
     return {
       task: tasks.view(task, visible),
       events: visible ? tasks.events(task.id) : [],
@@ -68,7 +123,9 @@ export function registerTaskRoutes(app: FastifyInstance, context: TaskRouteConte
     requireAdmin(request);
     const user = viewer(request),
       task = tasks.stop(taskId(request), user?.id ?? null, true);
-    return { task: tasks.view(task, !!user && tasks.participant(task, user.id)) };
+    return {
+      task: tasks.view(task, task.actor_id === adminActor() || (!!user && tasks.participant(task, user.id))),
+    };
   });
   app.get("/api/admin/task-audit", async (request) => {
     requireAdmin(request);

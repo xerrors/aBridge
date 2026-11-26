@@ -12,6 +12,7 @@ import {
   Mic,
   RefreshCw,
   Send,
+  Settings,
   Smartphone,
   Square,
   Users,
@@ -27,6 +28,8 @@ import {
   taskListSchema,
   controllerChatSchema,
   controllerMessageSchema,
+  controllerSettingsSchema,
+  type ControllerSettings,
   type DeviceView,
   type GroupView,
   type TaskView,
@@ -40,7 +43,7 @@ import jsQR from "jsqr";
 
 type ChatMessage = ReturnType<typeof controllerMessageSchema.parse>;
 type User = ReturnType<typeof managementUserSchema.parse>;
-type Page = "chat" | "tasks" | "groups";
+type Page = "chat" | "tasks" | "groups" | "settings";
 declare global {
   interface Window {
     aBridgeController?: { startVoiceInput(): void; cancelVoiceInput(): void };
@@ -113,6 +116,8 @@ function App() {
   const [selectedTask, setSelectedTask] = useState<string | null>(null),
     [detail, setDetail] = useState<{ task: TaskView; events: TaskEvent[] } | null>(null);
   const [hasMore, setHasMore] = useState(false);
+  const [settings, setSettings] = useState<ControllerSettings | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState("");
   const sessionVersion = useRef(0);
   const loadedOlder = useRef(false);
   const [voice, setVoice] = useState("idle"),
@@ -134,15 +139,18 @@ function App() {
     setHasMore(false);
     setVoice("idle");
     setNotice("");
+    setSettings(null);
+    setSettingsNotice("");
     setUser(null);
   }, []);
   const refresh = useCallback(async () => {
     const version = sessionVersion.current;
-    const [chat, deviceList, taskList, groupList] = await Promise.all([
+    const [chat, deviceList, taskList, groupList, accountSettings] = await Promise.all([
       request("/api/controller/chat"),
       request("/api/devices"),
       request("/api/tasks"),
       request("/api/groups"),
+      request("/api/controller/settings"),
     ]);
     if (version !== sessionVersion.current) return;
     const parsed = controllerChatSchema.parse(chat);
@@ -155,6 +163,7 @@ function App() {
     setDevices(devicesListSchema.parse(deviceList).devices);
     setTasks(taskListSchema.parse(taskList).tasks);
     setGroups(groupsListSchema.parse(groupList).groups);
+    setSettings(controllerSettingsSchema.parse(accountSettings));
   }, []);
   useEffect(() => {
     let alive = true;
@@ -323,7 +332,7 @@ function App() {
         <div>
           <span className="brand">AI 家</span>
           <span className="header-title">
-            {page === "chat" ? "Chat" : page === "tasks" ? "任务" : "小组"}
+            {page === "chat" ? "Chat" : page === "tasks" ? "任务" : page === "groups" ? "小组" : "设置"}
           </span>
         </div>
         <div className="header-actions">
@@ -613,12 +622,53 @@ function App() {
       {page === "groups" && (
         <Groups groups={groups} user={user} busy={busy} perform={perform} refresh={refresh} />
       )}
+      {page === "settings" && (
+        <section className="scroll-page">
+          <h1>账户设置</h1>
+          <div className="card">
+            <h2>接收任务</h2>
+            {settings ? (
+              <label className="setting-toggle">
+                <span>要求批准后执行</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={settings.require_task_approval}
+                  disabled={busy}
+                  aria-describedby="approval-description"
+                  onChange={(event) => {
+                    const require_task_approval = event.target.checked;
+                    setSettingsNotice("");
+                    void perform(async () => {
+                      const version = sessionVersion.current;
+                      const saved = controllerSettingsSchema.parse(
+                        await request("/api/controller/settings", { require_task_approval }, "PUT"),
+                      );
+                      if (version !== sessionVersion.current) return;
+                      setSettings(saved);
+                      setSettingsNotice("设置已保存");
+                    });
+                  }}
+                />
+              </label>
+            ) : (
+              <p role="status">正在读取设置…</p>
+            )}
+            <p className="muted" id="approval-description">
+              默认关闭，实例管理员发来的任务会直接排队。开启后，管理员新提交的任务须由你在任务详情中批准后执行。其他普通用户发来的任务始终需要你批准；你自己发起的任务直接排队。
+            </p>
+            <p className="muted">仅影响新提交的任务，已有待批准或排队任务保持原状态。</p>
+            {settingsNotice && <p role="status">{settingsNotice}</p>}
+          </div>
+        </section>
+      )}
       <nav aria-label="主导航">
         {(
           [
             { id: "chat", label: "Chat", Icon: MessageCircle },
             { id: "tasks", label: "任务", Icon: ListTodo },
             { id: "groups", label: "小组", Icon: Users },
+            { id: "settings", label: "设置", Icon: Settings },
           ] as const
         ).map(({ id, label, Icon }) => (
           <button
@@ -726,7 +776,9 @@ function Draft({
       {selected && selected.status !== "online" && (
         <p className="muted">设备当前离线，任务需要等待设备恢复连接。</p>
       )}
-      {!own && <p className="muted">小组成员关系不授予设备操作权限；对方批准后才会排队执行。</p>}
+      {!own && (
+        <p className="muted">小组成员关系不授予设备操作权限。发给其他用户的任务须由对方批准后排队执行。</p>
+      )}
       <div className="actions">
         {changed ? (
           <button

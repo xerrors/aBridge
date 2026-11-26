@@ -1,3 +1,6 @@
+import { deviceTypeLabel } from "../devices/metadata.js";
+import { taskLabels } from "./task-labels.js";
+import { DeviceChat } from "./device-chat.js";
 import { AdminIcon } from "./icon.js";
 import { RefreshButton } from "./refresh-button.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
@@ -38,19 +41,6 @@ export function AdminNavigation({ section, sidebar = false }: { section: AdminSe
     </nav>
   );
 }
-export const taskLabels: Record<string, string> = {
-  approval: "待接收方确认",
-  queued: "排队中",
-  running: "执行中",
-  waiting: "等待恢复",
-  stopping: "停止中",
-  done: "已完成",
-  rejected: "已拒绝",
-  cancelled: "已取消",
-  stopped: "已停止",
-  failed: "失败",
-  unknown: "状态未知",
-};
 const activeStates = ["running", "waiting", "stopping", "unknown"];
 const dateTime = (value: number) => new Date(value * 1000).toLocaleString("zh-CN");
 function Status({ status }: { status: string }) {
@@ -70,6 +60,7 @@ export function InstanceAdminPage({
   groups?: preact.ComponentChildren;
   sidebar?: boolean;
 }) {
+  const [chatDeviceId, setChatDeviceId] = useState<string | null>(null);
   const [addingDevice, setAddingDevice] = useState(false);
   const [deviceKey, setDeviceKey] = useState("");
   useEffect(() => {
@@ -124,7 +115,8 @@ export function InstanceAdminPage({
       clearInterval(timer);
     };
   }, [refresh]);
-  const person = (id: string) => overview?.users.find((u) => u.id === id)?.username ?? id;
+  const person = (id: string) =>
+    id === "sys_instance_admin" ? "实例管理员" : (overview?.users.find((u) => u.id === id)?.username ?? id);
   const devices = overview?.users.flatMap((u) => u.devices.map((d) => ({ ...d, owner: u.username }))) ?? [];
   const device = (id: string) => devices.find((d) => d.id === id)?.name ?? id;
   const active = tasks.filter((t) => activeStates.includes(t.status));
@@ -315,7 +307,7 @@ export function InstanceAdminPage({
             <table class="record-list admin-table">
               <thead>
                 <tr>
-                  {["设备", "所有人", "类型", "状态", "最后连接", "当前任务"].map((h) => (
+                  {["设备", "所有人", "类型", "状态", "最后连接", "当前任务", "操作"].map((h) => (
                     <th key={h}>{h}</th>
                   ))}
                 </tr>
@@ -328,7 +320,7 @@ export function InstanceAdminPage({
                       <small>{d.id}</small>
                     </td>
                     <td>{d.owner}</td>
-                    <td>{d.kind === "browser" ? "浏览器" : "电脑"}</td>
+                    <td>{deviceTypeLabel(d)}</td>
                     <td>
                       <span class={`dot ${d.status}`} /> {d.status === "online" ? "在线" : "离线"}
                       {d.paused ? " · 已暂停" : ""}
@@ -342,6 +334,16 @@ export function InstanceAdminPage({
                             {t.id}
                           </button>
                         ))}
+                    </td>
+                    <td>
+                      <button
+                        class="text-button"
+                        disabled={!d.chat_available}
+                        title={d.chat_available ? "打开设备对话" : "当前仅支持 Android 屏幕与输入设备"}
+                        onClick={() => setChatDeviceId(d.id)}
+                      >
+                        打开对话
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -436,6 +438,14 @@ export function InstanceAdminPage({
             {!audit.length && <p class="admin-empty">暂无审计记录</p>}
           </div>
         </section>
+      )}
+      {chatDeviceId && devices.find((d) => d.id === chatDeviceId) && (
+        <DeviceChat
+          key={chatDeviceId}
+          device={devices.find((d) => d.id === chatDeviceId)!}
+          close={() => setChatDeviceId(null)}
+          changed={refresh}
+        />
       )}
       {selected && (
         <TaskDetail

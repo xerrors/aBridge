@@ -1,6 +1,12 @@
 import { platformName } from "../../components/icons.js";
 import type { Device } from "../../lib/types.js";
 
+export function deviceTypeLabel(device: { kind: "computer" | "browser"; platform?: string | null }): string {
+  if (device.kind === "browser") return "浏览器";
+  const platform = device.platform?.trim();
+  return platform ? platformName(platform) : "本机设备";
+}
+
 const systemNames = {
   macos: "macOS",
   linux: "Linux",

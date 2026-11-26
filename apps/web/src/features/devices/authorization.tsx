@@ -1,3 +1,4 @@
+import { deviceTypeLabel } from "./metadata.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import type { z } from "zod";
 import {
@@ -204,9 +205,7 @@ export function DeviceAuthorization({ requestId }: { requestId: string }) {
             {request && (
               <>
                 <div class="authorization-device">
-                  <span class="authorization-device-kind">
-                    {request.kind === "computer" ? "Mac" : "浏览器"}
-                  </span>
+                  <span class="authorization-device-kind">{deviceTypeLabel(request)}</span>
                   <h2>{request.name}</h2>
                 </div>
                 <dl class="authorization-details">

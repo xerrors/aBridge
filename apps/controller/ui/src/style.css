@@ -289,6 +289,16 @@ pre {
   padding: 17px;
   margin-bottom: 15px;
 }
+.setting-toggle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.setting-toggle input {
+  width: 20px;
+  height: 20px;
+  accent-color: #0066dd;
+}
 .section-heading {
   display: flex;
   align-items: center;

@@ -72,6 +72,7 @@ export function DeviceIcon({
 
 export function platformName(value: string | null): string {
   if (!value) return "未知平台";
+  if (value.trim().toLowerCase() === "ios") return "iOS";
   const brand = platformIcon(value);
   if (brand) return platformLabels[brand];
   return { darwin: "macOS", win32: "Windows", "Browser extension": "浏览器扩展" }[value] ?? value;

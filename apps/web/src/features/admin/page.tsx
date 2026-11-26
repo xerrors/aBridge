@@ -1,3 +1,4 @@
+import { deviceTypeLabel } from "../devices/metadata.js";
 import { RefreshButton } from "./refresh-button.js";
 import { ChevronDown, Plus } from "lucide-preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
@@ -90,7 +91,7 @@ export function UserAdminPage({
       ["用户", overview.totals.users],
       ["已绑定设备", overview.totals.devices],
       ["在线设备", overview.totals.online_devices],
-      ["电脑", overview.totals.computers],
+      ["本机设备", overview.totals.computers],
       ["浏览器", overview.totals.browsers],
     ] as const);
   return (
@@ -144,7 +145,7 @@ export function UserAdminPage({
                   </div>
                   <div class="instance-user-counts">
                     <span>
-                      电脑 <strong>{user.computer_count}</strong>
+                      本机设备 <strong>{user.computer_count}</strong>
                     </span>
                     <span>
                       浏览器 <strong>{user.browser_count}</strong>
@@ -170,7 +171,7 @@ export function UserAdminPage({
                         {user.devices.map((device) => (
                           <tr key={device.id}>
                             <td>{device.name}</td>
-                            <td>{device.kind === "computer" ? "电脑" : "浏览器"}</td>
+                            <td>{deviceTypeLabel(device)}</td>
                             <td>
                               <span class={`dot ${device.status}`} />{" "}
                               {device.status === "online" ? "在线" : "离线"}

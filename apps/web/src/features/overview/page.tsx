@@ -1,3 +1,4 @@
+import { deviceTypeLabel } from "../devices/metadata.js";
 import { ChevronRight, Plus } from "lucide-preact";
 import type { ManagementData } from "../../lib/types.js";
 import { DeviceIcon } from "../../components/icons.js";
@@ -64,9 +65,7 @@ export function OverviewPage({ data }: { data: ManagementData }) {
                     <p class="small muted">
                       {device.active_operations.length
                         ? `${device.active_operations.length} 项进行中`
-                        : device.kind === "browser"
-                          ? "浏览器"
-                          : "电脑"}
+                        : deviceTypeLabel(device)}
                     </p>
                   </div>
                   <span class="device-state">

@@ -1,3 +1,4 @@
+import { deviceTypeLabel } from "../devices/metadata.js";
 import { CapabilityIcon } from "../../components/icons.js";
 import { useState } from "preact/hooks";
 import {
@@ -196,7 +197,7 @@ export function ConnectionEditor({
                       <span class={`dot ${device.paused ? "paused" : device.status}`} />
                       {device.paused ? "已暂停" : (stateLabels[device.status] ?? device.status)}
                       <span>/</span>
-                      {device.kind === "browser" ? "浏览器" : "电脑"}
+                      {deviceTypeLabel(device)}
                     </div>
                   </div>
                   <label class="inline-check">

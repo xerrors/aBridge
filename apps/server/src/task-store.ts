@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type {
+  ControllerSettings,
   TaskAuditEntry,
   TaskCreate,
   TaskEvent,
@@ -8,8 +9,11 @@ import type {
   TaskView,
   TaskWorkerFinish,
 } from "@abridge/protocol";
+import { TaskImages } from "./task-images.js";
 import { digest, identifier, secretKey } from "./store.js";
 import { BridgeError, nowSeconds } from "./types.js";
+
+export const INSTANCE_ADMIN_ACTOR_ID = "sys_instance_admin";
 
 const active = ["running", "waiting", "stopping"] as const;
 const pending = [...active, "queued", "approval"] as const;
@@ -28,8 +32,18 @@ interface TaskRow extends Omit<TaskView, "queue_position" | "queue_blocked" | "p
 }
 
 export class TaskStore {
-  constructor(private readonly db: DatabaseSync) {
+  private readonly images: TaskImages;
+
+  constructor(
+    private readonly db: DatabaseSync,
+    imageDirectory: string,
+  ) {
+    this.images = new TaskImages(imageDirectory);
     db.exec(`
+      CREATE TABLE IF NOT EXISTS task_receiver_settings(
+        user_id TEXT PRIMARY KEY REFERENCES users(id),
+        require_task_approval INTEGER NOT NULL CHECK(require_task_approval IN (0,1))
+      );
       CREATE TABLE IF NOT EXISTS tasks(
         id TEXT PRIMARY KEY, actor_id TEXT NOT NULL REFERENCES users(id),
         recipient_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL REFERENCES devices(id),
@@ -55,6 +69,22 @@ export class TaskStore {
         action TEXT NOT NULL, outcome TEXT NOT NULL, created_at REAL NOT NULL
       );
     `);
+  }
+
+  settings(user: string): ControllerSettings {
+    const row = this.db
+      .prepare("SELECT require_task_approval FROM task_receiver_settings WHERE user_id=?")
+      .get(user) as { require_task_approval: number } | undefined;
+    return { require_task_approval: row?.require_task_approval === 1 };
+  }
+
+  updateSettings(user: string, settings: ControllerSettings): ControllerSettings {
+    this.db
+      .prepare(
+        "INSERT INTO task_receiver_settings(user_id,require_task_approval) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET require_task_approval=excluded.require_task_approval",
+      )
+      .run(user, settings.require_task_approval ? 1 : 0);
+    return this.settings(user);
   }
 
   private atomic<T>(action: () => T): T {
@@ -132,14 +162,45 @@ export class TaskStore {
     );
   }
 
+  deviceConversation(actor: string, device: string): TaskView[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM tasks WHERE actor_id=? AND device_id=? ORDER BY created_at DESC,rowid DESC LIMIT 250",
+      )
+      .all(actor, device) as unknown as TaskRow[];
+    return rows.reverse().map((row) => this.view(row, true));
+  }
+
   events(id: string): TaskEvent[] {
     const rows = this.db
       .prepare("SELECT payload, created_at FROM task_events WHERE task_id=? ORDER BY sequence")
       .all(id) as { payload: string; created_at: number }[];
     return rows.map((row) => ({
-      ...(JSON.parse(row.payload) as Omit<TaskEvent, "created_at">),
+      ...this.eventView(
+        id,
+        JSON.parse(row.payload) as Omit<TaskEvent, "created_at"> & { image_ref?: string },
+      ),
       created_at: row.created_at,
     }));
+  }
+
+  private eventView(
+    id: string,
+    value: Omit<TaskEvent, "created_at"> & { image_ref?: string },
+  ): Omit<TaskEvent, "created_at"> {
+    const { image_ref, ...event } = value;
+    if (image_ref) event.image = `/api/tasks/${id}/images/${image_ref.split("/")[1]}`;
+    return event;
+  }
+
+  image(id: string, name: string): Buffer {
+    const reference = `${id}/${name}`;
+    const recorded = this.db
+      .prepare("SELECT 1 FROM task_events WHERE task_id=? AND json_extract(payload,'$.image_ref')=?")
+      .get(id, reference);
+    const data = recorded ? this.images.read(id, reference) : undefined;
+    if (!data) throw new BridgeError("not_found", "Task image not found", 404);
+    return data;
   }
 
   auditEntries(): TaskAuditEntry[] {
@@ -192,7 +253,11 @@ export class TaskStore {
 
       const id = identifier("tsk"),
         now = nowSeconds();
-      const status = actor === input.recipient_id ? "queued" : "approval";
+      const status =
+        actor !== input.recipient_id &&
+        (actor !== INSTANCE_ADMIN_ACTOR_ID || this.settings(input.recipient_id).require_task_approval)
+          ? "approval"
+          : "queued";
       this.db
         .prepare(
           "INSERT INTO tasks(id,actor_id,recipient_id,device_id,request_id,prompt,status,serial,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -337,22 +402,19 @@ export class TaskStore {
       const task = this.lease(id, token);
       if (!inStates(task.status, active))
         throw new BridgeError("invalid_lease", "Task is no longer active", 409);
-      const event = { ...value };
-      if (event.image) {
-        const count = (
-          this.db
-            .prepare(
-              "SELECT count(*) AS count FROM task_events WHERE task_id=? AND json_extract(payload,'$.image') IS NOT NULL",
-            )
-            .get(id) as { count: number }
-        ).count;
-        if (count >= 8) delete event.image;
-      }
+      if (this.db.prepare("SELECT 1 FROM task_events WHERE task_id=? AND sequence=?").get(id, value.sequence))
+        return;
+      const { image, ...event } = value;
+      const image_ref = image ? this.images.save(id, image) : undefined;
       const now = nowSeconds();
-      const inserted = this.db
-        .prepare("INSERT OR IGNORE INTO task_events VALUES(?,?,?,?)")
-        .run(id, event.sequence, JSON.stringify(event), now);
-      if (!inserted.changes) return;
+      try {
+        this.db
+          .prepare("INSERT INTO task_events VALUES(?,?,?,?)")
+          .run(id, event.sequence, JSON.stringify({ ...event, ...(image_ref ? { image_ref } : {}) }), now);
+      } catch (error) {
+        if (image_ref) this.images.remove(image_ref);
+        throw error;
+      }
       const status =
         task.status === "stopping" ? task.status : event.status === "waiting" ? "waiting" : "running";
       this.db.prepare("UPDATE tasks SET status=?,updated_at=? WHERE id=?").run(status, now, id);
