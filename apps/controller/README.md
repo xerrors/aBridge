@@ -14,6 +14,8 @@ cd apps/controller
 adb install -r build/outputs/apk/debug/AIHome-debug.apk
 ```
 
+APK 压缩 DEX 字节码，由 Android 在安装时解压。正式 APK 重新压缩、对齐并签名后，上限为 2,000,000 字节（2 MB，十进制）；CI 和发布流程通过 `bash tools/sign-android-release.sh aihome` 检查。aBridge 接收端仍使用独立的 300,000 字节上限。
+
 APK 不包含前端资源。前端由 Server 同源托管，更新后需重新构建并部署 `ui/dist`。安装控制端不会安装或替换接收任务的 aBridge 客户端。
 
 ## Server 与工作进程

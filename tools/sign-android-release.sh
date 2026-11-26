@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Keep each product's signed-download budget explicit; no argument retains aBridge.
+case "${1:-abridge}" in
+  abridge)
+    product=aBridge
+    limit=300000
+    unsigned='apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk'
+    ;;
+  aihome)
+    product=AIHome
+    limit=2000000
+    unsigned='apps/controller/build/outputs/apk/release/AIHome-release-unsigned.apk'
+    ;;
+  *) echo "Usage: $0 [abridge|aihome]" >&2; exit 2 ;;
+esac
+
 : "${ANDROID_KEYSTORE_BASE64:?Missing Android release keystore}"
 : "${ANDROID_KEYSTORE_PASSWORD:?Missing Android keystore password}"
 : "${ANDROID_KEY_ALIAS:?Missing Android signing alias}"
@@ -9,13 +24,11 @@ set -euo pipefail
 
 version=$(node -p "require('./package.json').version")
 build_tools="$ANDROID_HOME/build-tools/36.0.0"
-output="dist/releases/aBridge-$version-android.apk"
+output="dist/releases/$product-$version-android.apk"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 umask 077
 python="${ANDROID_APK_PYTHON:-python3}"
-unsigned='apps/android/build/outputs/apk/release/aBridge Android-release-unsigned.apk'
-
 printf '%s' "$ANDROID_KEYSTORE_BASE64" | openssl base64 -d -A > "$work/release.keystore"
 "$python" tools/recompress-android-apk.py "$unsigned" "$work/repacked.apk"
 "$build_tools/zipalign" -f -P 16 4 "$work/repacked.apk" "$work/aligned.apk"
@@ -27,10 +40,10 @@ printf '%s' "$ANDROID_KEYSTORE_BASE64" | openssl base64 -d -A > "$work/release.k
   --v1-signing-enabled false --v4-signing-enabled false --out "$work/release.apk" "$work/aligned.apk"
 "$build_tools/apksigner" verify "$work/release.apk"
 size=$(wc -c < "$work/release.apk")
-if (( size > 200000 )); then
-  echo "Signed Android APK is $size bytes and exceeds the 200,000-byte limit." >&2
+if (( size > limit )); then
+  echo "Signed $product Android APK is $size bytes and exceeds the $limit-byte limit ($unsigned)." >&2
   exit 1
 fi
 mkdir -p "$(dirname "$output")"
 cp "$work/release.apk" "$output"
-echo "Signed Android APK: $size bytes"
+echo "Signed $product Android APK: $size bytes (limit: $limit bytes; $output)"

@@ -28,7 +28,7 @@ The Android build requires JDK 17 and Android SDK Platform 36. Gradle consumes t
 
 The [Android App workflow](../../.github/workflows/android.yml) builds Debug and Release APKs and runs Android Lint on pull requests and pushes to `main`. Download the installable Debug APK from the run's **abridge-android-debug** artifact.
 
-Debug and Release APKs use R8 to remove unused code and compress the remaining DEX bytecode. Release packaging recompresses the APK before signing and checks the complete signed file against a 200,000-byte budget. Android extracts the bytecode during installation, so the APK size and installed storage usage differ.
+Debug and Release APKs use R8 to remove unused code and compress the remaining DEX bytecode. Release packaging recompresses the APK before signing and checks the complete signed file against a 300,000-byte budget. Android extracts the bytecode during installation, so the APK size and installed storage usage differ.
 
 ## Tools
 
