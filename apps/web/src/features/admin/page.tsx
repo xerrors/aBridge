@@ -96,7 +96,7 @@ export function UserAdminPage({
   return (
     <>
       <div class="page-title">
-        <h1>实例管理</h1>
+        <h1>用户</h1>
         <div class="actions">
           <RefreshButton loading={loading} refresh={refresh} />
           <button class="primary" onClick={() => setCreating(true)}>
