@@ -321,8 +321,10 @@ export async function createServer(config: ServerConfig) {
         id: device.id,
         name: device.name,
         kind: device.kind,
+        platform: device.platform,
         status: view.status === "online" ? "online" : "offline",
         paused: view.paused === true,
+        chat_available: store.tasks.eligible(device.id, device.owner_id),
         last_seen: device.last_seen,
         created_at: device.created_at,
       });

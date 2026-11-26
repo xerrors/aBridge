@@ -211,6 +211,7 @@ test("only administrators create accounts, identities stay independent, overview
     assert.equal(owner.devices.length, 2);
     assert.equal(owner.online_count, 1);
     assert.equal(owner.devices.find((d) => d.id === computer.device.id)?.paused, true);
+    assert.equal(owner.devices.find((d) => d.id === computer.device.id)?.platform, "linux");
     const empty = overview.users.find((u) => u.username === "empty")!;
     assert.deepEqual(empty.devices, []);
     assert.equal(empty.computer_count, 0);

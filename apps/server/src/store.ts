@@ -1,5 +1,5 @@
 import { ControllerChat } from "./controller-chat.js";
-import { TaskStore } from "./task-store.js";
+import { INSTANCE_ADMIN_ACTOR_ID, TaskStore } from "./task-store.js";
 import { createHash, createHmac, pbkdf2, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -128,7 +128,7 @@ export class Store {
         throw new BridgeError("schema_mismatch", "Use a development database matching this version", 500);
 
       this.groups = new GroupStore(this.db);
-      this.tasks = new TaskStore(this.db);
+      this.tasks = new TaskStore(this.db, this.path + ".task-images");
       this.controllerChat = new ControllerChat(this.db, this.tasks);
       this.db.exec(MANAGED_BROWSER_SCHEMA);
       const columns = new Set(
@@ -188,14 +188,33 @@ export class Store {
     return result;
   }
   users(): (User & { created_at: number })[] {
-    return this.all("SELECT id,username,created_at FROM users ORDER BY created_at DESC,id");
+    return this.all(
+      "SELECT id,username,created_at FROM users WHERE id != ? ORDER BY created_at DESC,id",
+      INSTANCE_ADMIN_ACTOR_ID,
+    );
   }
   activeDevices(): Device[] {
     return this.all("SELECT * FROM devices WHERE revoked_at IS NULL ORDER BY created_at DESC,id");
   }
+  /** Internal task actor: no password, login, external identity or device ownership. */
+  instanceAdminActor(): string {
+    this.run(
+      "INSERT OR IGNORE INTO users VALUES(?,?,NULL,NULL,?)",
+      INSTANCE_ADMIN_ACTOR_ID,
+      "__abridge_instance_admin__",
+      nowSeconds(),
+    );
+    return INSTANCE_ADMIN_ACTOR_ID;
+  }
   async createUser(username: string, password: string): Promise<User> {
     const normalized = username.trim().toLocaleLowerCase("und");
-    if (!normalized || normalized.length > 80 || password.length < 12 || password.length > 1024)
+    if (
+      normalized === "__abridge_instance_admin__" ||
+      !normalized ||
+      normalized.length > 80 ||
+      password.length < 12 ||
+      password.length > 1024
+    )
       throw new BridgeError(
         "invalid_account",
         "Username is required and password must contain 12–1024 characters",
@@ -216,11 +235,11 @@ export class Store {
     });
   }
   user(id: string): User | undefined {
-    return this.one("SELECT id,username FROM users WHERE id=?", id);
+    return this.one("SELECT id,username FROM users WHERE id=? AND id != 'sys_instance_admin'", id);
   }
   async verifyUser(username: string, password: string): Promise<User | undefined> {
     const row = this.one<User & { salt: string; password_hash: string }>(
-      "SELECT * FROM users WHERE username=?",
+      "SELECT * FROM users WHERE username=? AND id != 'sys_instance_admin'",
       username.trim().toLocaleLowerCase("und"),
     );
     const candidate = await derive(

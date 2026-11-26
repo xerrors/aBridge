@@ -76,6 +76,7 @@ test("Android task handoff waits for the receiver's previous session cleanup", a
       return taskViewSchema.parse(res.json().task);
     };
 
+    server.store.tasks.updateSettings(receiver!.id, { require_task_approval: true });
     const first = await submit("first", phone.device.id, receiver!.id, senderHeaders);
     const second = await submit("second", tablet.device.id, receiver!.id, receiverHeaders);
     const claim = async () => {
